@@ -78,6 +78,10 @@ export function App() {
           setEvents((prev) => [...prev, event])
           return
         }
+        if (envelope.kind === 'error') {
+          setError(envelope.message)
+          return
+        }
         setApprovals((prev) => [...prev, { approvalId: envelope.approvalId, call: envelope.call }])
       },
       setStream,

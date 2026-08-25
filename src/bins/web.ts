@@ -4,7 +4,7 @@
  * absent; otherwise the scripted mock. Serve the built client first:
  *
  *   npm run build:web
- *   npm run web [-- --port 3080 --root . --mock --yolo]
+ *   npm run web [-- --port 3082 --root . --mock --yolo]
  */
 import { createWebServer } from '../web/server.ts'
 import { DeepSeekProvider } from '../harness/llm/deepseek.ts'

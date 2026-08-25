@@ -39,14 +39,20 @@ declare module 'mini-dsh' {
       readonly approvalId: string
       readonly call: ToolCall
     }): void
+    /**
+     * A turn failed (e.g. a rejected API call) on one session; the reason is
+     * broadcast so the UI can surface it instead of a bare `turn/end: failed`.
+     */
+    'web/turn-error'(payload: { readonly sessionId: SessionId; readonly message: string }): void
   }
 }
 
-/** One frame on the SSE stream: log snapshot, live session event, or a pending approval question. */
+/** One frame on the SSE stream: log snapshot, live session event, a pending approval question, or a turn failure. */
 export type WebEnvelope =
   | { readonly kind: 'snapshot'; readonly events: SessionEvent[] }
   | { readonly kind: 'session'; readonly event: SessionEvent }
   | { readonly kind: 'approval'; readonly approvalId: string; readonly call: ToolCall }
+  | { readonly kind: 'error'; readonly message: string }
 
 /** Options for {@link createWebServer}. */
 export interface WebServerOptions {
@@ -315,9 +321,12 @@ async function handleApi(
     }
     entry.agent.send(content)
     // Fire-and-forget: the reply (and any failure, which closes the turn
-    // durably) reaches the client through the SSE stream.
+    // durably) reaches the client through the SSE stream — the failure
+    // reason is broadcast as an error envelope, not just logged.
     void entry.agent.run().catch((error: unknown) => {
-      console.error(`web: agent run failed for ${entry.session.id}`, error)
+      const message = error instanceof Error ? error.message : String(error)
+      console.error(`web: agent run failed for ${entry.session.id}: ${message}`)
+      deps.kernel.ctx.emit('web/turn-error', { sessionId: entry.session.id, message })
     })
     send(202, { queued: true })
     return
@@ -403,6 +412,9 @@ function streamEvents(req: IncomingMessage, res: ServerResponse, entry: SessionE
       writeFrame(res, { kind: 'approval', approvalId: payload.approvalId, call: payload.call })
     }
   })
+  const disposeError = deps.kernel.ctx.on('web/turn-error', (payload) => {
+    if (payload.sessionId === session.id) writeFrame(res, { kind: 'error', message: payload.message })
+  })
   const heartbeat = setInterval(() => {
     res.write(': ping\n\n')
   }, 25_000)
@@ -411,6 +423,7 @@ function streamEvents(req: IncomingMessage, res: ServerResponse, entry: SessionE
     clearInterval(heartbeat)
     disposeSession()
     disposeApproval()
+    disposeError()
   })
 }
 

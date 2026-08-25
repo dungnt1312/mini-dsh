@@ -26,6 +26,7 @@ export type Envelope =
   | { readonly kind: 'snapshot'; readonly events: SseEvent[] }
   | { readonly kind: 'session'; readonly event: SseEvent }
   | { readonly kind: 'approval'; readonly approvalId: string; readonly call: ToolCall }
+  | { readonly kind: 'error'; readonly message: string }
 
 export interface SessionListing {
   readonly id: string

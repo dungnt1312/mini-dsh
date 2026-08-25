@@ -4,6 +4,17 @@ A miniature TypeScript replica of the [DeepSeek Harness](https://github.com/deep
 
 The reference architecture lives in the DeepSeek Harness repository (`docs/architecture.md`, `docs/cordis-primer.md`, `docs/cordis-tutorial/`). This project rebuilds those ideas without importing them; the test suite reproduces the Cordis tutorial chapters against this kernel.
 
+## Documentation
+
+Full docs live in [`docs/`](docs/README.md):
+
+- [architecture.md](docs/architecture.md) — layers, module map, core invariants
+- [kernel.md](docs/kernel.md) — the mini-Cordis plugin kernel
+- [harness.md](docs/harness.md) — session log, LLM seam, turn/step driver, tools, approval
+- [capabilities.md](docs/capabilities.md) — filesystem and bash tools
+- [web.md](docs/web.md) — the web host API and React client
+- [guides.md](docs/guides.md) — setup, config, CLI, plugin authoring, testing
+
 ## Status
 
 - **Phase 0–1 (done)** — mini-Cordis kernel: event bus with all five dispatch modes, fiber lifecycle with reverse-order effect disposal, service store with `inject` dependency tracking, and a YAML composition loader. 37 tests reproduce tutorial chapters 2–4 on this kernel.
@@ -44,7 +55,7 @@ npx tsx src/bins/headless.ts --mock --message "hello"   # one-shot
 
 ```sh
 npm run build:web      # build the React client into web-dist/
-npm run web            # serve it at http://127.0.0.1:3080 (--mock, --yolo, --root, --port)
+npm run web            # serve it at http://127.0.0.1:3082 (--mock, --yolo, --root, --port)
 ```
 
 The toolbar switches the active model (`PUT /api/model`, offered names come
