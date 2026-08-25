@@ -1,8 +1,13 @@
 /**
  * The one-shot/REPL headless runner: composes the harness plugins on the
- * kernel, binds one agent to one durable session, and streams replies to
- * stdout. Uses the DeepSeek provider when `DEEPSEEK_API_KEY` is set and
- * `--mock` is absent; otherwise falls back to the scripted mock.
+ * kernel — sessions, llm, tools, approval — mounts the filesystem and bash
+ * capability tools, binds one agent to one durable session, and streams
+ * replies and tool traffic to stdout.
+ *
+ * Providers: DeepSeek when `DEEPSEEK_API_KEY` is set and `--mock` is
+ * absent; otherwise the scripted mock. Approval: `--yolo` allows every
+ * call; otherwise reads/globs are allowed and write/edit/bash prompt on
+ * stderr before running.
  *
  * Usage:
  *   tsx src/bins/headless.ts --mock --message "hello"
@@ -11,38 +16,49 @@
 import { createInterface } from 'node:readline/promises'
 import {
   AgentsService,
+  ApprovalService,
   DeepSeekProvider,
   Kernel,
   LlmService,
   MockLlmProvider,
   SessionsService,
+  ToolsService,
+  bashTool,
+  fsTools,
+  type ApprovalOptions,
   type Session,
   type SessionEvent,
 } from '../index.ts'
 
 const MOCK_SCRIPT = [
   'Hello from the mini-dsh mock model. Set DEEPSEEK_API_KEY to talk to the real thing.',
-  'I am a scripted stand-in, but the session log, turns, and streaming around me are real.',
+  'I am a scripted stand-in, but the session log, turns, tools, and streaming around me are real.',
   'Every reply I give was appended to the durable log first — model-visible means logged.',
 ]
 
 interface CliOptions {
   readonly mock: boolean
+  readonly yolo: boolean
+  readonly root: string
   readonly message: string | undefined
 }
 
 function parseArgs(argv: readonly string[]): CliOptions {
   let mock = false
+  let yolo = false
+  let root = process.cwd()
   let message: string | undefined
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     if (arg === '--mock') mock = true
+    else if (arg === '--yolo') yolo = true
+    else if (arg === '--root') root = argv[i + 1] ?? root
     else if (arg === '--message') message = argv[i + 1]
   }
-  return { mock, message }
+  return { mock, yolo, root, message }
 }
 
-/** Render one session's stream to stdout as durable events arrive. */
+/** Render one session's durable stream to stdout as events arrive. */
 function render(event: SessionEvent): void {
   switch (event.type) {
     case 'assistant/chunk':
@@ -51,23 +67,58 @@ function render(event: SessionEvent): void {
     case 'assistant/message':
       process.stdout.write('\n')
       break
+    case 'tool/call':
+      process.stdout.write(`\n[tool] ${event.call.name}(${JSON.stringify(event.call.args)})\n`)
+      break
+    case 'tool/result': {
+      const output = event.output.length > 400 ? `${event.output.slice(0, 400)}\n… [truncated]` : event.output
+      process.stdout.write(`[${event.ok ? 'tool→' : 'tool✗'}] ${output}\n`)
+      break
+    }
     case 'turn/end':
       if (event.reason === 'rejected') process.stdout.write('[turn rejected]\n')
       if (event.reason === 'empty') process.stdout.write('[turn closed empty]\n')
+      if (event.reason === 'max-steps') process.stdout.write('[turn stopped at the step limit]\n')
       break
     default:
       break
   }
 }
 
+/** Prompt on stderr for approval of one tool call. */
+async function askUser(call: { name: string; args: Record<string, unknown> }): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: process.stderr })
+  try {
+    const answer = await rl.question(`allow '${call.name}'(${JSON.stringify(call.args)})? [y/N] `)
+    return answer.trim().toLowerCase().startsWith('y')
+  } finally {
+    rl.close()
+  }
+}
+
 async function main(): Promise<void> {
-  const { mock, message } = parseArgs(process.argv.slice(2))
+  const { mock, yolo, root, message } = parseArgs(process.argv.slice(2))
   const apiKey = process.env.DEEPSEEK_API_KEY
 
   const kernel = new Kernel()
   kernel.ctx.plugin(SessionsService)
   kernel.ctx.plugin(LlmService)
+  kernel.ctx.plugin(ToolsService)
   kernel.ctx.plugin(AgentsService)
+  kernel.ctx.plugin((ctx) => {
+    const options: ApprovalOptions = yolo
+      ? { defaultMode: 'allow', askUser }
+      : {
+          defaultMode: 'ask',
+          askUser,
+          policy: { read: 'allow', glob: 'allow', grep: 'allow', write: 'ask', edit: 'ask', bash: 'ask' },
+        }
+    new ApprovalService(ctx, options)
+  })
+  for (const tool of fsTools(root)) {
+    kernel.ctx.tools.register(tool)
+  }
+  kernel.ctx.tools.register(bashTool())
 
   if (mock || apiKey === undefined) {
     kernel.ctx.llm.register(new MockLlmProvider(MOCK_SCRIPT))

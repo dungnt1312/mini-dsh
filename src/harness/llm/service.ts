@@ -1,5 +1,5 @@
 import { Service, type Context } from '../../kernel/index.ts'
-import type { LlmProvider, ModelRequest } from './types.ts'
+import type { LlmProvider, ModelRequest, StreamEvent } from './types.ts'
 
 declare module 'mini-dsh' {
   interface Context {
@@ -14,8 +14,8 @@ declare module 'mini-dsh' {
      */
     'llm/stream'(
       request: ModelRequest,
-      next: (replacement?: ModelRequest) => AsyncIterable<string>,
-    ): AsyncIterable<string>
+      next: (replacement?: ModelRequest) => AsyncIterable<StreamEvent>,
+    ): AsyncIterable<StreamEvent>
   }
 }
 
@@ -80,17 +80,17 @@ export class LlmService extends Service {
    * iterable itself; the chain result is normalized either way so consumers
    * always receive an `AsyncIterable`.
    */
-  stream(request: ModelRequest): AsyncIterable<string> {
+  stream(request: ModelRequest): AsyncIterable<StreamEvent> {
     const chained = this.ctx.waterfall('llm/stream', request, (replacement) =>
       this.active().stream(replacement ?? request),
     )
     if (isAsyncIterable(chained)) return chained
-    return (async function* resolve(awaited: Promise<AsyncIterable<string>>) {
+    return (async function* resolve(awaited: Promise<AsyncIterable<StreamEvent>>) {
       yield* await awaited
-    })(chained as Promise<AsyncIterable<string>>)
+    })(chained as Promise<AsyncIterable<StreamEvent>>)
   }
 }
 
-function isAsyncIterable(value: unknown): value is AsyncIterable<string> {
+function isAsyncIterable(value: unknown): value is AsyncIterable<StreamEvent> {
   return value !== null && typeof value === 'object' && Symbol.asyncIterator in value
 }

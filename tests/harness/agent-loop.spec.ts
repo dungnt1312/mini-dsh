@@ -101,7 +101,7 @@ describe('agent loop', () => {
       name: 'recorder',
       async *stream(request) {
         seen.push(request)
-        yield 'ok'
+        yield { type: 'delta', delta: 'ok' }
       },
     })
     llm.use('recorder')
@@ -127,7 +127,7 @@ describe('agent loop', () => {
       name: 'counter',
       async *stream() {
         modelCalls++
-        yield 'x'
+        yield { type: 'delta', delta: 'x' }
       },
     })
     llm.use('counter')
@@ -169,7 +169,7 @@ describe('agent loop', () => {
       name: 'spy',
       async *stream(request) {
         for (const message of request.messages) seen.push(message.content)
-        yield 'fine'
+        yield { type: 'delta', delta: 'fine' }
       },
     })
     llm.use('spy')
@@ -212,7 +212,7 @@ describe('agent loop', () => {
       name: 'auditor',
       async *stream(request) {
         projections.push(request.messages.map((message) => message.content))
-        yield 'audited'
+        yield { type: 'delta', delta: 'audited' }
       },
     })
     llm.use('auditor')

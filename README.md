@@ -7,8 +7,8 @@ The reference architecture lives in the DeepSeek Harness repository (`docs/archi
 ## Status
 
 - **Phase 0–1 (done)** — mini-Cordis kernel: event bus with all five dispatch modes, fiber lifecycle with reverse-order effect disposal, service store with `inject` dependency tracking, and a YAML composition loader. 37 tests reproduce tutorial chapters 2–4 on this kernel.
-- **Phase 2 (done)** — agent core: durable session log (event sourcing, `deriveMessages()`, fork), LLM streaming seam (`agent/request` + `llm/stream` waterfalls, mock + DeepSeek SSE providers), and the turn/step driver (inbox with `send`/`inject`, `agent/pre-step`, `agent/turn-stopping`). Headless CLI chats multi-turn; 61 tests cover the kernel and harness.
-- Phase 3 — tool pipeline: registry, `tools/pre-execute` waterfall, approval gate, `bash`/`read`/`write`/`edit`/`glob`/`grep` tools.
+- **Phase 2 (done)** — agent core: durable session log (event sourcing, `deriveMessages()`, fork), LLM streaming seam (`agent/request` + `llm/stream` waterfalls, mock + DeepSeek SSE providers), and the turn/step driver (inbox with `send`/`inject`, `agent/pre-step`, `agent/turn-stopping`). Headless CLI chats multi-turn.
+- **Phase 3 (done)** — tool pipeline: `ToolsService` with the guarded `tools/pre-execute` → execute → `tools/post-execute` path, approval policy (allow/ask/deny riding pre-execute), filesystem tools (`read`/`write`/`edit`/`glob`/`grep`, root-confined) and `bash` (timeout, process-group kill); the loop spends another step while tools owe the model their results, with a max-steps guard. Tool traffic is durable (`tool/call`, `tool/result`) and projects into model history as `role: 'tool'`. 90 tests cover kernel, harness, and capabilities.
 - Phase 4 — web UI: HTTP server + React transcript, approval prompts, session list.
 - Phase 5 — dynamic plugins: patch layers, hot (un)load, provider swap restarting dependents.
 - Phase 6 — polish: SQLite persistence, compaction, an `architecture.md` for this project.
@@ -72,7 +72,13 @@ A waterfall listener that only observes must call `next()`; returning without it
 src/harness/
 ├── session/   Durable log: SessionEvent union, deriveMessages(), fork
 ├── llm/       Seam: provider registry + agent-facing stream, mock + DeepSeek
-└── agent/     Turn/step driver: inbox, pre-step admission, turn-stopping
+├── agent/     Turn/step driver: inbox, pre-step admission, turn-stopping
+├── tools/     Registry + guarded pipeline: pre-execute -> run -> post-execute
+└── approval/  Policy riding tools/pre-execute: allow | ask | deny
+
+src/capabilities/
+├── fs/        read/write/edit/glob/grep tools, root-confined
+└── shell/     bash tool: timeout, process-group kill, exit-code report
 ```
 
 The turn flow, matching the upstream `Turn flow` map:
@@ -84,17 +90,21 @@ turn/start
      reject, or a first enter rewritten empty -> close the turn with no step
      step/start
      append admitted input as user/message
-     derive model history from the log
+     derive model history from the log (+ tool schemas)
      agent/request (waterfall) -> llm/stream (waterfall) -> assistant/chunk*
-     assistant/message -> step/end
+     assistant/message (+toolCalls)
+     tool/call* -> tools/pre-execute -> execute -> tools/post-execute -> tool/result*
+     step/end
+     tools ran -> they owe the model their results -> next step
   -> agent/turn-stopping (serial)
 turn/end
 ```
 
-Two invariants carried over verbatim:
+Three invariants carried over verbatim:
 
-- **Model-visible means logged.** Every model request is `session.deriveMessages()` at that moment; a test asserts it.
+- **Model-visible means logged.** Every model request is `session.deriveMessages()` at that moment; a test asserts it with tools in the loop.
 - **Raw `assistant/chunk` events preserve replay and UI fidelity** but never re-enter model history — only the assembled `assistant/message` projects.
+- **A denied or failing tool is a result, not an exception.** The model sees the denial reason and the turn continues — policy never crashes the loop.
 
 ## License
 

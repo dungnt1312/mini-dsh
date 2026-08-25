@@ -1,12 +1,31 @@
 /**
  * The LLM seam: provider registry effects, selection, fail-loud behavior,
- * and the `llm/stream` waterfall around the adapter call.
+ * the `llm/stream` waterfall around the adapter call, and scripted tool
+ * calls from the mock provider.
  */
 import { describe, expect, it } from 'vitest'
-import { Kernel, LlmService, MockLlmProvider, type LlmProvider, type ModelRequest } from 'mini-dsh'
+import {
+  Kernel,
+  LlmService,
+  MockLlmProvider,
+  type LlmProvider,
+  type ModelRequest,
+  type StreamEvent,
+} from 'mini-dsh'
 
 function requestOf(...contents: string[]): ModelRequest {
   return { messages: contents.map((content) => ({ role: 'user' as const, content })) }
+}
+
+/** Collect a stream into its assembled content and tool calls. */
+async function collect(stream: AsyncIterable<StreamEvent>): Promise<{ text: string; toolCalls: StreamEvent[] }> {
+  let text = ''
+  const toolCalls: StreamEvent[] = []
+  for await (const event of stream) {
+    if (event.type === 'delta') text += event.delta
+    else toolCalls.push(event)
+  }
+  return { text, toolCalls }
 }
 
 describe('llm seam', () => {
@@ -16,11 +35,9 @@ describe('llm seam', () => {
     kernel.ctx.plugin(LlmService)
     kernel.ctx.llm.register(provider)
 
-    let received = ''
-    for await (const delta of kernel.ctx.llm.stream(requestOf('hi'))) {
-      received += delta
-    }
-    expect(received).toBe('one two three')
+    const { text, toolCalls } = await collect(kernel.ctx.llm.stream(requestOf('hi')))
+    expect(text).toBe('one two three')
+    expect(toolCalls).toEqual([])
     void kernel.stop()
   })
 
@@ -29,14 +46,32 @@ describe('llm seam', () => {
     kernel.ctx.plugin(LlmService)
     kernel.ctx.llm.register(new MockLlmProvider(['first', 'second']))
 
-    const collect = async (): Promise<string> => {
-      let out = ''
-      for await (const delta of kernel.ctx.llm.stream(requestOf('x'))) out += delta
-      return out
-    }
-    expect(await collect()).toBe('first')
-    expect(await collect()).toBe('second')
-    expect(await collect()).toBe('second')
+    const run = async (): Promise<string> => (await collect(kernel.ctx.llm.stream(requestOf('x')))).text
+    expect(await run()).toBe('first')
+    expect(await run()).toBe('second')
+    expect(await run()).toBe('second')
+    void kernel.stop()
+  })
+
+  it('a scripted tool-call step emits content then calls with generated ids', async () => {
+    const kernel = new Kernel()
+    kernel.ctx.plugin(LlmService)
+    kernel.ctx.llm.register(
+      new MockLlmProvider([
+        { content: 'let me check', toolCalls: [{ name: 'read', args: { path: 'a.txt' } }] },
+        'all done',
+      ]),
+    )
+
+    const first = await collect(kernel.ctx.llm.stream(requestOf('x')))
+    expect(first.text).toBe('let me check')
+    expect(first.toolCalls).toEqual([
+      { type: 'toolCalls', calls: [{ id: 'call-1-0', name: 'read', args: { path: 'a.txt' } }] },
+    ])
+
+    const second = await collect(kernel.ctx.llm.stream(requestOf('x')))
+    expect(second.text).toBe('all done')
+    expect(second.toolCalls).toEqual([])
     void kernel.stop()
   })
 
@@ -55,7 +90,7 @@ describe('llm seam', () => {
     void kernel.stop()
   })
 
-  it('register is an effect: disposal removes the provider', async () => {
+  it('register is an effect: disposal removes the provider', () => {
     const kernel = new Kernel()
     kernel.ctx.plugin(LlmService)
     const provider: LlmProvider = new MockLlmProvider(['only'])
@@ -75,7 +110,7 @@ describe('llm seam', () => {
       name: 'spy',
       async *stream(request) {
         for (const message of request.messages) seen.push(`${message.role}:${message.content}`)
-        yield 'spy reply'
+        yield { type: 'delta', delta: 'spy reply' }
       },
     }
     kernel.ctx.llm.register(provider)
@@ -87,9 +122,8 @@ describe('llm seam', () => {
       })
     })
 
-    let out = ''
-    for await (const delta of kernel.ctx.llm.stream(requestOf('hi'))) out += delta
-    expect(out).toBe('spy reply')
+    const { text } = await collect(kernel.ctx.llm.stream(requestOf('hi')))
+    expect(text).toBe('spy reply')
     expect(seen).toEqual(['system:injected system preamble', 'user:hi'])
     void kernel.stop()
   })

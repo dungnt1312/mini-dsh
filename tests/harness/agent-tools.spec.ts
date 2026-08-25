@@ -1,0 +1,225 @@
+/**
+ * The agent loop with tools: durable event ordering for the tool round-trip,
+ * the projection of tool traffic into model history, the tools-owe-another-
+ * request continuation, the max-steps guard, and the logged-context
+ * invariant once tools join the loop.
+ */
+import { promises as fs } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import {
+  Agent,
+  AgentsService,
+  Kernel,
+  LlmService,
+  MockLlmProvider,
+  SessionsService,
+  ToolsService,
+  bashTool,
+  deriveMessages,
+  fsTools,
+  type LlmProvider,
+  type ModelRequest,
+  type Session,
+} from 'mini-dsh'
+
+let root = ''
+
+beforeAll(async () => {
+  root = await fs.mkdtemp(path.join(tmpdir(), 'mini-dsh-agent-tools-'))
+})
+
+afterAll(async () => {
+  await fs.rm(root, { recursive: true, force: true })
+})
+
+/** Boot the full harness with fs tools rooted at the temp workspace. */
+function bootHarness(steps: readonly (string | { toolCalls: readonly { name: string; args: Record<string, unknown> }[] })[], maxSteps?: number): {
+  kernel: Kernel
+  session: Session
+  agent: Agent
+  llm: LlmService
+  requests: ModelRequest[]
+} {
+  const kernel = new Kernel()
+  kernel.ctx.plugin(SessionsService)
+  kernel.ctx.plugin(LlmService)
+  kernel.ctx.plugin(ToolsService)
+  kernel.ctx.plugin(AgentsService)
+
+  const requests: ModelRequest[] = []
+  const mock = new MockLlmProvider(steps)
+  // The recorder wraps the mock so behavior (tool calls, scripted replies)
+  // stays deterministic while every request is captured.
+  const recorder: LlmProvider = {
+    name: 'recorder',
+    stream(request) {
+      requests.push(request)
+      return mock.stream(request)
+    },
+  }
+  kernel.ctx.llm.register(recorder)
+
+  for (const tool of fsTools(root)) {
+    kernel.ctx.tools.register(tool)
+  }
+  kernel.ctx.tools.register(bashTool())
+
+  const session = kernel.ctx.sessions.create()
+  const agent = maxSteps === undefined
+    ? kernel.ctx.agents.create(session)
+    : new Agent(kernel.ctx, session, maxSteps)
+  return { kernel, session, agent, llm: kernel.ctx.llm, requests }
+}
+
+describe('agent loop with tools', () => {
+  it('a tool round-trip spends two steps and logs call plus result durably', async () => {
+    await fs.writeFile(path.join(root, 'fact.txt'), 'the sky is blue', 'utf8')
+    const { kernel, session, agent } = bootHarness([
+      { toolCalls: [{ name: 'read', args: { path: 'fact.txt' } }] },
+      'the file says the sky is blue',
+    ])
+
+    agent.send('what does fact.txt say?')
+    await agent.run()
+
+    // Structure with the streaming chunks collapsed: the reply text length
+    // is asserted separately so word-splitting stays an implementation
+    // detail of the mock provider.
+    const structure = session.events
+      .filter((event) => event.type !== 'assistant/chunk')
+      .map((event) => event.type)
+    expect(structure).toEqual([
+      'turn/start',
+      'step/start',
+      'user/message',
+      'assistant/message',
+      'tool/call',
+      'tool/result',
+      'step/end',
+      'step/start',
+      'assistant/message',
+      'step/end',
+      'turn/end',
+    ])
+
+    const toolResult = session.events.find((event) => event.type === 'tool/result')
+    expect(toolResult?.type === 'tool/result' && toolResult.ok).toBe(true)
+    expect(toolResult?.type === 'tool/result' && toolResult.output).toBe('the sky is blue')
+
+    const chunks = session.events.filter((event) => event.type === 'assistant/chunk')
+    const assembled = chunks.map((event) => (event.type === 'assistant/chunk' ? event.delta : '')).join('')
+    expect(assembled).toBe('the file says the sky is blue')
+    void kernel.stop()
+  })
+
+  it('deriveMessages projects the assistant toolCalls and the tool result answer', async () => {
+    await fs.writeFile(path.join(root, 'fact.txt'), 'pi is 3.14', 'utf8')
+    const { kernel, session, agent } = bootHarness([
+      { toolCalls: [{ name: 'read', args: { path: 'fact.txt' } }] },
+      'done',
+    ])
+
+    agent.send('read it')
+    await agent.run()
+
+    const messages = session.deriveMessages()
+    expect(messages).toEqual([
+      { role: 'user', content: 'read it' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'call-1-0', name: 'read', args: { path: 'fact.txt' } }],
+      },
+      { role: 'tool', content: 'pi is 3.14', toolCallId: 'call-1-0' },
+      { role: 'assistant', content: 'done' },
+    ])
+    void kernel.stop()
+  })
+
+  it('the follow-up request carries the tool schemas and the tool result', async () => {
+    await fs.writeFile(path.join(root, 'fact.txt'), 'x', 'utf8')
+    const { kernel, session, agent, requests } = bootHarness([
+      { toolCalls: [{ name: 'read', args: { path: 'fact.txt' } }] },
+      'done',
+    ])
+    kernel.ctx.llm.use('recorder')
+
+    agent.send('go')
+    await agent.run()
+
+    expect(requests).toHaveLength(2)
+    const names = requests[0]?.tools?.map((schema) => schema.name)
+    expect(names).toContain('read')
+    expect(names).toContain('bash')
+
+    const followUp = requests[1]?.messages
+    expect(followUp?.at(-1)).toEqual({ role: 'tool', content: 'x', toolCallId: 'call-1-0' })
+    void kernel.stop()
+    void session
+  })
+
+  it('a denied tool still owes the model its (failed) result and another step', async () => {
+    const { kernel, session, agent } = bootHarness([
+      { toolCalls: [{ name: 'write', args: { path: 'blocked.txt', content: 'x' } }] },
+      'acknowledged the denial',
+    ])
+    kernel.ctx.on('tools/pre-execute', async () => {
+      return { kind: 'deny', reason: 'read-only policy' }
+    })
+
+    agent.send('write it')
+    await agent.run()
+
+    const toolResult = session.events.find((event) => event.type === 'tool/result')
+    expect(toolResult?.type === 'tool/result' && toolResult.ok).toBe(false)
+    expect(toolResult?.type === 'tool/result' && toolResult.output).toBe('denied: read-only policy')
+
+    const stepStarts = session.events.filter((event) => event.type === 'step/start')
+    expect(stepStarts).toHaveLength(2)
+    void kernel.stop()
+  })
+
+  it('a turn that keeps calling tools stops at the step limit', async () => {
+    const { kernel, session, agent } = bootHarness([
+      { toolCalls: [{ name: 'glob', args: { pattern: '*' } }] },
+    ], 3)
+
+    agent.send('loop forever')
+    await agent.run()
+
+    const stepStarts = session.events.filter((event) => event.type === 'step/start')
+    expect(stepStarts).toHaveLength(3)
+    const last = session.events[session.events.length - 1]
+    expect(last?.type === 'turn/end' && last.reason).toBe('max-steps')
+    void kernel.stop()
+  })
+
+  it('invariant: with tools in the loop every request equals the log projection', async () => {
+    await fs.writeFile(path.join(root, 'inv.txt'), 'answer=42', 'utf8')
+    const { kernel, session, agent, requests } = bootHarness([
+      { toolCalls: [{ name: 'read', args: { path: 'inv.txt' } }] },
+      'done',
+    ])
+    kernel.ctx.llm.use('recorder')
+
+    agent.send('check')
+    await agent.run()
+
+    // The recorder saw two requests. Each must equal the projection of the
+    // log prefix at its moment: request 1 right after the user message was
+    // appended, request 2 right after step 1 closed with its tool result.
+    expect(requests).toHaveLength(2)
+    const events = session.events
+    const firstUser = events.findIndex((event) => event.type === 'user/message')
+    const firstStepEnd = events.findIndex((event) => event.type === 'step/end')
+
+    expect(requests[0]?.messages).toEqual(deriveMessages(events.slice(0, firstUser + 1)))
+    expect(requests[1]?.messages).toEqual(deriveMessages(events.slice(0, firstStepEnd + 1)))
+    expect(requests[1]?.messages.filter((message) => message.role === 'tool')).toEqual([
+      { role: 'tool', content: 'answer=42', toolCallId: 'call-1-0' },
+    ])
+    void kernel.stop()
+  })
+})

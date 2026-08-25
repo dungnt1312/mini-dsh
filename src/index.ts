@@ -44,9 +44,16 @@ export { Session } from './harness/session/session.ts'
 export { SessionsService } from './harness/session/service.ts'
 
 // ── Harness: LLM seam ────────────────────────────────────────────────────
-export type { LlmProvider, ModelMessage, ModelRequest } from './harness/llm/types.ts'
+export type {
+  LlmProvider,
+  ModelMessage,
+  ModelRequest,
+  StreamEvent,
+  ToolCall,
+  ToolSchema,
+} from './harness/llm/types.ts'
 export { LlmService } from './harness/llm/service.ts'
-export { MockLlmProvider } from './harness/llm/mock.ts'
+export { MockLlmProvider, type MockScriptStep } from './harness/llm/mock.ts'
 export { DeepSeekProvider } from './harness/llm/deepseek.ts'
 
 // ── Harness: agent ───────────────────────────────────────────────────────
@@ -57,3 +64,15 @@ export type {
 } from './harness/agent/types.ts'
 export { Agent } from './harness/agent/agent.ts'
 export { AgentsService } from './harness/agent/service.ts'
+
+// ── Harness: tool pipeline ───────────────────────────────────────────────
+export type { PreExecuteDecision, ToolDefinition, ToolResult } from './harness/tools/types.ts'
+export { ToolsService } from './harness/tools/service.ts'
+
+// ── Harness: approval ────────────────────────────────────────────────────
+export type { ApprovalMode, ApprovalOptions } from './harness/approval/service.ts'
+export { ApprovalService } from './harness/approval/service.ts'
+
+// ── Capabilities: filesystem + shell ─────────────────────────────────────
+export { fsTools, resolveWithin } from './capabilities/fs/tools.ts'
+export { bashTool, type BashToolOptions } from './capabilities/shell/bash.ts'

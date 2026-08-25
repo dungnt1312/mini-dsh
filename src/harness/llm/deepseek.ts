@@ -1,13 +1,31 @@
-import type { LlmProvider, ModelRequest } from './types.ts'
+import type { LlmProvider, ModelRequest, StreamEvent, ToolCall } from './types.ts'
 
 interface StreamChoice {
-  delta?: { content?: string }
+  delta?: {
+    content?: string
+    tool_calls?: StreamToolCall[]
+  }
+}
+
+interface StreamToolCall {
+  id?: string
+  index?: number
+  function?: { name?: string; arguments?: string }
+}
+
+/** One tool call accumulated across argument-fragment deltas. */
+interface AccumulatedCall {
+  id: string
+  name: string
+  argsString: string
 }
 
 /**
- * DeepSeek chat-completions provider: POSTs with `stream: true` and yields
- * `choices[0].delta.content` as SSE `data:` lines arrive. Wire format is
- * validated here — the JSON boundary — and nowhere else.
+ * DeepSeek chat-completions provider: POSTs with `stream: true`, yields
+ * `choices[0].delta.content` as SSE `data:` lines arrive, and accumulates
+ * `delta.tool_calls` fragments (id/name arrive once, arguments stream in
+ * pieces keyed by `index`) into one final `toolCalls` stream event. Wire
+ * format is validated here — the model-JSON boundary — and nowhere else.
  */
 export class DeepSeekProvider implements LlmProvider {
   readonly name = 'deepseek'
@@ -18,7 +36,7 @@ export class DeepSeekProvider implements LlmProvider {
     private readonly defaultModel = 'deepseek-chat',
   ) {}
 
-  async *stream(request: ModelRequest): AsyncIterable<string> {
+  async *stream(request: ModelRequest): AsyncIterable<StreamEvent> {
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -28,6 +46,10 @@ export class DeepSeekProvider implements LlmProvider {
       body: JSON.stringify({
         model: request.model ?? this.defaultModel,
         messages: request.messages,
+        tools: request.tools?.map((tool) => ({
+          type: 'function',
+          function: { name: tool.name, description: tool.description, parameters: tool.parameters },
+        })),
         stream: true,
       }),
     })
@@ -38,6 +60,7 @@ export class DeepSeekProvider implements LlmProvider {
       throw new Error('deepseek: empty response body')
     }
 
+    const calls: AccumulatedCall[] = []
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
@@ -52,11 +75,53 @@ export class DeepSeekProvider implements LlmProvider {
         newline = buffer.indexOf('\n')
         if (!line.startsWith('data:')) continue
         const data = line.slice(5).trim()
-        if (data === '[DONE]') return
+        if (data === '[DONE]') {
+          yield* finishCalls(calls)
+          return
+        }
         const parsed = JSON.parse(data) as { choices?: StreamChoice[] }
-        const delta = parsed.choices?.[0]?.delta?.content
-        if (delta !== undefined && delta !== '') yield delta
+        const delta = parsed.choices?.[0]?.delta
+        const content = delta?.content
+        if (content !== undefined && content !== '') yield { type: 'delta', delta: content }
+        if (delta?.tool_calls !== undefined) {
+          for (const fragment of delta.tool_calls) {
+            const index = fragment.index ?? 0
+            const slot = calls[index] ?? { id: '', name: '', argsString: '' }
+            if (fragment.id !== undefined) slot.id = fragment.id
+            if (fragment.function?.name !== undefined) slot.name = fragment.function.name
+            slot.argsString += fragment.function?.arguments ?? ''
+            calls[index] = slot
+          }
+        }
       }
     }
+    yield* finishCalls(calls)
+  }
+}
+
+/** Emit accumulated calls once, with arguments parsed at the boundary. */
+function* finishCalls(calls: readonly AccumulatedCall[]): Generator<StreamEvent> {
+  if (calls.length === 0) return
+  yield {
+    type: 'toolCalls',
+    calls: calls.map((call) => ({
+      id: call.id,
+      name: call.name,
+      args: parseArgs(call.argsString),
+    })),
+  }
+}
+
+/** Parse streamed JSON arguments; an empty body means no arguments. */
+function parseArgs(argsString: string): Record<string, unknown> {
+  if (argsString === '') return {}
+  try {
+    const parsed: unknown = JSON.parse(argsString)
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('tool arguments are not a JSON object')
+    }
+    return parsed as Record<string, unknown>
+  } catch (error) {
+    throw new Error(`deepseek: invalid tool arguments JSON '${argsString}': ${String(error)}`)
   }
 }
