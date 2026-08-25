@@ -30,6 +30,14 @@ import {
   type SessionEvent,
 } from '../index.ts'
 
+// A repo-root .env supplies DEEPSEEK_API_KEY when the process environment
+// does not carry it. Real environment variables win over file entries.
+try {
+  process.loadEnvFile()
+} catch {
+  // No .env (or unreadable): environment-only configuration.
+}
+
 const MOCK_SCRIPT = [
   'Hello from the mini-dsh mock model. Set DEEPSEEK_API_KEY to talk to the real thing.',
   'I am a scripted stand-in, but the session log, turns, tools, and streaming around me are real.',

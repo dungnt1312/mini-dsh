@@ -21,10 +21,21 @@ npm test         # vitest run
 npm run typecheck
 ```
 
+## Configuration
+
+Both bins load a repo-root `.env` (gitignored) before reading
+`DEEPSEEK_API_KEY`; variables already in the process environment win over
+file entries. Optional: `DEEPSEEK_BASE_URL` (defaults to the public API).
+Never commit the key.
+
+```sh
+echo 'DEEPSEEK_API_KEY=sk-...' > .env
+```
+
 ## Chat
 
 ```sh
-npm run chat           # REPL; uses DeepSeek when DEEPSEEK_API_KEY is set
+npm run chat           # REPL; uses DeepSeek when the key is configured
 npm run chat:mock      # REPL with the scripted mock provider
 npx tsx src/bins/headless.ts --mock --message "hello"   # one-shot
 ```

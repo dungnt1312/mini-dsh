@@ -11,6 +11,14 @@ import { DeepSeekProvider } from '../harness/llm/deepseek.ts'
 import { MockLlmProvider } from '../harness/llm/mock.ts'
 import type { ApprovalMode } from '../harness/approval/policy.ts'
 
+// A repo-root .env supplies DEEPSEEK_API_KEY when the process environment
+// does not carry it. Real environment variables win over file entries.
+try {
+  process.loadEnvFile()
+} catch {
+  // No .env (or unreadable): environment-only configuration.
+}
+
 interface CliOptions {
   readonly port: number
   readonly root: string
@@ -19,7 +27,7 @@ interface CliOptions {
 }
 
 function parseArgs(argv: readonly string[]): CliOptions {
-  let port = 3080
+  let port = 3082
   let root = process.cwd()
   let mock = false
   let yolo = false
