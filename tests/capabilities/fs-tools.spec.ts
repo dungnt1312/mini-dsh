@@ -73,4 +73,22 @@ describe('fs tools', () => {
   it('reading a missing file fails loud', async () => {
     await expect(tool('read').execute({ path: 'nope.ts' })).rejects.toThrow(/ENOENT/)
   })
+
+  it('tools follow a live root accessor when the folder switches', async () => {
+    const rootB = await fs.mkdtemp(path.join(tmpdir(), 'mini-dsh-fs-b-'))
+    let current = root
+    const dynamic = new Map(fsTools(() => current).map((t) => [t.name, t]))
+    const writeTool = dynamic.get('write')
+    if (writeTool === undefined) throw new Error('test setup: missing write tool')
+
+    await writeTool.execute({ path: 'switch.txt', content: 'first' })
+    expect((await fs.readFile(path.join(root, 'switch.txt'), 'utf8')).trim()).toBe('first')
+
+    current = rootB
+    await writeTool.execute({ path: 'switch.txt', content: 'second' })
+    // The second write landed in the new root; the old root keeps its file.
+    expect((await fs.readFile(path.join(rootB, 'switch.txt'), 'utf8')).trim()).toBe('second')
+    expect((await fs.readFile(path.join(root, 'switch.txt'), 'utf8')).trim()).toBe('first')
+    await fs.rm(rootB, { recursive: true, force: true })
+  })
 })

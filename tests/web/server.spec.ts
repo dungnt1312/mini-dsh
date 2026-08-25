@@ -10,6 +10,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
   MockLlmProvider,
   createWebServer,
+  type LlmProvider,
+  type ModelRequest,
   type WebEnvelope,
   type WebServer,
 } from 'mini-dsh'
@@ -28,8 +30,11 @@ afterAll(async () => {
 })
 
 /** Start a server with the scripted provider against the temp workspace. */
-async function start(steps: readonly (string | { toolCalls: readonly { name: string; args: Record<string, unknown> }[] })[]): Promise<void> {
-  server = await createWebServer({ root, provider: new MockLlmProvider(steps) })
+async function start(
+  steps: readonly (string | { toolCalls: readonly { name: string; args: Record<string, unknown> }[] })[],
+  provider?: LlmProvider,
+): Promise<void> {
+  server = await createWebServer({ root, provider: provider ?? new MockLlmProvider(steps) })
   baseUrl = server.url
 }
 
@@ -86,10 +91,85 @@ async function post(pathname: string, body?: unknown): Promise<Response> {
 }
 
 describe('web server', () => {
-  it('reports the active provider through /api/meta', async () => {
+  it('reports provider, model, folder, and offered models through /api/meta', async () => {
     await start(['x'])
-    const meta = (await (await fetch(`${baseUrl}/api/meta`)).json()) as { provider: string }
+    const meta = (await (await fetch(`${baseUrl}/api/meta`)).json()) as {
+      provider: string
+      model: string
+      folder: string
+      models: string[]
+    }
     expect(meta.provider).toBe('mock')
+    expect(meta.model).toBe('mock')
+    expect(meta.models).toEqual(['mock'])
+    expect(meta.folder).toBe(root)
+  })
+
+  it('switching the model stamps every request through agent/request', async () => {
+    const seen: ModelRequest[] = []
+    const recorder: LlmProvider = {
+      name: 'recorder',
+      models: ['fast', 'smart'],
+      stream(request) {
+        seen.push(request)
+        return new MockLlmProvider(['answered']).stream(request)
+      },
+    }
+    await start(['answered'], recorder)
+    const initial = (await (await fetch(`${baseUrl}/api/meta`)).json()) as { model: string }
+    expect(initial.model).toBe('fast')
+
+    const switched = await fetch(`${baseUrl}/api/model`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'smart' }),
+    })
+    expect(switched.status).toBe(200)
+
+    const unknown = await fetch(`${baseUrl}/api/model`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'nope' }),
+    })
+    expect(unknown.status).toBe(400)
+
+    const { id } = (await (await post('/api/sessions')).json()) as { id: string }
+    const sse = new SseReader(await fetch(`${baseUrl}/api/sessions/${id}/events`))
+    void post(`/api/sessions/${id}/messages`, { content: 'go' })
+    await sse.until((envelope) => envelope.kind === 'session' && envelope.event.type === 'turn/end')
+    expect(seen.at(-1)?.model).toBe('smart')
+  })
+
+  it('switching the folder re-scopes the filesystem tools', async () => {
+    await start([{ toolCalls: [{ name: 'read', args: { path: 'note.txt' } }] }, 'read it'])
+    const other = await fs.mkdtemp(path.join(tmpdir(), 'mini-dsh-web-other-'))
+    await fs.writeFile(path.join(other, 'note.txt'), 'content in the new folder', 'utf8')
+
+    const bad = await fetch(`${baseUrl}/api/folder`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: path.join(root, 'missing') }),
+    })
+    expect(bad.status).toBe(400)
+
+    const switched = await fetch(`${baseUrl}/api/folder`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: other }),
+    })
+    expect(switched.status).toBe(200)
+
+    const { id } = (await (await post('/api/sessions')).json()) as { id: string }
+    const sse = new SseReader(await fetch(`${baseUrl}/api/sessions/${id}/events`))
+    void post(`/api/sessions/${id}/messages`, { content: 'read the note' })
+    const envelopes = await sse.until((envelope) => envelope.kind === 'session' && envelope.event.type === 'turn/end')
+    const result = envelopes.find((e) => e.kind === 'session' && e.event.type === 'tool/result')
+    expect(result?.kind === 'session' && result.event.type === 'tool/result' && result.event.ok).toBe(true)
+    expect(result?.kind === 'session' && result.event.type === 'tool/result' && result.event.output).toBe('content in the new folder')
+
+    const meta = (await (await fetch(`${baseUrl}/api/meta`)).json()) as { folder: string }
+    expect(meta.folder).toBe(other)
+    await fs.rm(other, { recursive: true, force: true })
   })
 
   it('creates and lists sessions, deriving a title from the first message', async () => {

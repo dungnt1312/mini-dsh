@@ -56,5 +56,7 @@ export type StreamEvent =
 export interface LlmProvider {
   /** Provider name used for `ctx.llm.use()` selection. */
   readonly name: string
+  /** Model names this provider offers, for UI selection. */
+  readonly models?: readonly string[]
   stream(request: ModelRequest): AsyncIterable<StreamEvent>
 }

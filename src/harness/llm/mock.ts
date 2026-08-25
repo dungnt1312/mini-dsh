@@ -19,6 +19,7 @@ function isToolStep(step: MockScriptStep): step is { content?: string; toolCalls
  */
 export class MockLlmProvider implements LlmProvider {
   readonly name = 'mock'
+  readonly models: readonly string[] = ['mock']
   private index = 0
 
   constructor(private readonly steps: readonly MockScriptStep[]) {}

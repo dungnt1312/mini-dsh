@@ -33,6 +33,15 @@ export interface SessionListing {
   readonly eventCount: number
 }
 
+/** Server state: provider, active model, workspace folder. */
+export interface Meta {
+  readonly provider: string
+  readonly model: string
+  readonly folder: string
+  /** Model names the provider offers, for the selector. */
+  readonly models: readonly string[]
+}
+
 export interface PendingApproval {
   readonly approvalId: string
   readonly call: ToolCall

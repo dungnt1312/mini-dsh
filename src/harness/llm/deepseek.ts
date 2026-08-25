@@ -69,6 +69,9 @@ function toWireMessages(messages: readonly ModelMessage[]): WireMessage[] {
 export class DeepSeekProvider implements LlmProvider {
   readonly name = 'deepseek'
 
+  /** Model names this provider offers, for the web UI selector. */
+  readonly models: readonly string[] = ['deepseek-chat', 'deepseek-reasoner', 'deepseek-v4-flash', 'deepseek-v4-pro']
+
   constructor(
     private readonly apiKey: string,
     private readonly baseUrl = 'https://api.deepseek.com',
@@ -121,7 +124,9 @@ export class DeepSeekProvider implements LlmProvider {
         const parsed = JSON.parse(data) as { choices?: StreamChoice[] }
         const delta = parsed.choices?.[0]?.delta
         const content = delta?.content
-        if (content !== undefined && content !== '') yield { type: 'delta', delta: content }
+        // Reasoning-capable models emit `content: null` while thinking; the
+        // thinking text is not content and must not reach the transcript.
+        if (typeof content === 'string' && content !== '') yield { type: 'delta', delta: content }
         if (delta?.tool_calls !== undefined) {
           for (const fragment of delta.tool_calls) {
             const index = fragment.index ?? 0

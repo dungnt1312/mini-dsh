@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { answerApproval, createSession, fetchMeta, listSessions, sendMessage, subscribeEvents, type StreamState } from './api.ts'
+import { answerApproval, createSession, fetchMeta, listSessions, sendMessage, setFolder, setModel, subscribeEvents, type StreamState } from './api.ts'
 import { ApprovalBanner, Transcript } from './Transcript.tsx'
-import type { PendingApproval, SessionListing, SseEvent } from './types.ts'
+import type { Meta, PendingApproval, SessionListing, SseEvent } from './types.ts'
 
 const SUGGESTIONS: readonly string[] = [
   'Liệt kê các file trong workspace này',
@@ -31,13 +31,17 @@ export function App() {
   const [events, setEvents] = useState<readonly SseEvent[]>([])
   const [approvals, setApprovals] = useState<readonly PendingApproval[]>([])
   const [draft, setDraft] = useState('')
-  const [provider, setProvider] = useState<string | null>(null)
+  const [meta, setMeta] = useState<Meta | null>(null)
+  const [folderDraft, setFolderDraft] = useState('')
   const [stream, setStream] = useState<StreamState>('connecting')
   const [error, setError] = useState<string | null>(null)
   const seenSeq = useRef(0)
 
   useEffect(() => {
-    void fetchMeta().then((meta) => setProvider(meta.provider)).catch(() => setProvider('unknown'))
+    void fetchMeta().then((fetched) => {
+      setMeta(fetched)
+      setFolderDraft(fetched.folder)
+    }).catch(() => setError('server unreachable'))
     void (async () => {
       try {
         let listing = await listSessions()
@@ -149,7 +153,7 @@ export function App() {
         <div className="sidebar-foot">
           <span className={`conn-dot ${stream}`} aria-hidden="true" />
           <span className="conn-label">{connectionLabel(stream)}</span>
-          {provider !== null ? <span className="provider-pill">{provider}</span> : null}
+          {meta !== null ? <span className="provider-pill">{meta.provider}</span> : null}
         </div>
       </aside>
       <main className="chat">
@@ -158,9 +162,50 @@ export function App() {
           <div className="chat-head-right">
             <span className={`conn-dot ${stream}`} aria-hidden="true" />
             <span className="conn-label">{connectionLabel(stream)}</span>
-            {provider !== null ? <span className="provider-pill">{provider}</span> : null}
+            {meta !== null ? <span className="provider-pill">{meta.provider}</span> : null}
           </div>
         </header>
+        <div className="toolbar">
+          <label className="toolbar-field">
+            <span className="toolbar-label">model</span>
+            <select
+              className="model-select"
+              value={meta?.model ?? ''}
+              disabled={meta === null}
+              onChange={(event) => {
+                const model = event.target.value
+                void setModel(model).then(setMeta).catch((cause: unknown) => setError(String(cause)))
+              }}
+            >
+              {(meta?.models ?? []).map((model) => (
+                <option key={model} value={model}>{model}</option>
+              ))}
+            </select>
+          </label>
+          <form
+            className="toolbar-field folder"
+            onSubmit={(event) => {
+              event.preventDefault()
+              const folder = folderDraft.trim()
+              if (folder === '') return
+              void setFolder(folder).then((updated) => {
+                setMeta(updated)
+                setFolderDraft(updated.folder)
+              }).catch((cause: unknown) => setError(String(cause)))
+            }}
+          >
+            <span className="toolbar-label">folder</span>
+            <input
+              className="folder-input"
+              value={folderDraft}
+              placeholder="/path/to/workspace"
+              onChange={(event) => setFolderDraft(event.target.value)}
+            />
+            <button type="submit" className="folder-apply" disabled={folderDraft.trim() === ''}>
+              use
+            </button>
+          </form>
+        </div>
         {error !== null ? <div className="error-bar" onClick={() => setError(null)}>{error}</div> : null}
         {events.length === 0 ? (
           <div className="empty">

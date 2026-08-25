@@ -22,6 +22,16 @@ export function resolveWithin(root: string, target: string): string {
   return abs
 }
 
+/**
+ * The workspace root may be a fixed path or a live accessor, so the tools
+ * follow a folder switch without being re-registered.
+ */
+export type WorkspaceRoot = string | (() => string)
+
+function rootOf(root: WorkspaceRoot): () => string {
+  return typeof root === 'function' ? root : () => root
+}
+
 /** Truncate a tool output to its cap, keeping the head and a marker. */
 function cap(output: string, limit: number): string {
   if (output.length <= limit) return output
@@ -84,7 +94,7 @@ function argString(args: Record<string, unknown>, key: string): string {
 }
 
 /** The `read` tool: file content, size-capped. */
-export function readTool(root: string): ToolDefinition {
+export function readTool(getRoot: () => string): ToolDefinition {
   return {
     name: 'read',
     description: 'Read a text file inside the workspace and return its content.',
@@ -94,7 +104,7 @@ export function readTool(root: string): ToolDefinition {
       required: ['path'],
     },
     async execute(args) {
-      const abs = resolveWithin(root, argString(args, 'path'))
+      const abs = resolveWithin(getRoot(), argString(args, 'path'))
       const content = await fs.readFile(abs, 'utf8')
       return cap(content, READ_CAP)
     },
@@ -102,7 +112,7 @@ export function readTool(root: string): ToolDefinition {
 }
 
 /** The `write` tool: create or overwrite a file, creating parent directories. */
-export function writeTool(root: string): ToolDefinition {
+export function writeTool(getRoot: () => string): ToolDefinition {
   return {
     name: 'write',
     description: 'Create or overwrite a text file inside the workspace.',
@@ -115,7 +125,7 @@ export function writeTool(root: string): ToolDefinition {
       required: ['path', 'content'],
     },
     async execute(args) {
-      const abs = resolveWithin(root, argString(args, 'path'))
+      const abs = resolveWithin(getRoot(), argString(args, 'path'))
       await fs.mkdir(path.dirname(abs), { recursive: true })
       await fs.writeFile(abs, argString(args, 'content'), 'utf8')
       return `wrote ${argString(args, 'path')}`
@@ -124,7 +134,7 @@ export function writeTool(root: string): ToolDefinition {
 }
 
 /** The `edit` tool: replace the first occurrence of `old` with `new`. */
-export function editTool(root: string): ToolDefinition {
+export function editTool(getRoot: () => string): ToolDefinition {
   return {
     name: 'edit',
     description: 'Replace the first occurrence of `old` with `new` in a workspace file.',
@@ -139,7 +149,7 @@ export function editTool(root: string): ToolDefinition {
     },
     async execute(args) {
       const rel = argString(args, 'path')
-      const abs = resolveWithin(root, rel)
+      const abs = resolveWithin(getRoot(), rel)
       const old = argString(args, 'old')
       const content = await fs.readFile(abs, 'utf8')
       const index = content.indexOf(old)
@@ -153,7 +163,7 @@ export function editTool(root: string): ToolDefinition {
 }
 
 /** The `glob` tool: match relative paths against a `*`/`**` pattern. */
-export function globTool(root: string): ToolDefinition {
+export function globTool(getRoot: () => string): ToolDefinition {
   return {
     name: 'glob',
     description: 'List workspace files matching a glob pattern (`*` within a segment, `**` across segments).',
@@ -163,7 +173,7 @@ export function globTool(root: string): ToolDefinition {
       required: ['pattern'],
     },
     async execute(args) {
-      const absRoot = path.resolve(root)
+      const absRoot = path.resolve(getRoot())
       const pattern = argString(args, 'pattern')
       const regex = globToRegExp(pattern)
       const files = (await walk(absRoot))
@@ -176,7 +186,7 @@ export function globTool(root: string): ToolDefinition {
 }
 
 /** The `grep` tool: regex search across workspace files, `path:line: text`. */
-export function grepTool(root: string): ToolDefinition {
+export function grepTool(getRoot: () => string): ToolDefinition {
   return {
     name: 'grep',
     description: 'Search workspace files with a regular expression; returns `path:line: text` matches.',
@@ -187,7 +197,7 @@ export function grepTool(root: string): ToolDefinition {
     },
     async execute(args) {
       const regex = new RegExp(argString(args, 'pattern'))
-      const absRoot = path.resolve(root)
+      const absRoot = path.resolve(getRoot())
       const lines: string[] = []
       for (const full of await walk(absRoot)) {
         const rel = path.relative(absRoot, full)
@@ -210,7 +220,8 @@ export function grepTool(root: string): ToolDefinition {
   }
 }
 
-/** All filesystem tools bound to one root. */
-export function fsTools(root: string): ToolDefinition[] {
-  return [readTool(root), writeTool(root), editTool(root), globTool(root), grepTool(root)]
+/** All filesystem tools bound to one root (fixed or live accessor). */
+export function fsTools(root: WorkspaceRoot): ToolDefinition[] {
+  const getRoot = rootOf(root)
+  return [readTool(getRoot), writeTool(getRoot), editTool(getRoot), globTool(getRoot), grepTool(getRoot)]
 }

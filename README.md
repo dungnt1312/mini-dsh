@@ -47,6 +47,12 @@ npm run build:web      # build the React client into web-dist/
 npm run web            # serve it at http://127.0.0.1:3080 (--mock, --yolo, --root, --port)
 ```
 
+The toolbar switches the active model (`PUT /api/model`, offered names come
+from the provider's `models` list; every step's request is stamped through
+the `agent/request` waterfall) and the workspace folder (`PUT /api/folder`,
+re-scoping the fs/bash tools through live root accessors without
+re-registering them).
+
 The browser client is stateless by design: it holds no model state of its
 own — the transcript is projected from the durable session events streamed
 over SSE, approval questions arrive on the same stream, and answers go back

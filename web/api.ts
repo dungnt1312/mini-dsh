@@ -1,4 +1,4 @@
-import type { Envelope, SessionListing } from './types.ts'
+import type { Envelope, Meta, SessionListing } from './types.ts'
 
 async function json<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -31,9 +31,27 @@ export function answerApproval(approvalId: string, allow: boolean): Promise<void
   }).then((r) => json<{ answered: boolean }>(r)).then(() => undefined)
 }
 
-/** Server-side metadata: which LLM provider the harness is using. */
-export function fetchMeta(): Promise<{ provider: string }> {
-  return fetch('/api/meta').then((r) => json<{ provider: string }>(r))
+/** Server-side metadata: provider, active model, and workspace folder. */
+export function fetchMeta(): Promise<Meta> {
+  return fetch('/api/meta').then((r) => json<Meta>(r))
+}
+
+/** Switch the active model; rejects with the available list on an unknown name. */
+export function setModel(model: string): Promise<Meta> {
+  return fetch('/api/model', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model }),
+  }).then((r) => json<{ model: string }>(r)).then(() => fetchMeta())
+}
+
+/** Switch the workspace folder the tools are confined to. */
+export function setFolder(path: string): Promise<Meta> {
+  return fetch('/api/folder', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path }),
+  }).then((r) => json<{ folder: string }>(r)).then(() => fetchMeta())
 }
 
 /** Live connection state of one session's event stream. */

@@ -50,10 +50,12 @@ export type WebEnvelope =
 
 /** Options for {@link createWebServer}. */
 export interface WebServerOptions {
-  /** Workspace root the filesystem tools are confined to. */
+  /** Initial workspace root the filesystem tools are confined to; switchable at runtime. */
   readonly root: string
   /** The LLM provider to register (mock for keyless runs, DeepSeek otherwise). */
   readonly provider: LlmProvider
+  /** Initial model name; defaults to the provider's first offered model. */
+  readonly model?: string
   /** Per-tool approval modes; defaults allow reads, ask on writes and bash. */
   readonly policy?: Readonly<Record<string, ApprovalMode>>
   /** Mode for tools the policy map does not name; defaults to `ask`. */
@@ -111,10 +113,22 @@ export async function createWebServer(options: WebServerOptions): Promise<WebSer
   kernel.ctx.plugin(ToolsService)
   kernel.ctx.plugin(AgentsService)
   kernel.ctx.llm.register(options.provider)
-  for (const tool of fsTools(options.root)) {
+
+  const availableModels = options.provider.models ?? []
+  const state = {
+    model: options.model ?? availableModels[0] ?? 'default',
+    folder: options.root,
+  }
+  for (const tool of fsTools(() => state.folder)) {
     kernel.ctx.tools.register(tool)
   }
-  kernel.ctx.tools.register(bashTool())
+  kernel.ctx.tools.register(bashTool({ cwd: () => state.folder }))
+
+  // The model selector rides the agent/request seam: every step's request
+  // is stamped with the selected model before the provider sees it.
+  kernel.ctx.on('agent/request', async (request, next) => {
+    return next({ ...request, model: state.model })
+  })
 
   const sessions = new Map<SessionId, SessionEntry>()
   const pending = new Map<string, PendingApproval>()
@@ -141,7 +155,7 @@ export async function createWebServer(options: WebServerOptions): Promise<WebSer
     ?? fileURLToPath(new URL('../../web-dist/', import.meta.url))
 
   const server = createServer((req, res) => {
-    handle(req, res, { kernel, sessions, pending, staticDir, providerName: options.provider.name }).catch((error: unknown) => {
+    handle(req, res, { kernel, sessions, pending, staticDir, providerName: options.provider.name, state, availableModels }).catch((error: unknown) => {
       if (!res.headersSent) {
         res.writeHead(500, { 'content-type': 'application/json' })
       }
@@ -182,6 +196,8 @@ interface HandlerDeps {
   readonly pending: Map<string, PendingApproval>
   readonly staticDir: string
   readonly providerName: string
+  readonly state: { model: string; folder: string }
+  readonly availableModels: readonly string[]
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse, deps: HandlerDeps): Promise<void> {
@@ -212,7 +228,47 @@ async function handleApi(
   }
 
   if (req.method === 'GET' && pathname === '/api/meta') {
-    send(200, { provider: deps.providerName })
+    send(200, {
+      provider: deps.providerName,
+      model: deps.state.model,
+      folder: deps.state.folder,
+      models: deps.availableModels,
+    })
+    return
+  }
+
+  if (req.method === 'PUT' && pathname === '/api/model') {
+    const body = await readJson(req)
+    const model = body['model']
+    if (typeof model !== 'string' || !deps.availableModels.includes(model)) {
+      send(400, { error: `unknown model '${String(model)}'; available: ${deps.availableModels.join(', ') || 'none'}` })
+      return
+    }
+    deps.state.model = model
+    send(200, { model: deps.state.model })
+    return
+  }
+
+  if (req.method === 'PUT' && pathname === '/api/folder') {
+    const body = await readJson(req)
+    const folder = body['path']
+    if (typeof folder !== 'string' || folder.trim() === '') {
+      send(400, { error: 'body needs a non-empty string path' })
+      return
+    }
+    let stat
+    try {
+      stat = await fs.stat(folder)
+    } catch {
+      send(400, { error: `no such directory '${folder}'` })
+      return
+    }
+    if (!stat.isDirectory()) {
+      send(400, { error: `'${folder}' is not a directory` })
+      return
+    }
+    deps.state.folder = folder
+    send(200, { folder: deps.state.folder })
     return
   }
 
