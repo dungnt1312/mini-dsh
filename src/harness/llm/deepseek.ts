@@ -1,4 +1,4 @@
-import type { LlmProvider, ModelRequest, StreamEvent, ToolCall } from './types.ts'
+import type { LlmProvider, ModelMessage, ModelRequest, StreamEvent, ToolCall } from './types.ts'
 
 interface StreamChoice {
   delta?: {
@@ -18,6 +18,45 @@ interface AccumulatedCall {
   id: string
   name: string
   argsString: string
+}
+
+/** One message in the OpenAI-style wire format DeepSeek accepts. */
+interface WireMessage {
+  role: string
+  content: string
+  tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[]
+  tool_call_id?: string
+}
+
+/**
+ * Translate the internal message vocabulary to the wire format at the wire
+ * boundary: assistant `toolCalls` become `tool_calls` with JSON-string
+ * `arguments`, and tool answers carry `tool_call_id` instead of
+ * `toolCallId`. The inverse mapping happens on streamed `tool_calls` below,
+ * so the internal vocabulary stays provider-neutral.
+ */
+function toWireMessages(messages: readonly ModelMessage[]): WireMessage[] {
+  return messages.map((message) => {
+    if (message.role === 'assistant' && message.toolCalls !== undefined) {
+      return {
+        role: 'assistant',
+        content: message.content,
+        tool_calls: message.toolCalls.map((call) => ({
+          id: call.id,
+          type: 'function' as const,
+          function: { name: call.name, arguments: JSON.stringify(call.args) },
+        })),
+      }
+    }
+    if (message.role === 'tool') {
+      return {
+        role: 'tool',
+        content: message.content,
+        tool_call_id: message.toolCallId ?? '',
+      }
+    }
+    return { role: message.role, content: message.content }
+  })
 }
 
 /**
@@ -45,7 +84,7 @@ export class DeepSeekProvider implements LlmProvider {
       },
       body: JSON.stringify({
         model: request.model ?? this.defaultModel,
-        messages: request.messages,
+        messages: toWireMessages(request.messages),
         tools: request.tools?.map((tool) => ({
           type: 'function',
           function: { name: tool.name, description: tool.description, parameters: tool.parameters },
