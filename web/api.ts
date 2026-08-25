@@ -31,12 +31,30 @@ export function answerApproval(approvalId: string, allow: boolean): Promise<void
   }).then((r) => json<{ answered: boolean }>(r)).then(() => undefined)
 }
 
+/** Server-side metadata: which LLM provider the harness is using. */
+export function fetchMeta(): Promise<{ provider: string }> {
+  return fetch('/api/meta').then((r) => json<{ provider: string }>(r))
+}
+
+/** Live connection state of one session's event stream. */
+export type StreamState = 'connecting' | 'open' | 'reconnecting'
+
 /**
- * Subscribe to one session's event stream. Returns a disposer closing the
- * `EventSource`; the browser reconnects on its own until then.
+ * Subscribe to one session's event stream. `onState` reports the EventSource
+ * lifecycle (initial connect, open, and the automatic reconnect on drop).
+ * Returns a disposer closing the source; the browser reconnects on its own
+ * until then.
  */
-export function subscribeEvents(sessionId: string, onEnvelope: (envelope: Envelope) => void): () => void {
+export function subscribeEvents(
+  sessionId: string,
+  onEnvelope: (envelope: Envelope) => void,
+  onState?: (state: StreamState) => void,
+): () => void {
   const source = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/events`)
+  source.onopen = () => onState?.('open')
+  source.onerror = () => {
+    onState?.(source.readyState === EventSource.CONNECTING ? 'reconnecting' : 'connecting')
+  }
   source.onmessage = (message: MessageEvent<string>) => {
     onEnvelope(JSON.parse(message.data) as Envelope)
   }

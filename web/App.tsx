@@ -1,7 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { answerApproval, createSession, listSessions, sendMessage, subscribeEvents } from './api.ts'
+import { answerApproval, createSession, fetchMeta, listSessions, sendMessage, subscribeEvents, type StreamState } from './api.ts'
 import { ApprovalBanner, Transcript } from './Transcript.tsx'
 import type { PendingApproval, SessionListing, SseEvent } from './types.ts'
+
+const SUGGESTIONS: readonly string[] = [
+  'Liệt kê các file trong workspace này',
+  'Tóm tắt kiến trúc của project bằng tiếng Việt',
+  'Tìm chỗ có từ "tool" trong code rồi giải thích',
+]
+
+function connectionLabel(state: StreamState): string {
+  switch (state) {
+    case 'open':
+      return 'stream live'
+    case 'reconnecting':
+      return 'reconnecting…'
+    case 'connecting':
+      return 'connecting…'
+  }
+}
 
 /**
  * The web client: a session sidebar plus one chat pane. All chat state is
@@ -14,10 +31,13 @@ export function App() {
   const [events, setEvents] = useState<readonly SseEvent[]>([])
   const [approvals, setApprovals] = useState<readonly PendingApproval[]>([])
   const [draft, setDraft] = useState('')
+  const [provider, setProvider] = useState<string | null>(null)
+  const [stream, setStream] = useState<StreamState>('connecting')
   const [error, setError] = useState<string | null>(null)
   const seenSeq = useRef(0)
 
   useEffect(() => {
+    void fetchMeta().then((meta) => setProvider(meta.provider)).catch(() => setProvider('unknown'))
     void (async () => {
       try {
         let listing = await listSessions()
@@ -38,21 +58,26 @@ export function App() {
     seenSeq.current = 0
     setEvents([])
     setApprovals([])
-    const dispose = subscribeEvents(current, (envelope) => {
-      if (envelope.kind === 'snapshot') {
-        setEvents(envelope.events)
-        seenSeq.current = envelope.events.at(-1)?.seq ?? 0
-        return
-      }
-      if (envelope.kind === 'session') {
-        const { event } = envelope
-        if (event.seq <= seenSeq.current) return
-        seenSeq.current = event.seq
-        setEvents((prev) => [...prev, event])
-        return
-      }
-      setApprovals((prev) => [...prev, { approvalId: envelope.approvalId, call: envelope.call }])
-    })
+    setStream('connecting')
+    const dispose = subscribeEvents(
+      current,
+      (envelope) => {
+        if (envelope.kind === 'snapshot') {
+          setEvents(envelope.events)
+          seenSeq.current = envelope.events.at(-1)?.seq ?? 0
+          return
+        }
+        if (envelope.kind === 'session') {
+          const { event } = envelope
+          if (event.seq <= seenSeq.current) return
+          seenSeq.current = event.seq
+          setEvents((prev) => [...prev, event])
+          return
+        }
+        setApprovals((prev) => [...prev, { approvalId: envelope.approvalId, call: envelope.call }])
+      },
+      setStream,
+    )
     return dispose
   }, [current])
 
@@ -95,14 +120,17 @@ export function App() {
     }
   }, [])
 
+  const activeTitle = sessions.find((session) => session.id === current)?.title ?? ''
+
   return (
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
+          <span className="brand-mark" aria-hidden="true" />
           mini-dsh<span className="accent">.web</span>
         </div>
         <button type="button" className="new-session" onClick={() => void newSession()}>
-          + new session
+          <span aria-hidden="true">＋</span> new session
         </button>
         <ul className="session-list">
           {sessions.map((session) => (
@@ -118,10 +146,46 @@ export function App() {
             </li>
           ))}
         </ul>
+        <div className="sidebar-foot">
+          <span className={`conn-dot ${stream}`} aria-hidden="true" />
+          <span className="conn-label">{connectionLabel(stream)}</span>
+          {provider !== null ? <span className="provider-pill">{provider}</span> : null}
+        </div>
       </aside>
       <main className="chat">
+        <header className="chat-head">
+          <h1 className="chat-title">{activeTitle || 'untitled session'}</h1>
+          <div className="chat-head-right">
+            <span className={`conn-dot ${stream}`} aria-hidden="true" />
+            <span className="conn-label">{connectionLabel(stream)}</span>
+            {provider !== null ? <span className="provider-pill">{provider}</span> : null}
+          </div>
+        </header>
         {error !== null ? <div className="error-bar" onClick={() => setError(null)}>{error}</div> : null}
-        <Transcript events={events} />
+        {events.length === 0 ? (
+          <div className="empty">
+            <div className="empty-mark" aria-hidden="true">⌬</div>
+            <p className="empty-title">Bắt đầu một hội thoại</p>
+            <p className="empty-sub">Agent đọc file, chạy bash và xin phép trước khi thay đổi.</p>
+            <div className="suggestions">
+              {SUGGESTIONS.map((suggestion) => (
+                <button
+                  key={suggestion}
+                  type="button"
+                  className="suggestion"
+                  disabled={current === null}
+                  onClick={() => {
+                    void sendMessage(current ?? '', suggestion).then(() => void refreshList())
+                  }}
+                >
+                  {suggestion}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <Transcript events={events} />
+        )}
         <ApprovalBanner approvals={approvals} onAnswer={(id, allow) => void answer(id, allow)} />
         <form
           className="composer"
@@ -130,15 +194,29 @@ export function App() {
             void send()
           }}
         >
-          <input
+          <textarea
+            className="composer-input"
             value={draft}
-            placeholder={current === null ? 'connecting…' : 'message the agent'}
+            rows={1}
+            placeholder={current === null ? 'connecting…' : 'Nhắn tin cho agent…'}
             disabled={current === null}
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) => {
+              setDraft(event.target.value)
+              const el = event.currentTarget
+              el.style.height = 'auto'
+              el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault()
+                void send()
+              }
+            }}
           />
-          <button type="submit" disabled={draft.trim() === '' || current === null}>
-            send
+          <button type="submit" className="send" disabled={draft.trim() === '' || current === null}>
+            <span aria-hidden="true">↑</span>
           </button>
+          <span className="composer-hint">enter để gửi · shift+enter xuống dòng</span>
         </form>
       </main>
     </div>

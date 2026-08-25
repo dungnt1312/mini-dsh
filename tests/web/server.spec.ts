@@ -86,6 +86,12 @@ async function post(pathname: string, body?: unknown): Promise<Response> {
 }
 
 describe('web server', () => {
+  it('reports the active provider through /api/meta', async () => {
+    await start(['x'])
+    const meta = (await (await fetch(`${baseUrl}/api/meta`)).json()) as { provider: string }
+    expect(meta.provider).toBe('mock')
+  })
+
   it('creates and lists sessions, deriving a title from the first message', async () => {
     await start(['hello there'])
     const created = await post('/api/sessions')

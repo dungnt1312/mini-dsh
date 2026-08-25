@@ -1,6 +1,28 @@
 import { useEffect, useRef, useState } from 'react'
+import { Markdown } from './Markdown.tsx'
 import { projectItems } from './project.ts'
 import type { PendingApproval, SseEvent } from './types.ts'
+
+const TOOL_GLYPHS: Readonly<Record<string, string>> = {
+  read: '⌕',
+  write: '✎',
+  edit: '✎',
+  glob: '⌗',
+  grep: '⌕',
+  bash: '>_',
+}
+
+/** Small monogram chip for a tool call, colored by capability family. */
+function ToolGlyph({ name }: { readonly name: string }) {
+  const glyph = TOOL_GLYPHS[name] ?? 'ƒ'
+  const family = name === 'bash' ? 'shell' : 'fs'
+  return <span className={`tool-glyph ${family}`}>{glyph}</span>
+}
+
+function formatTime(ts?: number): string {
+  if (ts === undefined) return ''
+  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
 
 /** The chat pane: transcript projected from the log, auto-scrolled to the tail. */
 export function Transcript({ events }: { readonly events: readonly SseEvent[] }) {
@@ -24,29 +46,38 @@ export function Transcript({ events }: { readonly events: readonly SseEvent[] })
         switch (item.kind) {
           case 'user':
             return (
-              <div key={index} className="bubble user">
+              <div key={index} className="bubble user" title={formatTime(item.ts)}>
                 {item.content}
               </div>
             )
           case 'assistant':
             return (
-              <div key={index} className="bubble assistant">
-                {item.content !== '' ? item.content : null}
-                {item.live ? <span className="cursor">▍</span> : null}
+              <div key={index} className={`bubble assistant ${item.live ? 'live' : ''}`} title={formatTime(item.ts)}>
+                {item.content !== '' ? <Markdown content={item.content} /> : null}
+                {item.live ? <span className="cursor" aria-hidden="true" /> : null}
                 {item.toolCalls?.map((call) => (
-                  <div key={call.id} className="call-preview">
-                    wants {call.name}({JSON.stringify(call.args)})
-                  </div>
+                  <span key={call.id} className="call-preview">
+                    requested <strong>{call.name}</strong>
+                  </span>
                 ))}
               </div>
             )
           case 'tool':
             return (
-              <div key={item.call.id} className={`tool-card ${item.result?.ok === false ? 'failed' : ''}`}>
+              <div key={item.call.id} className={`tool-card ${item.result === undefined ? 'pending' : item.result.ok ? 'ok' : 'failed'}`}>
                 <div className="tool-head">
-                  {item.call.name}
-                  <span className="tool-args">{JSON.stringify(item.call.args)}</span>
-                  {item.result === undefined ? <span className="tool-spin">running…</span> : null}
+                  <ToolGlyph name={item.call.name} />
+                  <span className="tool-name">{item.call.name}</span>
+                  <code className="tool-args">{JSON.stringify(item.call.args)}</code>
+                  {item.result === undefined ? (
+                    <span className="tool-spin" aria-label="running">
+                      <i /><i /><i />
+                    </span>
+                  ) : item.result.ok ? (
+                    <span className="tool-verdict ok">done</span>
+                  ) : (
+                    <span className="tool-verdict bad">failed</span>
+                  )}
                 </div>
                 {item.result !== undefined ? (
                   <pre className="tool-output">{item.result.output}</pre>
@@ -56,7 +87,7 @@ export function Transcript({ events }: { readonly events: readonly SseEvent[] })
           case 'status':
             return (
               <div key={index} className="status-line">
-                turn closed: {item.reason}
+                turn closed · {item.reason}
               </div>
             )
           default:
@@ -81,7 +112,8 @@ export function ApprovalBanner({
     <div className="approvals">
       {approvals.map(({ approvalId, call }) => (
         <div key={approvalId} className="approval">
-          <span>
+          <span className="approval-text">
+            <ToolGlyph name={call.name} />
             allow <strong>{call.name}</strong>
             <code>{JSON.stringify(call.args)}</code>?
           </span>

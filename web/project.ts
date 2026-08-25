@@ -2,15 +2,16 @@ import type { SseEvent, ToolCall } from './types.ts'
 
 /** View items projected from the durable log — the UI's deriveMessages(). */
 export type ViewItem =
-  | { readonly kind: 'user'; readonly content: string }
-  | { readonly kind: 'assistant'; readonly content: string; readonly live: boolean; readonly toolCalls?: readonly ToolCall[] }
-  | { readonly kind: 'tool'; readonly call: ToolCall; result?: { readonly ok: boolean; readonly output: string } }
+  | { readonly kind: 'user'; readonly content: string; readonly ts?: number }
+  | { readonly kind: 'assistant'; readonly content: string; readonly live: boolean; readonly ts?: number; readonly toolCalls?: readonly ToolCall[] }
+  | { readonly kind: 'tool'; readonly call: ToolCall; readonly ts?: number; result?: { readonly ok: boolean; readonly output: string } }
   | { readonly kind: 'status'; readonly reason: string }
 
 interface AssistantDraft {
   kind: 'assistant'
   content: string
   live: boolean
+  ts?: number
   toolCalls?: readonly ToolCall[]
 }
 
@@ -30,12 +31,12 @@ export function projectItems(events: readonly SseEvent[]): ViewItem[] {
   for (const event of events) {
     switch (event.type) {
       case 'user/message':
-        if (event.content !== undefined) items.push({ kind: 'user', content: event.content })
+        if (event.content !== undefined) items.push({ kind: 'user', content: event.content, ...(event.timestamp !== undefined ? { ts: event.timestamp } : {}) })
         break
       case 'assistant/chunk':
         if (event.delta === undefined) break
         if (draft === null) {
-          draft = { kind: 'assistant', content: '', live: true }
+          draft = { kind: 'assistant', content: '', live: true, ...(event.timestamp !== undefined ? { ts: event.timestamp } : {}) }
           items.push(draft)
         }
         draft.content += event.delta
@@ -52,6 +53,7 @@ export function projectItems(events: readonly SseEvent[]): ViewItem[] {
             kind: 'assistant',
             content,
             live: false,
+            ...(event.timestamp !== undefined ? { ts: event.timestamp } : {}),
             ...(event.toolCalls !== undefined ? { toolCalls: event.toolCalls } : {}),
           })
         }
@@ -59,7 +61,11 @@ export function projectItems(events: readonly SseEvent[]): ViewItem[] {
       }
       case 'tool/call': {
         if (event.call === undefined) break
-        const item: Extract<ViewItem, { kind: 'tool' }> = { kind: 'tool', call: event.call }
+        const item: Extract<ViewItem, { kind: 'tool' }> = {
+          kind: 'tool',
+          call: event.call,
+          ...(event.timestamp !== undefined ? { ts: event.timestamp } : {}),
+        }
         toolItems.set(event.call.id, item)
         items.push(item)
         break

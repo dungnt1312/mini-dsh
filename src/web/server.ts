@@ -141,7 +141,7 @@ export async function createWebServer(options: WebServerOptions): Promise<WebSer
     ?? fileURLToPath(new URL('../../web-dist/', import.meta.url))
 
   const server = createServer((req, res) => {
-    handle(req, res, { kernel, sessions, pending, staticDir }).catch((error: unknown) => {
+    handle(req, res, { kernel, sessions, pending, staticDir, providerName: options.provider.name }).catch((error: unknown) => {
       if (!res.headersSent) {
         res.writeHead(500, { 'content-type': 'application/json' })
       }
@@ -181,6 +181,7 @@ interface HandlerDeps {
   readonly sessions: Map<SessionId, SessionEntry>
   readonly pending: Map<string, PendingApproval>
   readonly staticDir: string
+  readonly providerName: string
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse, deps: HandlerDeps): Promise<void> {
@@ -208,6 +209,11 @@ async function handleApi(
   const send = (status: number, body: unknown): void => {
     res.writeHead(status, { 'content-type': 'application/json' })
     res.end(JSON.stringify(body))
+  }
+
+  if (req.method === 'GET' && pathname === '/api/meta') {
+    send(200, { provider: deps.providerName })
+    return
   }
 
   if (req.method === 'GET' && pathname === '/api/sessions') {

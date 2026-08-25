@@ -10,6 +10,7 @@ export interface ToolCall {
 export interface SseEvent {
   readonly type: string
   readonly seq: number
+  readonly timestamp?: number
   readonly content?: string
   readonly delta?: string
   readonly call?: ToolCall
