@@ -1,0 +1,5 @@
+- name: './hello.ts'
+- name: './greeter.ts'
+- name: './consumer.ts'
+- name: './disabled.ts'
+  disabled: true
