@@ -30,7 +30,6 @@ export type TurnEndReason =
   | 'completed'
   | 'rejected'
   | 'empty'
-  | 'max-steps'
   | 'failed'
 
 /** Distributive Omit so the union stays a union after removing stamped fields. */

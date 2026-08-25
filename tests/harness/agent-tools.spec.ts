@@ -1,15 +1,13 @@
 /**
  * The agent loop with tools: durable event ordering for the tool round-trip,
- * the projection of tool traffic into model history, the tools-owe-another-
- * request continuation, the max-steps guard, and the logged-context
- * invariant once tools join the loop.
+ * the projection of tool traffic into model history, unbounded tool
+ * continuation, and the logged-context invariant once tools join the loop.
  */
 import { promises as fs } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
-  Agent,
   AgentsService,
   Kernel,
   LlmService,
@@ -19,6 +17,7 @@ import {
   bashTool,
   deriveMessages,
   fsTools,
+  type Agent,
   type LlmProvider,
   type ModelRequest,
   type Session,
@@ -35,7 +34,7 @@ afterAll(async () => {
 })
 
 /** Boot the full harness with fs tools rooted at the temp workspace. */
-function bootHarness(steps: readonly (string | { toolCalls: readonly { name: string; args: Record<string, unknown> }[] })[], maxSteps?: number): {
+function bootHarness(steps: readonly (string | { toolCalls: readonly { name: string; args: Record<string, unknown> }[] })[]): {
   kernel: Kernel
   session: Session
   agent: Agent
@@ -67,9 +66,7 @@ function bootHarness(steps: readonly (string | { toolCalls: readonly { name: str
   kernel.ctx.tools.register(bashTool())
 
   const session = kernel.ctx.sessions.create()
-  const agent = maxSteps === undefined
-    ? kernel.ctx.agents.create(session)
-    : new Agent(kernel.ctx, session, maxSteps)
+  const agent = kernel.ctx.agents.create(session)
   return { kernel, session, agent, llm: kernel.ctx.llm, requests }
 }
 
@@ -181,18 +178,25 @@ describe('agent loop with tools', () => {
     void kernel.stop()
   })
 
-  it('a turn that keeps calling tools stops at the step limit', async () => {
+  it('a turn keeps spending steps while tools are called, without a bound', async () => {
+    // Four tool-call steps then a final text reply: the loop must run all
+    // five steps — no step limit truncates the tool chain.
+    const toolStep = { toolCalls: [{ name: 'glob', args: { pattern: '*' } }] }
     const { kernel, session, agent } = bootHarness([
-      { toolCalls: [{ name: 'glob', args: { pattern: '*' } }] },
-    ], 3)
+      toolStep,
+      toolStep,
+      toolStep,
+      toolStep,
+      'finally done',
+    ])
 
-    agent.send('loop forever')
+    agent.send('loop through tools')
     await agent.run()
 
     const stepStarts = session.events.filter((event) => event.type === 'step/start')
-    expect(stepStarts).toHaveLength(3)
+    expect(stepStarts).toHaveLength(5)
     const last = session.events[session.events.length - 1]
-    expect(last?.type === 'turn/end' && last.reason).toBe('max-steps')
+    expect(last?.type === 'turn/end' && last.reason).toBe('completed')
     void kernel.stop()
   })
 

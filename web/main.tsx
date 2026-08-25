@@ -1,8 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 // Bundled offline fonts — no CDN dependency for a local app.
-import '@fontsource/bricolage-grotesque/600.css'
-import '@fontsource/bricolage-grotesque/700.css'
 import '@fontsource/instrument-sans/400.css'
 import '@fontsource/instrument-sans/500.css'
 import '@fontsource/instrument-sans/600.css'

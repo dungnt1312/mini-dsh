@@ -5,9 +5,6 @@ import type { Session } from '../session/session.ts'
 import { agentScope } from './scope.ts'
 import type { AgentStatus, InboxItem, PreStepDecision } from './types.ts'
 
-/** Loop-hygiene bound: a turn that keeps calling tools stops here. */
-const DEFAULT_MAX_STEPS = 8
-
 /** The tools surface the loop consumes; optional, structurally typed. */
 interface ToolRuntime {
   schemas(): ToolSchema[]
@@ -32,7 +29,6 @@ export class Agent {
   constructor(
     private readonly ctx: Context,
     readonly session: Session,
-    private readonly maxSteps: number = DEFAULT_MAX_STEPS,
   ) {}
 
   /** Queue a user message; wakes the driver on the next `run()`. */
@@ -125,16 +121,16 @@ export class Agent {
     }
 
     let lastStep: StepId | null = null
-    let reason: 'completed' | 'max-steps' = 'completed'
-    for (let spent = 1; spent <= this.maxSteps; spent++) {
+    // A turn keeps spending steps while tools owe the model their results,
+    // without a step bound — the model decides when it is done.
+    for (let spent = 1; ; spent++) {
       const { stepId, toolCalls } = await this.step(turnId, spent === 1 ? decision.contents : [])
       lastStep = stepId
       if (toolCalls.length === 0) break
-      if (spent === this.maxSteps) reason = 'max-steps'
     }
 
     await this.ctx.serial('agent/turn-stopping', { turnId, lastStep })
-    this.session.append({ type: 'turn/end', turnId, reason })
+    this.session.append({ type: 'turn/end', turnId, reason: 'completed' })
   }
 
   /**

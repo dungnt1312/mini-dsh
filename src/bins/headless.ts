@@ -83,7 +83,6 @@ function render(event: SessionEvent): void {
     case 'turn/end':
       if (event.reason === 'rejected') process.stdout.write('[turn rejected]\n')
       if (event.reason === 'empty') process.stdout.write('[turn closed empty]\n')
-      if (event.reason === 'max-steps') process.stdout.write('[turn stopped at the step limit]\n')
       break
     default:
       break
