@@ -10,14 +10,11 @@ import { createWebServer } from '../web/server.ts'
 import { DeepSeekProvider } from '../harness/llm/deepseek.ts'
 import { MockLlmProvider } from '../harness/llm/mock.ts'
 import type { ApprovalMode } from '../harness/approval/policy.ts'
+import { loadRepoEnv, readApiKey } from './env.ts'
 
 // A repo-root .env supplies DEEPSEEK_API_KEY when the process environment
 // does not carry it. Real environment variables win over file entries.
-try {
-  process.loadEnvFile()
-} catch {
-  // No .env (or unreadable): environment-only configuration.
-}
+loadRepoEnv()
 
 interface CliOptions {
   readonly port: number
@@ -43,7 +40,7 @@ function parseArgs(argv: readonly string[]): CliOptions {
 
 async function main(): Promise<void> {
   const { port, root, mock, yolo } = parseArgs(process.argv.slice(2))
-  const apiKey = process.env.DEEPSEEK_API_KEY
+  const apiKey = readApiKey()
 
   const provider = mock || apiKey === undefined
     ? new MockLlmProvider([
@@ -69,10 +66,12 @@ async function main(): Promise<void> {
     port,
   })
 
+  // Always announce the active provider: seeing "mock" when a key was
+  // expected points at configuration, not at the API.
+  process.stdout.write(`mini-dsh web: ${server.url} (provider: ${provider.name})\n`)
   if (!mock && apiKey === undefined) {
-    process.stderr.write('no DEEPSEEK_API_KEY; using the mock provider (--mock to silence this)\n')
+    process.stderr.write('no usable DEEPSEEK_API_KEY; using the mock provider (--mock to silence this)\n')
   }
-  process.stdout.write(`mini-dsh web: ${server.url}\n`)
 
   process.on('SIGINT', () => {
     void server.close().then(() => process.exit(0))
