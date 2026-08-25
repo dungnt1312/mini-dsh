@@ -1,10 +1,9 @@
 /**
- * mini-dsh kernel: a miniature Cordis-shaped plugin runtime.
- *
- * Everything mounts as a plugin into a shared context: capabilities claim
- * service names (`ctx.<name>`), communicate through typed events with five
- * dispatch modes, and register reversible effects that unwind on unload.
+ * mini-dsh: a miniature TypeScript replica of the DeepSeek Harness
+ * architecture — a Cordis-shaped plugin kernel plus an agent core (durable
+ * session log, LLM streaming seam, turn/step driver).
  */
+// ── Kernel ────────────────────────────────────────────────────────────────
 export { EventBus, type Events, type DispatchMode, type EventOptions } from './kernel/events.ts'
 export {
   Fiber,
@@ -29,3 +28,32 @@ export {
   parseConfig,
   type ConfigEntry,
 } from './kernel/loader.ts'
+
+// ── Util ──────────────────────────────────────────────────────────────────
+export type { Branded, SessionId, StepId, TurnId } from './util/brand.ts'
+export { newSessionId, newStepId, newTurnId } from './util/brand.ts'
+
+// ── Harness: session log ─────────────────────────────────────────────────
+export {
+  deriveMessages,
+  type SessionAppendedEvent,
+  type SessionEvent,
+  type TurnEndReason,
+} from './harness/session/events.ts'
+export { Session } from './harness/session/session.ts'
+export { SessionsService } from './harness/session/service.ts'
+
+// ── Harness: LLM seam ────────────────────────────────────────────────────
+export type { LlmProvider, ModelMessage, ModelRequest } from './harness/llm/types.ts'
+export { LlmService } from './harness/llm/service.ts'
+export { MockLlmProvider } from './harness/llm/mock.ts'
+export { DeepSeekProvider } from './harness/llm/deepseek.ts'
+
+// ── Harness: agent ───────────────────────────────────────────────────────
+export type {
+  AgentStatus,
+  InboxItem,
+  PreStepDecision,
+} from './harness/agent/types.ts'
+export { Agent } from './harness/agent/agent.ts'
+export { AgentsService } from './harness/agent/service.ts'

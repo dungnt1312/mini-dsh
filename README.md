@@ -7,7 +7,7 @@ The reference architecture lives in the DeepSeek Harness repository (`docs/archi
 ## Status
 
 - **Phase 0–1 (done)** — mini-Cordis kernel: event bus with all five dispatch modes, fiber lifecycle with reverse-order effect disposal, service store with `inject` dependency tracking, and a YAML composition loader. 37 tests reproduce tutorial chapters 2–4 on this kernel.
-- Phase 2 — agent core: session log (event sourcing), LLM streaming seam, agent loop without tools.
+- **Phase 2 (done)** — agent core: durable session log (event sourcing, `deriveMessages()`, fork), LLM streaming seam (`agent/request` + `llm/stream` waterfalls, mock + DeepSeek SSE providers), and the turn/step driver (inbox with `send`/`inject`, `agent/pre-step`, `agent/turn-stopping`). Headless CLI chats multi-turn; 61 tests cover the kernel and harness.
 - Phase 3 — tool pipeline: registry, `tools/pre-execute` waterfall, approval gate, `bash`/`read`/`write`/`edit`/`glob`/`grep` tools.
 - Phase 4 — web UI: HTTP server + React transcript, approval prompts, session list.
 - Phase 5 — dynamic plugins: patch layers, hot (un)load, provider swap restarting dependents.
@@ -19,6 +19,14 @@ The reference architecture lives in the DeepSeek Harness repository (`docs/archi
 npm install
 npm test         # vitest run
 npm run typecheck
+```
+
+## Chat
+
+```sh
+npm run chat           # REPL; uses DeepSeek when DEEPSEEK_API_KEY is set
+npm run chat:mock      # REPL with the scripted mock provider
+npx tsx src/bins/headless.ts --mock --message "hello"   # one-shot
 ```
 
 ## The kernel
@@ -57,6 +65,36 @@ src/kernel/
 | `waterfall` | chain | outermost→innermost | each listener wraps or vetoes via `next()` |
 
 A waterfall listener that only observes must call `next()`; returning without it is a deliberate veto — the same standing rule as the upstream repository.
+
+## The harness
+
+```
+src/harness/
+├── session/   Durable log: SessionEvent union, deriveMessages(), fork
+├── llm/       Seam: provider registry + agent-facing stream, mock + DeepSeek
+└── agent/     Turn/step driver: inbox, pre-step admission, turn-stopping
+```
+
+The turn flow, matching the upstream `Turn flow` map:
+
+```
+turn/start
+  claim inbox (injected context waits for a user message to wake the driver)
+  -> agent/pre-step (waterfall)      reject | enter(contents)
+     reject, or a first enter rewritten empty -> close the turn with no step
+     step/start
+     append admitted input as user/message
+     derive model history from the log
+     agent/request (waterfall) -> llm/stream (waterfall) -> assistant/chunk*
+     assistant/message -> step/end
+  -> agent/turn-stopping (serial)
+turn/end
+```
+
+Two invariants carried over verbatim:
+
+- **Model-visible means logged.** Every model request is `session.deriveMessages()` at that moment; a test asserts it.
+- **Raw `assistant/chunk` events preserve replay and UI fidelity** but never re-enter model history — only the assembled `assistant/message` projects.
 
 ## License
 
