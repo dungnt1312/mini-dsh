@@ -74,7 +74,16 @@ async function main(): Promise<void> {
   }
 
   process.on('SIGINT', () => {
-    void server.close().then(() => process.exit(0))
+    // First interrupt: close gracefully. A second interrupt exits at once,
+    // in case teardown itself is stuck.
+    process.on('SIGINT', () => process.exit(130))
+    void server.close().then(
+      () => process.exit(0),
+      (error: unknown) => {
+        console.error('shutdown failed', error)
+        process.exit(1)
+      },
+    )
   })
 }
 

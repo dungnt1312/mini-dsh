@@ -166,6 +166,10 @@ export async function createWebServer(options: WebServerOptions): Promise<WebSer
     port: address.port,
     kernel,
     close: async () => {
+      // SSE connections never drain on their own — a browser holds its
+      // EventSource open indefinitely — so close() would hang on them.
+      // Force every connection down first, then wait for the listener.
+      server.closeAllConnections()
       await new Promise<void>((resolve) => server.close(() => resolve()))
       await kernel.stop()
     },
