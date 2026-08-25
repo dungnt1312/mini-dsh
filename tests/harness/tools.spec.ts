@@ -5,9 +5,10 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  ApprovalService,
   Kernel,
   ToolsService,
+  attachApproval,
+  type ApprovalOptions,
   type ToolCall,
   type ToolDefinition,
 } from 'mini-dsh'
@@ -28,12 +29,12 @@ const echoTool: ToolDefinition = {
 }
 
 /** Boot a kernel with the tools service (and optionally approval) mounted. */
-function boot(approval?: ConstructorParameters<typeof ApprovalService>[1]): Kernel {
+function boot(approval?: ApprovalOptions): Kernel {
   const kernel = new Kernel()
   kernel.ctx.plugin(ToolsService)
   if (approval !== undefined) {
     kernel.ctx.plugin((ctx) => {
-      new ApprovalService(ctx, approval)
+      attachApproval(ctx, approval)
     })
   }
   return kernel
@@ -176,7 +177,7 @@ describe('approval policy', () => {
     const kernel = new Kernel()
     kernel.ctx.plugin(ToolsService)
     const fiber = kernel.ctx.plugin((ctx) => {
-      new ApprovalService(ctx, { policy: { echo: 'deny' } })
+      attachApproval(ctx, { policy: { echo: 'deny' } })
     })
     kernel.ctx.tools.register(echoTool)
 

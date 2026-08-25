@@ -64,15 +64,24 @@ export type {
 } from './harness/agent/types.ts'
 export { Agent } from './harness/agent/agent.ts'
 export { AgentsService } from './harness/agent/service.ts'
+export { agentScope } from './harness/agent/scope.ts'
 
 // ── Harness: tool pipeline ───────────────────────────────────────────────
 export type { PreExecuteDecision, ToolDefinition, ToolResult } from './harness/tools/types.ts'
 export { ToolsService } from './harness/tools/service.ts'
 
 // ── Harness: approval ────────────────────────────────────────────────────
-export type { ApprovalMode, ApprovalOptions } from './harness/approval/service.ts'
-export { ApprovalService } from './harness/approval/service.ts'
+export type { ApprovalMode, ApprovalOptions } from './harness/approval/policy.ts'
+export { attachApproval } from './harness/approval/policy.ts'
 
 // ── Capabilities: filesystem + shell ─────────────────────────────────────
 export { fsTools, resolveWithin } from './capabilities/fs/tools.ts'
 export { bashTool, type BashToolOptions } from './capabilities/shell/bash.ts'
+
+// ── Web host ──────────────────────────────────────────────────────────────
+export {
+  createWebServer,
+  type WebEnvelope,
+  type WebServer,
+  type WebServerOptions,
+} from './web/server.ts'

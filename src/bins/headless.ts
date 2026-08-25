@@ -16,13 +16,13 @@
 import { createInterface } from 'node:readline/promises'
 import {
   AgentsService,
-  ApprovalService,
   DeepSeekProvider,
   Kernel,
   LlmService,
   MockLlmProvider,
   SessionsService,
   ToolsService,
+  attachApproval,
   bashTool,
   fsTools,
   type ApprovalOptions,
@@ -105,16 +105,14 @@ async function main(): Promise<void> {
   kernel.ctx.plugin(LlmService)
   kernel.ctx.plugin(ToolsService)
   kernel.ctx.plugin(AgentsService)
-  kernel.ctx.plugin((ctx) => {
-    const options: ApprovalOptions = yolo
-      ? { defaultMode: 'allow', askUser }
-      : {
-          defaultMode: 'ask',
-          askUser,
-          policy: { read: 'allow', glob: 'allow', grep: 'allow', write: 'ask', edit: 'ask', bash: 'ask' },
-        }
-    new ApprovalService(ctx, options)
-  })
+  const options: ApprovalOptions = yolo
+    ? { defaultMode: 'allow', askUser }
+    : {
+        defaultMode: 'ask',
+        askUser,
+        policy: { read: 'allow', glob: 'allow', grep: 'allow', write: 'ask', edit: 'ask', bash: 'ask' },
+      }
+  attachApproval(kernel.ctx, options)
   for (const tool of fsTools(root)) {
     kernel.ctx.tools.register(tool)
   }

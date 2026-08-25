@@ -8,8 +8,8 @@ The reference architecture lives in the DeepSeek Harness repository (`docs/archi
 
 - **Phase 0–1 (done)** — mini-Cordis kernel: event bus with all five dispatch modes, fiber lifecycle with reverse-order effect disposal, service store with `inject` dependency tracking, and a YAML composition loader. 37 tests reproduce tutorial chapters 2–4 on this kernel.
 - **Phase 2 (done)** — agent core: durable session log (event sourcing, `deriveMessages()`, fork), LLM streaming seam (`agent/request` + `llm/stream` waterfalls, mock + DeepSeek SSE providers), and the turn/step driver (inbox with `send`/`inject`, `agent/pre-step`, `agent/turn-stopping`). Headless CLI chats multi-turn.
-- **Phase 3 (done)** — tool pipeline: `ToolsService` with the guarded `tools/pre-execute` → execute → `tools/post-execute` path, approval policy (allow/ask/deny riding pre-execute), filesystem tools (`read`/`write`/`edit`/`glob`/`grep`, root-confined) and `bash` (timeout, process-group kill); the loop spends another step while tools owe the model their results, with a max-steps guard. Tool traffic is durable (`tool/call`, `tool/result`) and projects into model history as `role: 'tool'`. 90 tests cover kernel, harness, and capabilities.
-- Phase 4 — web UI: HTTP server + React transcript, approval prompts, session list.
+- **Phase 3 (done)** — tool pipeline: `ToolsService` with the guarded `tools/pre-execute` → execute → `tools/post-execute` path, approval policy (allow/ask/deny riding pre-execute), filesystem tools (`read`/`write`/`edit`/`glob`/`grep`, root-confined) and `bash` (timeout, process-group kill); the loop spends another step while tools owe the model their results, with a max-steps guard. Verified end-to-end against the real DeepSeek API.
+- **Phase 4 (done)** — web UI: `createWebServer` (REST + SSE) with the React client (`web/`, built by Vite). The client renders purely from the session event stream — snapshot replay plus live `session/event` frames — and approval questions ride the same stream, answered over `POST /api/approvals/:id`; routing to the right session goes through the ambient agent scope (`AsyncLocalStorage`), so concurrent sessions share one policy listener without cross-talk. A failed step closes its turn durably (`turn/end: failed`). 97 tests cover kernel, harness, capabilities, and the web API.
 - Phase 5 — dynamic plugins: patch layers, hot (un)load, provider swap restarting dependents.
 - Phase 6 — polish: SQLite persistence, compaction, an `architecture.md` for this project.
 
@@ -28,6 +28,18 @@ npm run chat           # REPL; uses DeepSeek when DEEPSEEK_API_KEY is set
 npm run chat:mock      # REPL with the scripted mock provider
 npx tsx src/bins/headless.ts --mock --message "hello"   # one-shot
 ```
+
+## Web
+
+```sh
+npm run build:web      # build the React client into web-dist/
+npm run web            # serve it at http://127.0.0.1:3080 (--mock, --yolo, --root, --port)
+```
+
+The browser client is stateless by design: it holds no model state of its
+own — the transcript is projected from the durable session events streamed
+over SSE, approval questions arrive on the same stream, and answers go back
+over one POST.
 
 ## The kernel
 

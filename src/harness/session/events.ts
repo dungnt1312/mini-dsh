@@ -31,6 +31,7 @@ export type TurnEndReason =
   | 'rejected'
   | 'empty'
   | 'max-steps'
+  | 'failed'
 
 /** Distributive Omit so the union stays a union after removing stamped fields. */
 type DistributiveOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K> : never

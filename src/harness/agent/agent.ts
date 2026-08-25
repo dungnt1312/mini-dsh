@@ -2,6 +2,7 @@ import type { Context } from '../../kernel/index.ts'
 import { newStepId, newTurnId, type StepId, type TurnId } from '../../util/brand.ts'
 import type { ModelRequest, ToolCall, ToolSchema } from '../llm/types.ts'
 import type { Session } from '../session/session.ts'
+import { agentScope } from './scope.ts'
 import type { AgentStatus, InboxItem, PreStepDecision } from './types.ts'
 
 /** Loop-hygiene bound: a turn that keeps calling tools stops here. */
@@ -56,13 +57,39 @@ export class Agent {
     if (this.status === 'running') return
     this.status = 'running'
     try {
-      // Only a user message opens a turn; injected context waits in the
-      // inbox until one arrives and is claimed alongside it.
-      while (this.inbox.some((item) => item.kind === 'user')) {
-        await this.turn()
-      }
+      // The scope lets pipeline listeners (approval routing) attribute a
+      // tool call to this agent's session while the turn is in flight.
+      await agentScope.run({ sessionId: this.session.id }, async () => {
+        // Only a user message opens a turn; injected context waits in the
+        // inbox until one arrives and is claimed alongside it.
+        while (this.inbox.some((item) => item.kind === 'user')) {
+          try {
+            await this.turn()
+          } catch (error) {
+            this.closeOpenTurn()
+            throw error
+          }
+        }
+      })
     } finally {
       this.status = 'idle'
+    }
+  }
+
+  /**
+   * Append `turn/end` for the newest still-open turn, if any: a failed step
+   * must not leave the log with a dangling `turn/start`. Errors still
+   * propagate to the caller; the log just stays closable.
+   */
+  private closeOpenTurn(): void {
+    for (let i = this.session.events.length - 1; i >= 0; i--) {
+      const event = this.session.events[i]
+      if (event === undefined) continue
+      if (event.type === 'turn/end') return
+      if (event.type === 'turn/start') {
+        this.session.append({ type: 'turn/end', turnId: event.turnId, reason: 'failed' })
+        return
+      }
     }
   }
 

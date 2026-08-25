@@ -11,9 +11,11 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.web.json",
     "chat": "tsx src/bins/headless.ts",
-    "chat:mock": "tsx src/bins/headless.ts --mock"
+    "chat:mock": "tsx src/bins/headless.ts --mock",
+    "web": "tsx src/bins/web.ts",
+    "build:web": "vite build"
   },
   "dependencies": {
     "js-yaml": "^4.1.0"
@@ -21,8 +23,14 @@
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^24.10.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "@vitejs/plugin-react": "^4.7.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "tsx": "^4.20.3",
     "typescript": "^5.9.3",
+    "vite": "^6.4.3",
     "vitest": "^3.2.4"
   }
 }
