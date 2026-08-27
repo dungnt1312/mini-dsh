@@ -12,10 +12,7 @@ import './styles/tokens.css'
 import './styles/base.css'
 import './styles/ui.css'
 import './styles/shell.css'
-import './styles/sidebar.css'
 import './styles/chat.css'
-import './styles/composer.css'
-import './styles/components.css'
 
 createRoot(document.getElementById('root') ?? document.body).render(
   <StrictMode>

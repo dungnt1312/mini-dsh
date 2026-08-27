@@ -13,6 +13,8 @@ export interface SseEvent {
   readonly timestamp?: number
   readonly content?: string
   readonly delta?: string
+  /** A chunk the model thought before answering; never part of history. */
+  readonly thinking?: boolean
   readonly call?: ToolCall
   readonly callId?: string
   readonly ok?: boolean

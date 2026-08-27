@@ -137,3 +137,29 @@ describe('chip / text-input / select structure', () => {
     expect(html).toContain('custom-trigger')
   })
 })
+
+describe('chat surfaces', () => {
+  it('ToolCard breadcrumb formats arg chips while pending', async () => {
+    const { ToolCard } = await import('../chat/MessageParts.tsx')
+    const html = renderToStaticMarkup(
+      <ToolCard item={{ kind: 'tool', call: { id: 't1', name: 'read', args: { path: 'src/x.ts', limit: 5 } } }} />,
+    )
+    expect(html).toContain('tool-row')
+    expect(html).toContain('read')
+    expect(html).toContain('path: src/x.ts')
+    expect(html).toContain('+1')
+  })
+
+  it('ApprovalBar shows one card per pending call', async () => {
+    const { ApprovalBar } = await import('../chat/ApprovalBar.tsx')
+    const html = renderToStaticMarkup(
+      <ApprovalBar
+        approvals={[{ approvalId: 'a1', call: { id: 't', name: 'edit', args: { path: 'web/App.tsx' } } }]}
+        onAnswer={() => undefined}
+      />,
+    )
+    expect(html).toContain('edit · web/App.tsx')
+    expect(html).toContain('Allow')
+    expect(html).toContain('Deny')
+  })
+})

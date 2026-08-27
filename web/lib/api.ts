@@ -15,6 +15,26 @@ export function createSession(): Promise<{ id: string }> {
   return fetch('/api/sessions', { method: 'POST' }).then((r) => json<{ id: string }>(r))
 }
 
+export function deleteSession(sessionId: string): Promise<{ deleted: boolean }> {
+  return fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }).then((r) =>
+    json<{ deleted: boolean }>(r),
+  )
+}
+
+export function renameSession(sessionId: string, title: string): Promise<{ id: string; title: string }> {
+  return fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title }),
+  }).then((r) => json<{ id: string; title: string }>(r))
+}
+
+export function stopSession(sessionId: string): Promise<{ stopped: boolean }> {
+  return fetch(`/api/sessions/${encodeURIComponent(sessionId)}/stop`, { method: 'POST' }).then((r) =>
+    json<{ stopped: boolean }>(r),
+  )
+}
+
 export function sendMessage(sessionId: string, content: string): Promise<void> {
   return fetch(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
     method: 'POST',

@@ -253,6 +253,9 @@ export function App() {
             onDraft={setDraft}
             onSend={() => void send()}
             onStop={() => void stop()}
+            model={meta?.model ?? null}
+            models={meta?.models ?? []}
+            onModel={(model) => void selectModel(model)}
           />
         </main>
         <EnvPanel

@@ -3,8 +3,16 @@ import type { SseEvent, ToolCall } from './types.ts'
 /** View items projected from the durable log — the UI's deriveMessages(). */
 export type ViewItem =
   | { readonly kind: 'user'; readonly content: string; readonly ts?: number }
-  | { readonly kind: 'assistant'; readonly content: string; readonly live: boolean; readonly ts?: number; readonly toolCalls?: readonly ToolCall[] }
-  | { readonly kind: 'tool'; readonly call: ToolCall; readonly ts?: number; result?: { readonly ok: boolean; readonly output: string } }
+  | {
+      readonly kind: 'assistant'
+      readonly content: string
+      readonly live: boolean
+      readonly ts?: number
+      readonly thinking: readonly string[]
+      readonly thinkingLive: boolean
+      readonly toolCalls?: readonly ToolCall[]
+    }
+  | { readonly kind: 'tool'; readonly call: ToolCall; readonly ts?: number; doneAt?: number; result?: { readonly ok: boolean; readonly output: string } }
   | { readonly kind: 'status'; readonly reason: string }
 
 interface AssistantDraft {
@@ -12,16 +20,19 @@ interface AssistantDraft {
   content: string
   live: boolean
   ts?: number
+  thinking: string[]
+  thinkingLive: boolean
   toolCalls?: readonly ToolCall[]
 }
 
 /**
  * Project render items from session events. Streaming chunks accumulate
  * into the in-flight assistant item (the same object pushed into `items`,
- * mutated as chunks arrive); `assistant/message` finalizes it with the
- * authoritative content, and each `tool/result` answers the call its
- * `callId` names. Structural events are skipped; non-`completed` turn ends
- * surface as status lines.
+ * mutated as chunks arrive); thinking chunks fill `thinking` without
+ * touching `content`. `assistant/message` finalizes the item, and each
+ * `tool/result` answers the call its `callId` names (recording `doneAt`
+ * for duration chips). Structural events are skipped; non-`completed`
+ * turn ends surface as status lines.
  */
 export function projectItems(events: readonly SseEvent[]): ViewItem[] {
   const items: ViewItem[] = []
@@ -36,16 +47,23 @@ export function projectItems(events: readonly SseEvent[]): ViewItem[] {
       case 'assistant/chunk':
         if (event.delta === undefined) break
         if (draft === null) {
-          draft = { kind: 'assistant', content: '', live: true, ...(event.timestamp !== undefined ? { ts: event.timestamp } : {}) }
+          draft = { kind: 'assistant', content: '', live: true, thinking: [], thinkingLive: false, ...(event.timestamp !== undefined ? { ts: event.timestamp } : {}) }
           items.push(draft)
         }
-        draft.content += event.delta
+        if (event.thinking === true) {
+          draft.thinking.push(event.delta)
+          draft.thinkingLive = true
+        } else {
+          draft.content += event.delta
+          draft.thinkingLive = false
+        }
         break
       case 'assistant/message': {
         const content = event.content ?? ''
         if (draft !== null) {
           if (content !== '') draft.content = content
           draft.live = false
+          draft.thinkingLive = false
           if (event.toolCalls !== undefined) draft.toolCalls = event.toolCalls
           draft = null
         } else if (content !== '' || event.toolCalls !== undefined) {
@@ -53,6 +71,8 @@ export function projectItems(events: readonly SseEvent[]): ViewItem[] {
             kind: 'assistant',
             content,
             live: false,
+            thinking: [],
+            thinkingLive: false,
             ...(event.timestamp !== undefined ? { ts: event.timestamp } : {}),
             ...(event.toolCalls !== undefined ? { toolCalls: event.toolCalls } : {}),
           })
@@ -74,6 +94,7 @@ export function projectItems(events: readonly SseEvent[]): ViewItem[] {
         const item = event.callId === undefined ? undefined : toolItems.get(event.callId)
         if (item !== undefined) {
           item.result = { ok: event.ok === true, output: event.output ?? '' }
+          if (event.timestamp !== undefined) item.doneAt = event.timestamp
         }
         break
       }
@@ -87,4 +108,18 @@ export function projectItems(events: readonly SseEvent[]): ViewItem[] {
     }
   }
   return items
+}
+
+/**
+ * Whether a turn is currently in flight: every `turn/start` is closed by a
+ * `turn/end`; an unmatched start means the agent is still working. The Stop
+ * button and activity indicators read this.
+ */
+export function isTurnRunning(events: readonly SseEvent[]): boolean {
+  let open = 0
+  for (const event of events) {
+    if (event.type === 'turn/start') open += 1
+    else if (event.type === 'turn/end') open = Math.max(0, open - 1)
+  }
+  return open > 0
 }
