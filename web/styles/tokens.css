@@ -1,0 +1,77 @@
+/* ────────────────────────────────────────────────────────────────
+   mini-dsh web — "Sharp" workspace theme (VS Code spirit)
+   Three surface levels, hairline borders, restrained accent.
+   ──────────────────────────────────────────────────────────────── */
+
+:root {
+  /* surfaces: pane chrome < canvas < card < elevated */
+  --bg-pane: #0f1013;
+  --bg: #121418;
+  --bg-card: #15171b;
+  --bg-elevated: #181a20;
+  --bg-hover: #17191f;
+  --bg-active: #1d2027;
+  --bg-inset: #101216;
+
+  /* borders */
+  --border: #24272e;
+  --border-strong: #33373f;
+  --hairline: #1c1f25;
+
+  /* text */
+  --text: #dcdee3;
+  --text-dim: #8b909c;
+  --text-faint: #565b66;
+
+  /* accent */
+  --accent: #5c7cfa;
+  --accent-text: #9db4ff;
+  --accent-tint: rgba(110, 139, 255, 0.15);
+  --accent-border: rgba(110, 139, 255, 0.4);
+  --accent-soft: rgba(92, 124, 250, 0.14);
+
+  /* status */
+  --ok: #46c286;
+  --ok-tint: rgba(70, 194, 134, 0.13);
+  --ok-border: rgba(70, 194, 134, 0.45);
+  --bad: #f47166;
+  --bad-tint: rgba(244, 113, 102, 0.1);
+  --bad-border: rgba(244, 113, 102, 0.4);
+  --amber: #d29922;
+  --warn-tint: rgba(210, 153, 34, 0.12);
+  --warn-border: rgba(210, 153, 34, 0.32);
+
+  /* radius scale — Sharp preset */
+  --r-chip: 3px;
+  --r-sm: 4px;
+  --r-md: 5px;
+  --r-lg: 7px;
+  --radius: 7px;
+  --radius-sm: 4px;
+
+  /* type */
+  --font-ui: 'Instrument Sans', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+
+  /* geometry */
+  --gap: 12px;
+  --pad: 14px;
+  --topbar-h: 42px;
+  --sidebar-w: 234px;
+  --env-w: 252px;
+
+  /* layers */
+  --z-drawer: 40;
+  --z-popover: 45;
+  --z-toast: 60;
+  --z-modal: 50;
+
+  /* hljs token palette tuned to the surfaces above */
+  --hl-keyword: #8a9ffb;
+  --hl-string: #8fcf9a;
+  --hl-number: #e0af68;
+  --hl-comment: #5c606a;
+  --hl-title: #79c0ff;
+  --hl-builtin: #f47067;
+  --hl-attr: #d29922;
+}
