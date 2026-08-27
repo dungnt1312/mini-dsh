@@ -215,7 +215,9 @@ export async function createWebServer(options: WebServerOptions): Promise<WebSer
   const injectionNames = (): readonly string[] =>
     (options.providers ?? []).map((provider) => provider.name)
 
-  const isUsableConfigured = (entry: ProviderConfig): boolean => entry.enabled && entry.apiKey !== ''
+  // A key is not part of usability: local gateways (llama.cpp, LM Studio, a
+  // proxy on localhost) serve the OpenAI shape with no auth at all.
+  const isUsableConfigured = (entry: ProviderConfig): boolean => entry.enabled
 
   const usableIds = (): readonly string[] => [
     ...injectionNames(),
@@ -330,10 +332,16 @@ export async function createWebServer(options: WebServerOptions): Promise<WebSer
       }
       return
     }
-    // The provider survived but its advertised list may have changed (a sync
-    // can drop the model we had selected); re-pick the first one when it did.
+    // Re-selecting is not optional: `syncRegistrations` disposed every
+    // registration, and the registry resets its own pointer to whichever
+    // provider registered first. Without this the selection would silently
+    // drift to another entry whenever any provider is added or edited.
+    kernel.ctx.llm.use(state.activeProvider as string)
+    // A provider added before its models were known starts with no model at
+    // all, and a sync can drop the name we had selected; both leave the pair
+    // unusable for chat until we re-pick from what the provider now offers.
     const available = kernel.ctx.llm.active().models ?? []
-    if (state.model !== undefined && available.length > 0 && !available.includes(state.model)) {
+    if (available.length > 0 && (state.model === undefined || !available.includes(state.model))) {
       state.model = available[0]
     }
   }
@@ -559,7 +567,7 @@ async function handleApi(
     }
     try {
       const response = await fetch(`${entry.baseUrl.replace(/\/$/, '')}/models`, {
-        headers: { authorization: `Bearer ${entry.apiKey}` },
+        headers: authHeaders(entry),
         signal: AbortSignal.timeout(10_000),
       })
       if (!response.ok) {
@@ -776,7 +784,6 @@ async function createProvider(
   if (name === '') return { ok: false, status: 400, error: "body needs a non-empty string 'name'" }
   if (baseUrl === '') return { ok: false, status: 400, error: "body needs a non-empty string 'baseUrl'" }
   if (!/^https?:\/\//.test(baseUrl)) return { ok: false, status: 400, error: `'${baseUrl}' is not an http(s) URL` }
-  if (apiKey === '') return { ok: false, status: 400, error: "body needs a non-empty string 'apiKey'" }
   const base = slugify(name)
   let id = base
   let bump = 2
@@ -833,12 +840,21 @@ async function patchProvider(
   return { ok: true, entry: draft }
 }
 
+/**
+ * Authorization for one configured endpoint. A keyless entry sends no header
+ * at all: local gateways reject `Bearer ` with an empty token, and omitting it
+ * is what an unauthenticated endpoint expects.
+ */
+function authHeaders(entry: ProviderConfig): Record<string, string> {
+  return entry.apiKey === '' ? {} : { authorization: `Bearer ${entry.apiKey}` }
+}
+
 /** Fire one tiny non-streaming completion; returns an operator-readable verdict. */
 async function pingCompletions(entry: ProviderConfig): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
     const response = await fetch(`${entry.baseUrl.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${entry.apiKey}` },
+      headers: { 'content-type': 'application/json', ...authHeaders(entry) },
       body: JSON.stringify({
         model: entry.defaultModel ?? entry.models[0] ?? 'test',
         messages: [{ role: 'user', content: 'ping' }],

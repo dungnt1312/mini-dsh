@@ -97,7 +97,9 @@ export class OpenAiCompletionsProvider implements LlmProvider {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        authorization: `Bearer ${this.options.apiKey}`,
+        // Local gateways often accept no credential at all; sending an empty
+        // Bearer makes some of them reject the call outright.
+        ...(this.options.apiKey === '' ? {} : { authorization: `Bearer ${this.options.apiKey}` }),
       },
       body: JSON.stringify({
         model: request.model ?? this.defaultModel,

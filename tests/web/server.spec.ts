@@ -542,6 +542,157 @@ describe('provider registry', () => {
     }
   })
 
+  it('makes a freshly added provider chattable: sync picks a model and messages queue', async () => {
+    const fake = new FakeOpenAiServer(['hello from the proxy'])
+    const fakeBase = await fake.start()
+    const config = path.join(root, 'providers-firstrun.json')
+    let s: WebServer | undefined
+    try {
+      s = await createWebServer({ root, configFile: config, defaultMode: 'allow' })
+      const base = s.url
+
+      // The real first-run flow: name + URL + key only, models come from Sync.
+      const created = await fetch(`${base}/api/providers`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'First Run', baseUrl: `${fakeBase}/v1`, apiKey: 'sk-first-0001' }),
+      })
+      expect(created.status).toBe(201)
+
+      await fetch(`${base}/api/providers/first-run/sync`, { method: 'POST' })
+
+      // Sync taught the provider its models, so the active pair must be
+      // complete — an empty model is what left the composer disabled.
+      const meta = (await (await fetch(`${base}/api/meta`)).json()) as { provider: string; model: string }
+      expect(meta.provider).toBe('first-run')
+      expect(meta.model).toBe('gpt-5.6-sol')
+
+      const session = (await (await fetch(`${base}/api/sessions`, { method: 'POST' })).json()) as { id: string }
+      const queued = await fetch(`${base}/api/sessions/${session.id}/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content: 'hi' }),
+      })
+      expect(queued.status).toBe(202)
+
+      // Let the turn settle before the fake goes away, so tearing down the
+      // endpoint mid-flight does not surface as an unrelated error log.
+      await fetch(`${base}/api/sessions/${session.id}/stop`, { method: 'POST' })
+      await new Promise((resolve) => setTimeout(resolve, 120))
+    } finally {
+      await s?.close()
+      await fake.stop()
+    }
+  })
+
+  it('treats a keyless local endpoint as usable', async () => {
+    const fake = new FakeOpenAiServer(['local reply'])
+    const fakeBase = await fake.start()
+    const config = path.join(root, 'providers-keyless.json')
+    let s: WebServer | undefined
+    try {
+      // A localhost gateway that authenticates by nothing at all: the entry is
+      // stored with an empty key and must still register and be selectable.
+      await fs.writeFile(config, JSON.stringify([{
+        id: 'local-gw',
+        name: 'local-gw',
+        baseUrl: `${fakeBase}/v1`,
+        apiKey: '',
+        models: ['auto', 'auto-thinking'],
+        defaultModel: 'auto',
+        enabled: true,
+      }]), 'utf8')
+
+      s = await createWebServer({ root, configFile: config, defaultMode: 'allow' })
+      const base = s.url
+      const meta = (await (await fetch(`${base}/api/meta`)).json()) as { provider: string; model: string }
+      expect(meta.provider).toBe('local-gw')
+      expect(meta.model).toBe('auto')
+
+      const session = (await (await fetch(`${base}/api/sessions`, { method: 'POST' })).json()) as { id: string }
+      const queued = await fetch(`${base}/api/sessions/${session.id}/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content: 'hi' }),
+      })
+      expect(queued.status).toBe(202)
+
+      await fetch(`${base}/api/sessions/${session.id}/stop`, { method: 'POST' })
+      await new Promise((resolve) => setTimeout(resolve, 120))
+
+      // The wire call must omit Authorization rather than send "Bearer ".
+      const call = fake.seenRequests.find((request) => request.url.endsWith('/chat/completions'))
+      expect(call?.authorization).toBeUndefined()
+    } finally {
+      await s?.close()
+      await fake.stop()
+    }
+  })
+
+  it('accepts a provider created without an API key', async () => {
+    const fake = new FakeOpenAiServer()
+    const fakeBase = await fake.start()
+    const config = path.join(root, 'providers-keyless-create.json')
+    let s: WebServer | undefined
+    try {
+      s = await createWebServer({ root, configFile: config })
+      const base = s.url
+      const created = await fetch(`${base}/api/providers`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Local GW', baseUrl: `${fakeBase}/v1` }),
+      })
+      expect(created.status).toBe(201)
+      const entry = (await created.json()) as { id: string; keyMasked: string }
+      expect(entry.id).toBe('local-gw')
+      expect(entry.keyMasked).toBe('')
+
+      await fetch(`${base}/api/providers/local-gw/sync`, { method: 'POST' })
+      const meta = (await (await fetch(`${base}/api/meta`)).json()) as { provider: string; model: string }
+      expect(meta.provider).toBe('local-gw')
+      expect(meta.model).toBe('gpt-5.6-sol')
+    } finally {
+      await s?.close()
+      await fake.stop()
+    }
+  })
+
+  it('keeps the active provider selected in the registry after another entry is added', async () => {
+    const fake = new FakeOpenAiServer()
+    const fakeBase = await fake.start()
+    const config = path.join(root, 'providers-reselect.json')
+    let s: WebServer | undefined
+    try {
+      s = await createWebServer({ root, configFile: config })
+      const base = s.url
+      const add = (name: string, models: readonly string[]): Promise<Response> =>
+        fetch(`${base}/api/providers`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name, baseUrl: `${fakeBase}/v1`, apiKey: `sk-${name}-0001`, models }),
+        })
+
+      await add('Alpha', ['alpha-1'])
+      await add('Beta', ['beta-1', 'beta-2'])
+      await fetch(`${base}/api/model`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ provider: 'beta', model: 'beta-2' }),
+      })
+
+      // Adding a third entry re-registers every provider; the selection must
+      // survive that churn, models included.
+      await add('Gamma', ['gamma-1'])
+      const meta = (await (await fetch(`${base}/api/meta`)).json()) as { provider: string; model: string; models: string[] }
+      expect(meta.provider).toBe('beta')
+      expect(meta.model).toBe('beta-2')
+      expect(meta.models).toEqual(['beta-1', 'beta-2'])
+    } finally {
+      await s?.close()
+      await fake.stop()
+    }
+  })
+
   it('seeds a deepseek entry from env on first boot when asked', async () => {
     const previous = process.env['DEEPSEEK_API_KEY']
     process.env['DEEPSEEK_API_KEY'] = 'env-seed-key'

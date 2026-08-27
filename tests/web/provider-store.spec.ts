@@ -44,6 +44,8 @@ describe('provider store', () => {
   it('maskKey hides everything but the tail', () => {
     expect(maskKey('sk-abcd1234')).toBe('••••1234')
     expect(maskKey('abc')).toBe('••••')
+    // A keyless provider must not look like it holds a hidden secret.
+    expect(maskKey('')).toBe('')
   })
 
   it('seed helper inside plan: DEEPSEEK config matches expected shape', () => {

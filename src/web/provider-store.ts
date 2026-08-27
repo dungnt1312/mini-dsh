@@ -86,8 +86,13 @@ export function slugify(name: string): string {
   return slug === '' ? 'provider' : slug
 }
 
-/** Mask an API key for transport/UI: reveal only the last 4 characters. */
+/**
+ * Mask an API key for transport/UI: reveal only the last 4 characters. A
+ * keyless entry masks to the empty string — local gateways legitimately need
+ * no credential, and dots there would claim a secret that does not exist.
+ */
 export function maskKey(apiKey: string): string {
+  if (apiKey === '') return ''
   if (apiKey.length <= 4) return '••••'
   return `••••${apiKey.slice(-4)}`
 }

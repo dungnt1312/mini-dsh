@@ -71,6 +71,8 @@ interface ParsedRequest {
   readonly url: string
   readonly method: string
   readonly body: Record<string, unknown>
+  /** Absent when the caller sent no Authorization header at all. */
+  readonly authorization: string | undefined
 }
 
 /** Wire-level fake. `push()` queues turns; each completions call consumes one. */
@@ -117,7 +119,12 @@ export class FakeOpenAiServer {
     } catch {
       body = {}
     }
-    const record = { url: req.url ?? '/', method: req.method ?? '', body }
+    const record = {
+      url: req.url ?? '/',
+      method: req.method ?? '',
+      body,
+      authorization: req.headers.authorization,
+    }
     this.seenRequests.push(record)
 
     // Buffer everything before responding so tiny payloads arrive whole.
