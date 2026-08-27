@@ -4,3 +4,6 @@ web-dist/
 *.log
 .DS_Store
 .env
+
+# brainstorming visual companion mockups
+.superpowers/
