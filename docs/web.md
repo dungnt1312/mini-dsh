@@ -65,6 +65,11 @@ format (tool-call fragment accumulation, `reasoning_content` → thinking
 deltas); DeepSeek is simply one such endpoint. API keys are masked when
 serialized to the client (`keyMasked`), never returned raw.
 
+`apiKey` may be empty: local gateways often authenticate by other means, so a
+keyless entry stays selectable and the `Authorization` header is omitted rather
+than sent as an empty `Bearer`. Only `enabled: false` takes a provider out of
+the picker.
+
 ## REST API
 
 ### `GET /api/meta`
@@ -114,8 +119,10 @@ List configured providers with masked keys: `[{ id, name, baseUrl, enabled, keyM
 
 ### `POST /api/providers`
 
-Create a provider. Body: `{ name, baseUrl, apiKey, models? }`. `name`/`baseUrl`/`apiKey`
-are required; `baseUrl` must be http(s). `201 { id, … }`.
+Create a provider. Body: `{ name, baseUrl, apiKey?, models? }`. `name` and
+`baseUrl` are required and `baseUrl` must be http(s); `apiKey` is optional
+because local gateways often accept no credential (the `Authorization` header
+is then omitted entirely rather than sent as an empty `Bearer`). `201 { id, … }`.
 
 ### `PATCH /api/providers/:id`
 
