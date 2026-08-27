@@ -8,13 +8,13 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
-  MockLlmProvider,
   createWebServer,
   type LlmProvider,
   type ModelRequest,
   type WebEnvelope,
   type WebServer,
 } from 'mini-dsh'
+import { FakeOpenAiServer, FakeScriptedLlm } from './fake-llm.ts'
 
 let root = ''
 let server: WebServer
@@ -33,8 +33,9 @@ afterAll(async () => {
 async function start(
   steps: readonly (string | { toolCalls: readonly { name: string; args: Record<string, unknown> }[] })[],
   provider?: LlmProvider,
+  extra?: Partial<Parameters<typeof createWebServer>[0]>,
 ): Promise<void> {
-  server = await createWebServer({ root, providers: [provider ?? new MockLlmProvider(steps)] })
+  server = await createWebServer({ root, providers: [provider ?? new FakeScriptedLlm(steps)], ...extra })
   baseUrl = server.url
 }
 
@@ -122,9 +123,9 @@ describe('web server', () => {
       folder: string
       models: string[]
     }
-    expect(meta.provider).toBe('mock')
-    expect(meta.model).toBe('mock')
-    expect(meta.models).toEqual(['mock'])
+    expect(meta.provider).toBe('scripted')
+    expect(meta.model).toBe('scripted')
+    expect(meta.models).toEqual(['scripted'])
     expect(meta.folder).toBe(root)
   })
 
@@ -135,7 +136,7 @@ describe('web server', () => {
       models: ['fast', 'smart'],
       stream(request) {
         seen.push(request)
-        return new MockLlmProvider(['answered']).stream(request)
+        return new FakeScriptedLlm(['answered']).stream(request)
       },
     }
     await start(['answered'], recorder)
@@ -380,7 +381,7 @@ describe('web server', () => {
       models: ['m1'],
       stream(request) {
         seen.push(request)
-        return new MockLlmProvider([
+        return new FakeScriptedLlm([
           {
             thinking: 'the user wants a summary; I should list files first',
             content: 'here is the summary',
@@ -407,5 +408,182 @@ describe('web server', () => {
     const history = last?.messages.map((m) => m.content).join(' ') ?? ''
     expect(history).toContain('here is the summary')
     expect(history).not.toContain('I should list files first')
+  })
+})
+
+// ── provider registry over real HTTP ────────────────────────────────────────
+
+describe('provider registry', () => {
+  it('creates, syncs, tests, switches, disables, and deletes providers', async () => {
+    const fake = new FakeOpenAiServer()
+    const fakeBase = await fake.start()
+    const config = path.join(root, 'providers-crud.json')
+    let s: WebServer | undefined
+    try {
+      s = await createWebServer({ root, configFile: config })
+      const base = s.url
+      const meta0 = (await (await fetch(`${base}/api/meta`)).json()) as { providers: { id: string }[] }
+      expect(meta0.providers).toEqual([])
+
+      const created = await fetch(`${base}/api/providers`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Clip Proxy One', baseUrl: `${fakeBase}/v1`, apiKey: 'sk-test-1234' }),
+      })
+      expect(created.status).toBe(201)
+      const entry = (await created.json()) as { id: string; keyMasked: string }
+      expect(entry.id).toBe('clip-proxy-one')
+      expect(entry.keyMasked).toBe('••••1234')
+
+      // Raw key never leaves the server.
+      const listed = (await (await fetch(`${base}/api/providers`)).json()) as { apiKey?: string }[]
+      expect(listed[0] && 'apiKey' in listed[0]).toBe(false)
+
+      // Validation: bad URL and duplicate-name slug-uniqueness.
+      const bad = await fetch(`${base}/api/providers`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'x', baseUrl: 'ftp://nope', apiKey: 'k' }),
+      })
+      expect(bad.status).toBe(400)
+
+      // Sync pulls the fake /models list and persists into the config file.
+      const synced = await fetch(`${base}/api/providers/clip-proxy-one/sync`, { method: 'POST' })
+      expect(synced.status).toBe(200)
+      const syncBody = (await synced.json()) as { ok: boolean; models: string[] }
+      expect(syncBody.models).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra'])
+      const persisted = JSON.parse(await fs.readFile(config, 'utf8')) as { models: string[] }[]
+      expect(persisted[0]?.models).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra'])
+
+      // Test connection issues a buffered completion ping against the fake.
+      const tested = await fetch(`${base}/api/providers/clip-proxy-one/test`, { method: 'POST' })
+      expect(tested.status).toBe(200)
+      const ping = fake.seenRequests.find((request) => request.url.endsWith('/chat/completions'))
+      expect(ping !== undefined && ping.body['stream']).toBe(false)
+
+      // Switching active pair rides the same PUT as before.
+      const switched = await fetch(`${base}/api/model`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ provider: 'clip-proxy-one', model: 'gpt-5.6-sol' }),
+      })
+      expect(switched.status).toBe(200)
+      const metaSwitched = (await (await fetch(`${base}/api/meta`)).json()) as { provider: string; model: string; models: string[] }
+      expect(metaSwitched.provider).toBe('clip-proxy-one')
+      expect(metaSwitched.model).toBe('gpt-5.6-sol')
+      expect(metaSwitched.models).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra'])
+
+      // Unknown model inside an advertised list fails loud.
+      const badModel = await fetch(`${base}/api/model`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'not-offered' }),
+      })
+      expect(badModel.status).toBe(400)
+
+      // Disabling makes the pair unusable for selection.
+      const disabled = await fetch(`${base}/api/providers/clip-proxy-one`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled: false }),
+      })
+      expect(disabled.status).toBe(200)
+      const unusable = await fetch(`${base}/api/model`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ provider: 'clip-proxy-one', model: 'gpt-5.6-sol' }),
+      })
+      expect(unusable.status).toBe(400)
+
+      const deleted = await fetch(`${base}/api/providers/clip-proxy-one`, { method: 'DELETE' })
+      expect(deleted.status).toBe(200)
+      const again = await fetch(`${base}/api/providers/clip-proxy-one`, { method: 'DELETE' })
+      expect(again.status).toBe(404)
+    } finally {
+      await s?.close()
+      await fake.stop()
+    }
+  })
+
+  it('seeds a deepseek entry from env on first boot when asked', async () => {
+    const previous = process.env['DEEPSEEK_API_KEY']
+    process.env['DEEPSEEK_API_KEY'] = 'env-seed-key'
+    const config = path.join(root, 'providers-seed.json')
+    let s: WebServer | undefined
+    try {
+      s = await createWebServer({ root, configFile: config, seedDeepseekFromEnv: true })
+      const list = (await (await fetch(`${s.url}/api/providers`)).json()) as { id: string; keyMasked: string }[]
+      expect(list[0]?.id).toBe('deepseek')
+      expect(list[0]?.keyMasked).toBe('••••-key')
+      const persisted = JSON.parse(await fs.readFile(config, 'utf8')) as { id: string }[]
+      expect(persisted[0]?.id).toBe('deepseek')
+    } finally {
+      if (previous === undefined) delete process.env['DEEPSEEK_API_KEY']
+      else process.env['DEEPSEEK_API_KEY'] = previous
+      await s?.close()
+    }
+  })
+})
+
+// ── per-session workspace folders ───────────────────────────────────────────
+
+describe('per-session folders', () => {
+  it('scopes filesystem tools to each session folder via the ambient agent scope', async () => {
+    const dirA = path.join(root, 'proj-a')
+    const dirB = path.join(root, 'proj-b')
+    await fs.mkdir(dirA, { recursive: true })
+    await fs.mkdir(dirB, { recursive: true })
+
+    const allowAll = {
+      read: 'allow', glob: 'allow', grep: 'allow', write: 'allow', edit: 'allow', bash: 'allow',
+    } as const
+    // Each tool step is followed by a terminal text answer: Agent asks the
+    // provider again after every tool result, so two entries would otherwise
+    // clamp at B and make session A write twice.
+    const steps = [
+      { toolCalls: [{ name: 'write', args: { path: 'mark.txt', content: 'from-A' } }] },
+      'A completed',
+      { toolCalls: [{ name: 'write', args: { path: 'mark.txt', content: 'from-B' } }] },
+      'B completed',
+    ]
+    await start(steps, undefined, {
+      policy: allowAll,
+      defaultMode: 'allow',
+    })
+
+    const madeA = (await (await post('/api/sessions', { folder: dirA })).json()) as { id: string; folder: string }
+    expect(madeA.folder).toBe(path.resolve(dirA))
+    const madeB = (await (await post('/api/sessions', { folder: dirB })).json()) as { id: string }
+    const listing = (await (await fetch(`${baseUrl}/api/sessions`)).json()) as { id: string; folder: string | null }[]
+    expect(listing.find((row) => row.id === madeA.id)?.folder).toBe(path.resolve(dirA))
+
+    const sseA = new SseReader(await fetch(`${baseUrl}/api/sessions/${madeA.id}/events`))
+    void post(`/api/sessions/${madeA.id}/messages`, { content: 'mark A' })
+    const framesA = await sseA.until((envelope) =>
+      envelope.kind === 'session' && envelope.event.type === 'tool/result')
+    const resultA = framesA.find((e): e is Extract<WebEnvelope, { kind: 'session' }> =>
+      e.kind === 'session' && e.event.type === 'tool/result')
+    expect(resultA?.event.type).toBe('tool/result')
+    if (resultA?.event.type === 'tool/result') expect(resultA.event.ok).toBe(true)
+    expect(await fs.readFile(path.join(dirA, 'mark.txt'), 'utf8')).toBe('from-A')
+
+    const sseB = new SseReader(await fetch(`${baseUrl}/api/sessions/${madeB.id}/events`))
+    void post(`/api/sessions/${madeB.id}/messages`, { content: 'mark B' })
+    await sseB.until((envelope) => envelope.kind === 'session' && envelope.event.type === 'tool/result')
+    expect(await fs.readFile(path.join(dirB, 'mark.txt'), 'utf8')).toBe('from-B')
+
+    // Session-scoped override beats switching mid-flight for one session only.
+    const retarget = await fetch(`${baseUrl}/api/sessions/${madeB.id}/folder`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: root }),
+    })
+    expect(retarget.status).toBe(200)
+    const reset = await fetch(`${baseUrl}/api/sessions/${madeB.id}/folder`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: '' }),
+    })
+    expect(reset.status).toBe(200)
   })
 })
