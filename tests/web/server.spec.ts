@@ -505,6 +505,43 @@ describe('provider registry', () => {
     }
   })
 
+  it('repairs the active model when a sync drops it from the advertised list', async () => {
+    const fake = new FakeOpenAiServer()
+    const fakeBase = await fake.start()
+    const config = path.join(root, 'providers-resync.json')
+    let s: WebServer | undefined
+    try {
+      s = await createWebServer({ root, configFile: config })
+      const base = s.url
+      await fetch(`${base}/api/providers`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Resync',
+          baseUrl: `${fakeBase}/v1`,
+          apiKey: 'sk-resync-9999',
+          models: ['legacy-a', 'legacy-b'],
+        }),
+      })
+      await fetch(`${base}/api/model`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ provider: 'resync', model: 'legacy-b' }),
+      })
+
+      // The fake advertises a completely different list; the selected
+      // 'legacy-b' disappears and must not survive as a stale pointer.
+      const synced = await fetch(`${base}/api/providers/resync/sync`, { method: 'POST' })
+      expect(synced.status).toBe(200)
+      const meta = (await (await fetch(`${base}/api/meta`)).json()) as { provider: string; model: string }
+      expect(meta.provider).toBe('resync')
+      expect(meta.model).toBe('gpt-5.6-sol')
+    } finally {
+      await s?.close()
+      await fake.stop()
+    }
+  })
+
   it('seeds a deepseek entry from env on first boot when asked', async () => {
     const previous = process.env['DEEPSEEK_API_KEY']
     process.env['DEEPSEEK_API_KEY'] = 'env-seed-key'

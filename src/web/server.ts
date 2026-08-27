@@ -328,6 +328,13 @@ export async function createWebServer(options: WebServerOptions): Promise<WebSer
         state.activeProvider = undefined
         state.model = undefined
       }
+      return
+    }
+    // The provider survived but its advertised list may have changed (a sync
+    // can drop the model we had selected); re-pick the first one when it did.
+    const available = kernel.ctx.llm.active().models ?? []
+    if (state.model !== undefined && available.length > 0 && !available.includes(state.model)) {
+      state.model = available[0]
     }
   }
 
