@@ -301,6 +301,7 @@ export function App() {
         open={settingsOpen}
         providers={meta?.providers ?? []}
         activeProvider={meta?.provider ?? ''}
+        activeModel={meta?.model ?? ''}
         onDismiss={() => setSettingsOpen(false)}
         onRefresh={refreshMeta}
         onSelectActive={async (provider, model) => {

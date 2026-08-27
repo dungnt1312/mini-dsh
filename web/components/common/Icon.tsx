@@ -117,6 +117,52 @@ const PATHS: Readonly<Record<string, ReactNode>> = {
     </>
   ),
   square: <rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" strokeWidth={0} />,
+  refresh: (
+    <>
+      <path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-7.4-3.9" />
+      <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 7.4 3.9" />
+      <path d="M20 3v4h-4M4 21v-4h4" />
+    </>
+  ),
+  eye: (
+    <>
+      <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z" />
+      <circle cx="12" cy="12" r="3" />
+    </>
+  ),
+  eyeOff: (
+    <>
+      <path d="M10.6 5.2A9.7 9.7 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-2.4 3.2" />
+      <path d="M6.3 6.4A16.8 16.8 0 0 0 2 12s3.6 7 10 7a9.6 9.6 0 0 0 4.2-.9" />
+      <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+      <path d="M3 3l18 18" />
+    </>
+  ),
+  key: (
+    <>
+      <circle cx="7.5" cy="15.5" r="4.5" />
+      <path d="M10.7 12.3 20 3M16 4l3 3M14 6l3 3" />
+    </>
+  ),
+  globe: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18" />
+    </>
+  ),
+  circle: <circle cx="12" cy="12" r="8" />,
+  circleDot: (
+    <>
+      <circle cx="12" cy="12" r="8" />
+      <circle cx="12" cy="12" r="3.2" fill="currentColor" strokeWidth={0} />
+    </>
+  ),
+  info: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v5M12 8h.01" />
+    </>
+  ),
 }
 
 function Icon({

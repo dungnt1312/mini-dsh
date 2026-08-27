@@ -181,6 +181,107 @@
 }
 
 .ui-input::placeholder { color: var(--text-faint); }
+.ui-input-mono { font-family: var(--font-mono); font-size: 11.5px; }
+
+.ui-field-invalid { border-color: var(--bad-border); background: var(--bad-tint); }
+.ui-field-invalid:focus-within { border-color: var(--bad); }
+
+/* the trailing slot hosts reveal buttons, so it must not eat the padding */
+.ui-field-trailing .ui-icon-btn { width: 20px; height: 20px; margin: -3px -4px -3px 0; }
+
+/* ── Field (label + control + hint) ── */
+.ui-field-row { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.ui-field-label { color: var(--text); font-size: 11.5px; font-weight: 500; }
+.ui-field-hint { margin: 0; color: var(--text-faint); font-size: 10.5px; line-height: 1.45; }
+.ui-field-hint-bad { color: var(--bad); }
+
+/* ── Switch ── */
+.ui-switch {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  cursor: pointer;
+}
+
+.ui-switch.is-disabled { opacity: 0.45; cursor: default; }
+
+.ui-switch-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.ui-switch-track {
+  flex-shrink: 0;
+  width: 28px;
+  height: 16px;
+  margin-top: 1px;
+  padding: 2px;
+  background: var(--bg-active);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-chip);
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.ui-switch-knob {
+  display: block;
+  width: 10px;
+  height: 10px;
+  background: var(--text-faint);
+  border-radius: 1px;
+  transition: transform 0.12s ease, background 0.12s ease;
+}
+
+.ui-switch-input:checked + .ui-switch-track { background: var(--accent-tint); border-color: var(--accent-border); }
+.ui-switch-input:checked + .ui-switch-track .ui-switch-knob { background: var(--accent-text); transform: translateX(12px); }
+.ui-switch-input:focus-visible + .ui-switch-track { outline: 1px solid var(--accent); outline-offset: 1px; }
+
+.ui-switch-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ui-switch-label { color: var(--text); font-size: 11.5px; font-weight: 500; }
+.ui-switch-hint { color: var(--text-faint); font-size: 10.5px; line-height: 1.45; }
+
+/* ── Modal ── */
+.ui-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(8, 9, 11, 0.72);
+}
+
+.ui-modal {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-height: calc(100vh - 48px);
+  overflow: hidden;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: 0 24px 72px rgba(0, 0, 0, 0.6);
+}
+
+.ui-modal-sm { max-width: 440px; }
+.ui-modal-md { max-width: 720px; }
+.ui-modal-lg { max-width: 1000px; }
+
+.ui-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+  padding: 14px 16px;
+  background: var(--bg-pane);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.ui-modal-body { display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: hidden; }
 
 /* ── Select / Menu ── */
 .ui-select { position: relative; display: inline-flex; }

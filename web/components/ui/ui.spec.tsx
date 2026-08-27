@@ -53,7 +53,30 @@ describe('runtime provider UI helpers', () => {
     expect(activeModelValue(meta)).toBe('cliproxy1:gpt-5.6-sol')
   })
 
-  it('settings modal only renders masked API key data', () => {
+  it('settings modal lists providers through the shared dialog shell', () => {
+    const html = renderToStaticMarkup(
+      <SettingsModal
+        open
+        providers={meta.providers}
+        activeProvider="cliproxy1"
+        activeModel="gpt-5.6-sol"
+        onDismiss={() => undefined}
+        onRefresh={async () => undefined}
+        onSelectActive={async () => undefined}
+      />,
+    )
+    // Dialog chrome comes from the Modal primitive, not bespoke markup.
+    expect(html).toContain('ui-modal-backdrop')
+    expect(html).toContain('aria-modal="true"')
+    expect(html).toContain('Providers &amp; Models')
+    // Every configured provider is selectable, with its model count as subtitle.
+    expect(html).toContain('cliproxy1')
+    expect(html).toContain('2 models')
+    expect(html).toContain('Test connection')
+    expect(html).not.toContain('sk-real-secret')
+  })
+
+  it('settings modal never renders a raw key field value', () => {
     const html = renderToStaticMarkup(
       <SettingsModal
         open
@@ -64,10 +87,9 @@ describe('runtime provider UI helpers', () => {
         onSelectActive={async () => undefined}
       />,
     )
-    expect(html).toContain('Providers &amp; Models')
-    expect(html).toContain('cliproxy1')
-    expect(html).not.toContain('sk-real-secret')
-    expect(html).toContain('Test connection')
+    // The key input is a password field seeded empty; only the mask is text.
+    expect(html).toContain('type="password"')
+    expect(html).not.toMatch(/value="sk-/)
   })
 })
 
@@ -120,6 +142,57 @@ describe('primitives render their class contract', () => {
 import { Chip } from './Chip.tsx'
 import { TextInput } from './TextInput.tsx'
 import { Select } from './Select.tsx'
+import { Modal } from './Modal.tsx'
+import { Field } from './Field.tsx'
+import { Switch } from './Switch.tsx'
+
+describe('dialog / form primitives', () => {
+  it('Modal renders nothing while closed', () => {
+    expect(renderToStaticMarkup(
+      <Modal open={false} onDismiss={() => undefined} label="x"><p>body</p></Modal>,
+    )).toBe('')
+  })
+
+  it('Modal carries dialog semantics and an optional header slot', () => {
+    const html = renderToStaticMarkup(
+      <Modal open onDismiss={() => undefined} label="Settings" width="md" header={<strong>Head</strong>}>
+        <p>body</p>
+      </Modal>,
+    )
+    expect(html).toContain('role="dialog"')
+    expect(html).toContain('aria-modal="true"')
+    expect(html).toContain('aria-label="Settings"')
+    expect(html).toContain('ui-modal-md')
+    expect(html).toContain('ui-modal-head')
+    expect(html).toContain('Head')
+  })
+
+  it('Field pairs a label with one hint line, tone-aware', () => {
+    const html = renderToStaticMarkup(
+      <Field label="Base URL" tone="bad" hint="Phải là http(s) URL.">
+        <TextInput value="ftp://x" readOnly invalid />
+      </Field>,
+    )
+    expect(html).toContain('ui-field-label')
+    expect(html).toContain('ui-field-hint-bad')
+    expect(html).toContain('ui-field-invalid')
+    expect(html).toContain('aria-invalid="true"')
+  })
+
+  it('Switch keeps a real checkbox behind the track', () => {
+    const html = renderToStaticMarkup(
+      <Switch checked label="Enabled" hint="Tắt thì ẩn khỏi picker." onChange={() => undefined} />,
+    )
+    expect(html).toContain('type="checkbox"')
+    expect(html).toContain('ui-switch-track')
+    expect(html).toContain('ui-switch-hint')
+  })
+
+  it('TextInput can render a monospace variant', () => {
+    const html = renderToStaticMarkup(<TextInput mono value="gpt-5.6-sol" readOnly />)
+    expect(html).toContain('ui-input-mono')
+  })
+})
 
 describe('chip / text-input / select structure', () => {
   it('Chip is a span unless interactive', () => {
