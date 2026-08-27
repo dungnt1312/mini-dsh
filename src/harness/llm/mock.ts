@@ -3,7 +3,7 @@ import type { LlmProvider, ModelRequest, StreamEvent, ToolCall } from './types.t
 /** One scripted model turn: a plain reply, or tool calls (with optional content). */
 export type MockScriptStep =
   | string
-  | { readonly content?: string; readonly toolCalls: readonly Omit<ToolCall, 'id'>[] }
+  | { readonly content?: string; readonly thinking?: string; readonly toolCalls: readonly Omit<ToolCall, 'id'>[] }
 
 function isToolStep(step: MockScriptStep): step is { content?: string; toolCalls: readonly Omit<ToolCall, 'id'>[] } {
   return typeof step === 'object'
@@ -33,6 +33,12 @@ export class MockLlmProvider implements LlmProvider {
     this.index = Math.min(this.index + 1, Math.max(this.steps.length - 1, 0))
 
     const reply = typeof step === 'string' ? step : (step.content ?? '')
+    if (typeof step !== 'string' && step.thinking !== undefined && step.thinking !== '') {
+      const thoughts = step.thinking.match(/\S+\s*/g) ?? [step.thinking]
+      for (const word of thoughts) {
+        yield { type: 'delta', delta: word, thinking: true }
+      }
+    }
     if (reply !== '') {
       const words = reply.match(/\S+\s*/g) ?? [reply]
       for (const word of words) {

@@ -45,7 +45,7 @@ export interface ModelRequest {
 
 /** What a provider yields while streaming one completion. */
 export type StreamEvent =
-  | { readonly type: 'delta'; readonly delta: string }
+  | { readonly type: 'delta'; readonly delta: string; readonly thinking?: true }
   | { readonly type: 'toolCalls'; readonly calls: readonly ToolCall[] }
 
 /**
