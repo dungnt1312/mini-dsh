@@ -128,7 +128,7 @@ Update tương ứng trong docs và README mô tả phím.
 ## 11. Kiểm thử & nghiệm thu
 
 - `npm run build:web` build sạch; `tests/web/server.spec.ts` vẫn green (server không đổi).
-- Thêm `tests/web/ui.spec.tsx`: smoke-render `Chip/Kbd/Button/Badge` bằng `react-dom/server` (không cần jsdom) — assert class variant đúng, không crash.
+- Thêm smoke tests render bằng `react-dom/server` tại `web/components/ui/ui.spec.tsx` — assert class variant đúng, không crash. Vị trí nằm trong `web/` chứ không phải `tests/` vì `tsconfig.json` gốc không có lib DOM/JSX; `vitest.config.ts` nới include + bật esbuild `jsx: automatic`.
 - QA thủ công theo checklist so ảnh mockup ở 3 bề rộng 1600/1280/1000: spacing, radius, trạng thái hover/active/disabled, hotkeys mới, vòng đời approval, reconnect SSE.
 
 ## 12. Thứ tự triển khai dự kiến (chi tiết hóa bằng plan)
