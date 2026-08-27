@@ -1,0 +1,128 @@
+/* ────────────────────────────────────────────────────────────────
+   ui/ primitives — every value comes from tokens.css. Components
+   emit only semantic classes; no literal colors in TSX.
+   ──────────────────────────────────────────────────────────────── */
+
+/* ── Button ── */
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
+}
+
+.ui-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.ui-btn-sm { padding: 3px 10px; font-size: 11.5px; }
+.ui-btn-md { padding: 5px 13px; font-size: 12.5px; }
+
+.ui-btn-primary { background: var(--accent); color: #fff; }
+.ui-btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+
+.ui-btn-ghost { color: var(--text-dim); }
+.ui-btn-ghost:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
+
+.ui-btn-outline { border-color: var(--border-strong); color: var(--text-dim); }
+.ui-btn-outline:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
+
+.ui-btn-success { background: var(--ok-tint); border-color: var(--ok-border); color: var(--ok); }
+.ui-btn-success:hover:not(:disabled) { background: rgba(70, 194, 134, 0.2); }
+
+.ui-btn-danger { background: var(--bad); color: #200a08; }
+.ui-btn-danger:hover:not(:disabled) { filter: brightness(1.08); }
+
+.ui-btn-outline-danger { background: var(--bad-tint); border-color: var(--bad-border); color: var(--bad); }
+.ui-btn-outline-danger:hover:not(:disabled) { background: rgba(244, 113, 102, 0.18); }
+
+/* ── IconButton ── */
+.ui-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.ui-icon-btn-sm { width: 26px; height: 26px; }
+.ui-icon-btn-md { width: 30px; height: 30px; }
+
+.ui-icon-btn-ghost { color: var(--text-faint); }
+.ui-icon-btn-ghost:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
+
+.ui-icon-btn-outline { border: 1px solid var(--border-strong); color: var(--text-faint); }
+.ui-icon-btn-outline:hover:not(:disabled) { color: var(--text); background: var(--bg-hover); }
+
+.ui-icon-btn-tinted {
+  background: var(--accent-tint);
+  border: 1px solid var(--accent-border);
+  color: var(--accent-text);
+}
+
+.ui-icon-btn-solid { background: var(--accent); color: #fff; }
+.ui-icon-btn-solid:hover:not(:disabled) { filter: brightness(1.08); }
+
+.ui-icon-btn:disabled { opacity: 0.35; cursor: default; }
+
+/* dashed placeholder view-toggle (only renders when SHOW_SLOTS) */
+.ui-icon-btn-slot { border: 1px dashed var(--border-strong); }
+
+/* ── Kbd ── */
+.ui-kbd {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-faint);
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--r-chip);
+  padding: 0 5px;
+  line-height: 15px;
+  white-space: nowrap;
+}
+
+/* ── Badge ── */
+.ui-badge {
+  display: inline-block;
+  font-size: 9px;
+  letter-spacing: 0.02em;
+  border-radius: var(--r-chip);
+  padding: 0.5px 6px;
+  white-space: nowrap;
+}
+
+.ui-badge-gray { background: var(--bg-active); color: var(--text-faint); }
+.ui-badge-blue { background: var(--accent-tint); color: var(--accent-text); border: 1px solid var(--accent-border); }
+.ui-badge-green { background: var(--ok-tint); color: var(--ok); border: 1px solid var(--ok-border); }
+.ui-badge-amber { background: var(--warn-tint); color: var(--amber); border: 1px solid var(--warn-border); }
+
+/* ── CodeChip ── */
+.ui-code {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--r-chip);
+  padding: 1.5px 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* ── Panel ── */
+.ui-panel { border-radius: var(--r-sm); }
+.ui-panel-flat { background: transparent; }
+.ui-panel-raised { background: var(--bg-card); border: 1px solid var(--border); padding: 10px 12px; }
