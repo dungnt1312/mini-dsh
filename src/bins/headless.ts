@@ -4,13 +4,12 @@
  * capability tools, binds one agent to one durable session, and streams
  * replies and tool traffic to stdout.
  *
- * Providers: DeepSeek when `DEEPSEEK_API_KEY` is set and `--mock` is
- * absent; otherwise the scripted mock. Approval: `--yolo` allows every
- * call; otherwise reads/globs are allowed and write/edit/bash prompt on
- * stderr before running.
+ * This runner has no Settings UI, therefore it requires `DEEPSEEK_API_KEY`.
+ * Approval: `--yolo` allows every call; otherwise reads/globs are allowed and
+ * write/edit/bash prompt on stderr before running.
  *
  * Usage:
- *   tsx src/bins/headless.ts --mock --message "hello"
+ *   tsx src/bins/headless.ts --message "hello"
  *   tsx src/bins/headless.ts            # interactive REPL, 'exit' quits
  */
 import { createInterface } from 'node:readline/promises'
@@ -20,7 +19,6 @@ import {
   DeepSeekProvider,
   Kernel,
   LlmService,
-  MockLlmProvider,
   SessionsService,
   ToolsService,
   attachApproval,
@@ -31,36 +29,25 @@ import {
   type SessionEvent,
 } from '../index.ts'
 
-// A repo-root .env supplies DEEPSEEK_API_KEY when the process environment
-// does not carry it. Real environment variables win over file entries.
 loadRepoEnv()
 
-const MOCK_SCRIPT = [
-  'Hello from the mini-dsh mock model. Set DEEPSEEK_API_KEY to talk to the real thing.',
-  'I am a scripted stand-in, but the session log, turns, tools, and streaming around me are real.',
-  'Every reply I give was appended to the durable log first — model-visible means logged.',
-]
-
 interface CliOptions {
-  readonly mock: boolean
   readonly yolo: boolean
   readonly root: string
   readonly message: string | undefined
 }
 
 function parseArgs(argv: readonly string[]): CliOptions {
-  let mock = false
   let yolo = false
   let root = process.cwd()
   let message: string | undefined
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
-    if (arg === '--mock') mock = true
-    else if (arg === '--yolo') yolo = true
+    if (arg === '--yolo') yolo = true
     else if (arg === '--root') root = argv[i + 1] ?? root
     else if (arg === '--message') message = argv[i + 1]
   }
-  return { mock, yolo, root, message }
+  return { yolo, root, message }
 }
 
 /** Render one session's durable stream to stdout as events arrive. */
@@ -101,8 +88,13 @@ async function askUser(call: { name: string; args: Record<string, unknown> }): P
 }
 
 async function main(): Promise<void> {
-  const { mock, yolo, root, message } = parseArgs(process.argv.slice(2))
+  const { yolo, root, message } = parseArgs(process.argv.slice(2))
   const apiKey = readApiKey()
+  if (apiKey === undefined) {
+    process.stderr.write('headless requires DEEPSEEK_API_KEY; use the web UI Settings panel to configure custom OpenAI-completions providers.\n')
+    process.exitCode = 1
+    return
+  }
 
   const kernel = new Kernel()
   kernel.ctx.plugin(SessionsService)
@@ -121,16 +113,7 @@ async function main(): Promise<void> {
     kernel.ctx.tools.register(tool)
   }
   kernel.ctx.tools.register(bashTool())
-
-  if (mock || apiKey === undefined) {
-    kernel.ctx.llm.register(new MockLlmProvider(MOCK_SCRIPT))
-    if (!mock && apiKey === undefined) {
-      process.stderr.write('no DEEPSEEK_API_KEY; using the mock provider (--mock to silence this)\n')
-    }
-  } else {
-    const baseUrl = process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com'
-    kernel.ctx.llm.register(new DeepSeekProvider(apiKey, baseUrl))
-  }
+  kernel.ctx.llm.register(new DeepSeekProvider(apiKey, process.env['DEEPSEEK_BASE_URL'] ?? 'https://api.deepseek.com'))
 
   const session: Session = kernel.ctx.sessions.create()
   kernel.ctx.on('session/event', (emitter, event) => {

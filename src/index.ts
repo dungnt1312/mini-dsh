@@ -53,7 +53,6 @@ export type {
   ToolSchema,
 } from './harness/llm/types.ts'
 export { LlmService } from './harness/llm/service.ts'
-export { MockLlmProvider, type MockScriptStep } from './harness/llm/mock.ts'
 export { DeepSeekProvider } from './harness/llm/deepseek.ts'
 export { OpenAiCompletionsProvider, type OpenAiCompletionsOptions } from './harness/llm/openai.ts'
 

@@ -1,6 +1,6 @@
 /**
- * CLI smoke: the real headless bin, spawned through tsx with the mock
- * provider, must stream the scripted reply to stdout and exit cleanly.
+ * CLI smoke: headless has no Settings surface, so it must fail with an
+ * actionable message rather than silently switching to a scripted mock.
  */
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -30,11 +30,12 @@ function runCli(args: string[]): Promise<{ code: number | null; stdout: string; 
 }
 
 describe('headless CLI', () => {
-  it('one-shot mode streams the scripted mock reply and exits 0', async () => {
-    const { code, stdout, stderr } = await runCli(['--mock', '--message', 'hello'])
+  it('fails clearly instead of falling back to a mock provider', async () => {
+    const { code, stdout, stderr } = await runCli(['--message', 'hello'])
 
-    expect(code).toBe(0)
-    expect(stdout).toContain('Hello from the mini-dsh mock model')
-    expect(stderr).toBe('')
+    expect(code).toBe(1)
+    expect(stdout).toBe('')
+    expect(stderr).toContain('headless requires DEEPSEEK_API_KEY')
+    expect(stderr).not.toContain('mock provider')
   }, 30_000)
 })

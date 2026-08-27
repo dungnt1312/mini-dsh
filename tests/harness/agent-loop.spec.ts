@@ -9,13 +9,13 @@ import {
   AgentsService,
   Kernel,
   LlmService,
-  MockLlmProvider,
   SessionsService,
   type Agent,
   type LlmProvider,
   type ModelRequest,
   type Session,
 } from 'mini-dsh'
+import { FakeScriptedLlm } from '../support/fake-llm.ts'
 
 interface Harness {
   kernel: Kernel
@@ -30,7 +30,7 @@ function harness(replies: readonly string[], provider?: LlmProvider): Harness {
   kernel.ctx.plugin(SessionsService)
   kernel.ctx.plugin(LlmService)
   kernel.ctx.plugin(AgentsService)
-  kernel.ctx.llm.register(provider ?? new MockLlmProvider(replies))
+  kernel.ctx.llm.register(provider ?? new FakeScriptedLlm(replies))
 
   const session = kernel.ctx.sessions.create()
   const agent = kernel.ctx.agents.create(session)
@@ -230,7 +230,7 @@ describe('agent loop', () => {
 
   it('fork mid-conversation resumes from the copied history', async () => {
     const { kernel, session, agent, llm } = harness(['first reply', 'fork reply', 'parent reply'])
-    llm.use('mock')
+    llm.use('scripted')
 
     agent.send('one')
     await agent.run()

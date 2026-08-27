@@ -11,7 +11,6 @@ import {
   AgentsService,
   Kernel,
   LlmService,
-  MockLlmProvider,
   SessionsService,
   ToolsService,
   bashTool,
@@ -22,6 +21,7 @@ import {
   type ModelRequest,
   type Session,
 } from 'mini-dsh'
+import { FakeScriptedLlm } from '../support/fake-llm.ts'
 
 let root = ''
 
@@ -48,7 +48,7 @@ function bootHarness(steps: readonly (string | { toolCalls: readonly { name: str
   kernel.ctx.plugin(AgentsService)
 
   const requests: ModelRequest[] = []
-  const mock = new MockLlmProvider(steps)
+  const mock = new FakeScriptedLlm(steps)
   // The recorder wraps the mock so behavior (tool calls, scripted replies)
   // stays deterministic while every request is captured.
   const recorder: LlmProvider = {

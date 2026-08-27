@@ -7,11 +7,11 @@ import { describe, expect, it } from 'vitest'
 import {
   Kernel,
   LlmService,
-  MockLlmProvider,
   type LlmProvider,
   type ModelRequest,
   type StreamEvent,
 } from 'mini-dsh'
+import { FakeScriptedLlm } from '../support/fake-llm.ts'
 
 function requestOf(...contents: string[]): ModelRequest {
   return { messages: contents.map((content) => ({ role: 'user' as const, content })) }
@@ -31,7 +31,7 @@ async function collect(stream: AsyncIterable<StreamEvent>): Promise<{ text: stri
 describe('llm seam', () => {
   it('mock provider streams a scripted reply as reassemblable deltas', async () => {
     const kernel = new Kernel()
-    const provider = new MockLlmProvider(['one two three'])
+    const provider = new FakeScriptedLlm(['one two three'])
     kernel.ctx.plugin(LlmService)
     kernel.ctx.llm.register(provider)
 
@@ -44,7 +44,7 @@ describe('llm seam', () => {
   it('consecutive calls advance the script and clamp to the last reply', async () => {
     const kernel = new Kernel()
     kernel.ctx.plugin(LlmService)
-    kernel.ctx.llm.register(new MockLlmProvider(['first', 'second']))
+    kernel.ctx.llm.register(new FakeScriptedLlm(['first', 'second']))
 
     const run = async (): Promise<string> => (await collect(kernel.ctx.llm.stream(requestOf('x')))).text
     expect(await run()).toBe('first')
@@ -57,7 +57,7 @@ describe('llm seam', () => {
     const kernel = new Kernel()
     kernel.ctx.plugin(LlmService)
     kernel.ctx.llm.register(
-      new MockLlmProvider([
+      new FakeScriptedLlm([
         { content: 'let me check', toolCalls: [{ name: 'read', args: { path: 'a.txt' } }] },
         'all done',
       ]),
@@ -85,7 +85,7 @@ describe('llm seam', () => {
   it('use() fails loud on an unknown provider name', () => {
     const kernel = new Kernel()
     kernel.ctx.plugin(LlmService)
-    kernel.ctx.llm.register(new MockLlmProvider(['x']))
+    kernel.ctx.llm.register(new FakeScriptedLlm(['x']))
     expect(() => kernel.ctx.llm.use('nope')).toThrow(/no provider named 'nope'/)
     void kernel.stop()
   })
@@ -93,9 +93,9 @@ describe('llm seam', () => {
   it('register is an effect: disposal removes the provider', () => {
     const kernel = new Kernel()
     kernel.ctx.plugin(LlmService)
-    const provider: LlmProvider = new MockLlmProvider(['only'])
+    const provider: LlmProvider = new FakeScriptedLlm(['only'])
     const dispose = kernel.ctx.llm.register(provider)
-    expect(kernel.ctx.llm.active().name).toBe('mock')
+    expect(kernel.ctx.llm.active().name).toBe('scripted')
 
     dispose()
     expect(() => kernel.ctx.llm.stream(requestOf('x'))).toThrow(/no provider registered/)
