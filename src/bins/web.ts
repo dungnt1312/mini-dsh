@@ -60,7 +60,7 @@ async function main(): Promise<void> {
 
   const server = await createWebServer({
     root,
-    provider,
+    providers: [provider],
     ...(yolo ? {} : { policy }),
     defaultMode: yolo ? 'allow' : 'ask',
     port,

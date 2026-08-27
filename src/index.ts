@@ -55,6 +55,7 @@ export type {
 export { LlmService } from './harness/llm/service.ts'
 export { MockLlmProvider, type MockScriptStep } from './harness/llm/mock.ts'
 export { DeepSeekProvider } from './harness/llm/deepseek.ts'
+export { OpenAiCompletionsProvider, type OpenAiCompletionsOptions } from './harness/llm/openai.ts'
 
 // ── Harness: agent ───────────────────────────────────────────────────────
 export type {
@@ -81,7 +82,16 @@ export { bashTool, type BashToolOptions } from './capabilities/shell/bash.ts'
 // ── Web host ──────────────────────────────────────────────────────────────
 export {
   createWebServer,
+  extractModelIds,
+  type PublicProvider,
   type WebEnvelope,
   type WebServer,
   type WebServerOptions,
 } from './web/server.ts'
+export {
+  loadProviders,
+  saveProviders,
+  maskKey,
+  slugify,
+  type ProviderConfig,
+} from './web/provider-store.ts'

@@ -34,7 +34,7 @@ async function start(
   steps: readonly (string | { toolCalls: readonly { name: string; args: Record<string, unknown> }[] })[],
   provider?: LlmProvider,
 ): Promise<void> {
-  server = await createWebServer({ root, provider: provider ?? new MockLlmProvider(steps) })
+  server = await createWebServer({ root, providers: [provider ?? new MockLlmProvider(steps)] })
   baseUrl = server.url
 }
 
@@ -88,6 +88,29 @@ async function post(pathname: string, body?: unknown): Promise<Response> {
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   }
   return fetch(`${baseUrl}${pathname}`, init)
+}
+
+async function patch(pathname: string, body?: unknown): Promise<Response> {
+  const init: RequestInit = {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  }
+  return fetch(`${baseUrl}${pathname}`, init)
+}
+
+/** A provider emitting chunk-by-chunk with a tiny delay, for stop tests. */
+function slowProvider(): LlmProvider {
+  return {
+    name: 'slow',
+    models: ['slow'],
+    async *stream(): AsyncIterable<{ type: 'delta'; delta: string }> {
+      for (const word of ['one', 'two', 'three', 'four', 'five']) {
+        await new Promise((resolve) => setTimeout(resolve, 40))
+        yield { type: 'delta', delta: `${word} ` }
+      }
+    },
+  }
 }
 
 describe('web server', () => {
@@ -293,5 +316,96 @@ describe('web server', () => {
     expect((await fetch(`${baseUrl}/api/sessions/missing/events`)).status).toBe(404)
     const bad = await post(`/api/sessions/missing/messages`, { content: 'hi' })
     expect(bad.status).toBe(404)
+  })
+
+  it('renaming a session stores a custom title; empty resets to the derived one', async () => {
+    await start(['hello there'])
+    const { id } = (await (await post('/api/sessions')).json()) as { id: string }
+    await post(`/api/sessions/${id}/messages`, { content: 'first question' })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    const renamed = await patch(`/api/sessions/${id}`, { title: '  my favorite chat  ' })
+    expect(renamed.status).toBe(200)
+    const titled = (await (await fetch(`${baseUrl}/api/sessions`)).json()) as Array<{ id: string; title: string }>
+    expect(titled.find((s) => s.id === id)?.title).toBe('my favorite chat')
+
+    const reset = await patch(`/api/sessions/${id}`, { title: '' })
+    expect(reset.status).toBe(200)
+    const resetList = (await (await fetch(`${baseUrl}/api/sessions`)).json()) as Array<{ id: string; title: string }>
+    expect(resetList.find((s) => s.id === id)?.title).toBe('first question')
+
+    const bad = await patch(`/api/sessions/${id}`, { title: 42 })
+    expect(bad.status).toBe(400)
+  })
+
+  it('deleting a session removes it and closes its SSE stream', async () => {
+    await start(['x'])
+    const { id } = (await (await post('/api/sessions')).json()) as { id: string }
+
+    const sse = new SseReader(await fetch(`${baseUrl}/api/sessions/${id}/events`))
+    const deleted = await fetch(`${baseUrl}/api/sessions/${id}`, { method: 'DELETE' })
+    expect(deleted.status).toBe(200)
+    expect((await deleted.json())).toEqual({ deleted: true })
+
+    const list = (await (await fetch(`${baseUrl}/api/sessions`)).json()) as Array<{ id: string }>
+    expect(list.map((s) => s.id)).not.toContain(id)
+    expect((await fetch(`${baseUrl}/api/sessions/${id}/events`)).status).toBe(404)
+    expect((await fetch(`${baseUrl}/api/sessions/${id}/stop`, { method: 'POST' })).status).toBe(404)
+
+    const envelopes = await sse.until((envelope) => envelope.kind === 'error', 8_000)
+    const error = envelopes.find((e) => e.kind === 'error')
+    expect(error?.kind === 'error' && error.message).toBe('session deleted')
+  })
+
+  it('stopping a running turn closes it durably with reason stopped', async () => {
+    await start(['unused'], slowProvider())
+    const { id } = (await (await post('/api/sessions')).json()) as { id: string }
+
+    const sse = new SseReader(await fetch(`${baseUrl}/api/sessions/${id}/events`))
+    void post(`/api/sessions/${id}/messages`, { content: 'go slow' })
+    await sse.until((envelope) => envelope.kind === 'session' && envelope.event.type === 'assistant/chunk')
+
+    const stopped = await post(`/api/sessions/${id}/stop`)
+    expect(stopped.status).toBe(202)
+
+    const rest = await sse.until((envelope) => envelope.kind === 'session' && envelope.event.type === 'turn/end')
+    const end = rest.find((e) => e.kind === 'session' && e.event.type === 'turn/end')
+    expect(end?.kind === 'session' && end.event.type === 'turn/end' && end.event.reason).toBe('stopped')
+  })
+
+  it('thinking deltas stream as marked chunks and never reach model history', async () => {
+    const seen: ModelRequest[] = []
+    const recorder: LlmProvider = {
+      name: 'recorder',
+      models: ['m1'],
+      stream(request) {
+        seen.push(request)
+        return new MockLlmProvider([
+          {
+            thinking: 'the user wants a summary; I should list files first',
+            content: 'here is the summary',
+            toolCalls: [],
+          },
+        ]).stream(request)
+      },
+    }
+    await start(['unused'], recorder)
+    const { id } = (await (await post('/api/sessions')).json()) as { id: string }
+    const sse = new SseReader(await fetch(`${baseUrl}/api/sessions/${id}/events`))
+    void post(`/api/sessions/${id}/messages`, { content: 'summarize' })
+
+    const envelopes = await sse.until((envelope) => envelope.kind === 'session' && envelope.event.type === 'turn/end')
+    const thinkingChunks = envelopes.filter((e) => e.kind === 'session' && e.event.type === 'assistant/chunk' && e.event.thinking === true)
+    expect(thinkingChunks.length).toBeGreaterThan(0)
+
+    // A second turn produces a second request whose history includes the
+    // assembled assistant message — and proves the thinking text never joins it.
+    void post(`/api/sessions/${id}/messages`, { content: 'go on' })
+    await sse.until((envelope) => envelope.kind === 'session' && envelope.event.type === 'turn/end')
+    const last = seen.at(-1)
+    expect(last?.messages.map((m) => m.role)).toContain('assistant')
+    const history = last?.messages.map((m) => m.content).join(' ') ?? ''
+    expect(history).toContain('here is the summary')
+    expect(history).not.toContain('I should list files first')
   })
 })
