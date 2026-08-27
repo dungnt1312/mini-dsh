@@ -13,6 +13,7 @@ import './styles/base.css'
 import './styles/ui.css'
 import './styles/shell.css'
 import './styles/chat.css'
+import './styles/settings.css'
 
 createRoot(document.getElementById('root') ?? document.body).render(
   <StrictMode>

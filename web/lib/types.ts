@@ -30,19 +30,44 @@ export type Envelope =
   | { readonly kind: 'approval'; readonly approvalId: string; readonly call: ToolCall }
   | { readonly kind: 'error'; readonly message: string }
 
+/** One session row; `folder: null` inherits server's default workspace root. */
 export interface SessionListing {
   readonly id: string
   readonly title: string
   readonly eventCount: number
+  readonly folder: string | null
 }
 
-/** Server state: provider, active model, workspace folder. */
+/** Safe provider projection — raw API keys never reach this type. */
+export interface ProviderSummary {
+  readonly id: string
+  readonly name: string
+  readonly baseUrl: string
+  readonly enabled: boolean
+  readonly keyMasked: string
+  readonly models: readonly string[]
+  readonly defaultModel?: string
+}
+
+/** Input to create/update one OpenAI-completions compatible provider. */
+export interface ProviderInput {
+  readonly name?: string
+  readonly baseUrl?: string
+  /** Omit on PATCH to retain stored key; required when creating. */
+  readonly apiKey?: string
+  readonly enabled?: boolean
+  readonly models?: readonly string[]
+  readonly defaultModel?: string
+}
+
+/** Server state: active pair, default workspace, safely masked provider list. */
 export interface Meta {
   readonly provider: string
   readonly model: string
   readonly folder: string
-  /** Model names the provider offers, for the selector. */
+  /** Model names offered by the active provider, for compatibility. */
   readonly models: readonly string[]
+  readonly providers: readonly ProviderSummary[]
 }
 
 export interface PendingApproval {

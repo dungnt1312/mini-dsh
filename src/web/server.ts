@@ -317,11 +317,11 @@ export async function createWebServer(options: WebServerOptions): Promise<WebSer
   const setProviders = (next: readonly ProviderConfig[]): void => {
     list = [...next]
     syncRegistrations()
-    const stillThere =
+    const stillUsable =
       state.activeProvider !== undefined &&
       (injectionNames().includes(state.activeProvider) ||
-        list.some((entry) => entry.id === state.activeProvider))
-    if (!stillThere) {
+        list.some((entry) => entry.id === state.activeProvider && isUsableConfigured(entry)))
+    if (!stillUsable) {
       const first = usableIds()[0]
       if (first !== undefined) setActive(first)
       else {
@@ -769,6 +769,7 @@ async function createProvider(
   if (name === '') return { ok: false, status: 400, error: "body needs a non-empty string 'name'" }
   if (baseUrl === '') return { ok: false, status: 400, error: "body needs a non-empty string 'baseUrl'" }
   if (!/^https?:\/\//.test(baseUrl)) return { ok: false, status: 400, error: `'${baseUrl}' is not an http(s) URL` }
+  if (apiKey === '') return { ok: false, status: 400, error: "body needs a non-empty string 'apiKey'" }
   const base = slugify(name)
   let id = base
   let bump = 2

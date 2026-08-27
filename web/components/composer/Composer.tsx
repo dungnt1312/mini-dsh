@@ -3,11 +3,12 @@ import Icon from '../common/Icon.tsx'
 import { Button } from '../ui/Button.tsx'
 import { IconButton } from '../ui/IconButton.tsx'
 import { Select } from '../ui/Select.tsx'
+import type { ModelOption } from '../../lib/providers.ts'
 
 /**
  * Control-center composer: autosizing textarea over an action row holding
- * the model picker and stop/send. Enter sends, Shift+Enter breaks a line;
- * while a turn runs the send square becomes Stop.
+ * the provider/model picker and stop/send. Enter sends, Shift+Enter breaks a
+ * line; while a turn runs the send square becomes Stop.
  */
 export function Composer({
   connected,
@@ -16,8 +17,8 @@ export function Composer({
   onDraft,
   onSend,
   onStop,
-  model,
-  models,
+  modelValue,
+  modelOptions,
   onModel,
 }: {
   readonly connected: boolean
@@ -26,9 +27,9 @@ export function Composer({
   readonly onDraft: (value: string) => void
   readonly onSend: () => void
   readonly onStop: () => void
-  readonly model: string | null
-  readonly models: readonly string[]
-  readonly onModel: (model: string) => void
+  readonly modelValue: string | null
+  readonly modelOptions: readonly ModelOption[]
+  readonly onModel: (value: string) => void
 }) {
   const area = useRef<HTMLTextAreaElement | null>(null)
   const [focused, setFocused] = useState(false)
@@ -39,7 +40,7 @@ export function Composer({
   }
 
   const submit = (): void => {
-    if (running || draft.trim() === '' || !connected) return
+    if (running || draft.trim() === '' || !connected || modelValue === null) return
     onSend()
   }
 
@@ -57,9 +58,9 @@ export function Composer({
         value={draft}
         rows={1}
         placeholder={connected
-          ? 'Message…  (Enter gửi · Shift+Enter xuống dòng)'
+          ? (modelValue === null ? 'Chọn provider trong Settings trước…' : 'Message…  (Enter gửi · Shift+Enter xuống dòng)')
           : 'connecting…'}
-        disabled={!connected}
+        disabled={!connected || modelValue === null}
         onChange={(event) => {
           onDraft(event.target.value)
           resize(event.currentTarget)
@@ -75,12 +76,12 @@ export function Composer({
       />
       <div className="composer-actions">
         <span className="composer-spacer" />
-        {model !== null && models.length > 0 ? (
+        {modelValue !== null && modelOptions.length > 0 ? (
           <Select
-            value={model}
-            options={models.map((name) => ({ value: name, label: name }))}
+            value={modelValue}
+            options={modelOptions}
             onChange={onModel}
-            label="Chọn model"
+            label="Chọn provider và model"
             triggerClassName="composer-model"
           />
         ) : null}
@@ -95,7 +96,7 @@ export function Composer({
             variant="solid"
             size="md"
             type="submit"
-            disabled={draft.trim() === '' || !connected}
+            disabled={draft.trim() === '' || !connected || modelValue === null}
           >
             <Icon name="send" size={15} />
           </IconButton>

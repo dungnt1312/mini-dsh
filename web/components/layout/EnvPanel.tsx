@@ -5,6 +5,7 @@ import { Panel } from '../ui/Panel.tsx'
 import { Select } from '../ui/Select.tsx'
 import { SHOW_SLOTS } from '../../lib/config.ts'
 import type { StreamState } from '../../lib/api.ts'
+import type { ModelOption } from '../../lib/providers.ts'
 import type { Meta } from '../../lib/types.ts'
 
 const STREAM_LABELS: Readonly<Record<StreamState, string>> = {
@@ -23,26 +24,32 @@ function Row({ term, children }: { readonly term: string; readonly children: Rea
 }
 
 /**
- * Right rail mirroring server meta honestly — session coordinates, model
- * picker (same PUT as the composer), workspace folder. Git/upload blocks
- * exist only behind SHOW_SLOTS; visibility is CSS-driven (docked ≥1280px,
- * overlay below), so no aria state is needed here.
+ * Right rail mirrors session coordinates, session-scoped workspace, and the
+ * active provider/model. Git/upload blocks remain behind SHOW_SLOTS.
  */
 export function EnvPanel({
   open,
   meta,
   stream,
   sessionId,
+  sessionFolder,
   eventCount,
+  modelValue,
+  modelOptions,
   onModel,
 }: {
   readonly open: boolean
   readonly meta: Meta | null
   readonly stream: StreamState
   readonly sessionId: string | null
+  readonly sessionFolder: string | null
   readonly eventCount: number
-  readonly onModel: (model: string) => void
+  readonly modelValue: string | null
+  readonly modelOptions: readonly ModelOption[]
+  readonly onModel: (value: string) => void
 }) {
+  const folder = sessionFolder ?? meta?.folder ?? '—'
+
   return (
     <aside className={`env-panel ${open ? 'env-panel-open' : ''}`}>
       <div className="env-head">
@@ -75,18 +82,20 @@ export function EnvPanel({
 
       <div className="env-label">MODEL</div>
       <Panel variant="raised" className="env-card">
-        <Row term="provider">{meta?.provider ?? '—'}</Row>
+        <Row term="provider">{meta?.provider || '—'}</Row>
         <div className="env-row env-row-control">
           <span className="env-term">model</span>
-          <Select
-            value={meta?.model ?? ''}
-            options={(meta?.models ?? []).map((model) => ({ value: model, label: model }))}
-            onChange={onModel}
-            disabled={meta === null}
-            label="Chọn model"
-          />
+          {modelValue !== null ? (
+            <Select
+              value={modelValue}
+              options={modelOptions}
+              onChange={onModel}
+              disabled={meta === null}
+              label="Chọn provider và model"
+            />
+          ) : <span className="env-desc">chưa cấu hình</span>}
         </div>
-        <Row term="folder">{meta !== null ? <span className="env-path">{meta.folder}</span> : '—'}</Row>
+        <Row term="folder"><span className="env-path">{folder}</span></Row>
       </Panel>
 
       {SHOW_SLOTS ? (

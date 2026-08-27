@@ -7,10 +7,11 @@ import {
   listSessions,
   renameSession,
   sendMessage,
-  setFolder,
   setModel,
+  setSessionFolder,
   stopSession,
 } from './lib/api.ts'
+import { decodeModelChoice, activeModelValue, modelOptions } from './lib/providers.ts'
 import { isTurnRunning } from './lib/project.ts'
 import { useSessionStream } from './hooks/useSessionStream.ts'
 import { useHotkeys } from './hooks/useHotkeys.ts'
@@ -19,6 +20,7 @@ import { Button } from './components/ui/Button.tsx'
 import { Sidebar } from './components/layout/Sidebar.tsx'
 import { TopBar } from './components/layout/TopBar.tsx'
 import { EnvPanel } from './components/layout/EnvPanel.tsx'
+import { SettingsModal } from './components/settings/SettingsModal.tsx'
 import { Transcript } from './components/chat/Transcript.tsx'
 import { ApprovalBar } from './components/chat/ApprovalBar.tsx'
 import { Composer } from './components/composer/Composer.tsx'
@@ -33,8 +35,9 @@ const SUGGESTIONS: readonly string[] = [
 
 /**
  * The web client: workspace shell around a stateless chat pane. All chat
- * state derives from the session event stream — the UI holds no model
- * state of its own, mirroring "render from session/event".
+ * state derives from the session event stream — the UI holds no model state
+ * of its own, mirroring "render from session/event". Provider metadata and
+ * session workspace are server facts reflected into selection controls.
  */
 export function App() {
   const toast = useToast()
@@ -46,16 +49,33 @@ export function App() {
   const [folderDraft, setFolderDraft] = useState('')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [envOpen, setEnvOpen] = useState(() => window.innerWidth >= 1280)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<SessionListing | null>(null)
 
   const { events, approvals, stream, error: streamError } = useSessionStream(current)
   const running = useMemo(() => isTurnRunning(events), [events])
+  const currentSession = useMemo(() => sessions.find((session) => session.id === current) ?? null, [sessions, current])
+  const modelValue = useMemo(() => activeModelValue(meta), [meta])
+  const availableModelOptions = useMemo(() => modelOptions(meta), [meta])
+
+  const refreshMeta = useCallback(async () => {
+    try {
+      setMeta(await fetchMeta())
+    } catch (cause) {
+      toast.notify(String(cause))
+    }
+  }, [toast])
+
+  const refreshList = useCallback(async () => {
+    try {
+      setSessions(await listSessions())
+    } catch (cause) {
+      toast.notify(String(cause))
+    }
+  }, [toast])
 
   useEffect(() => {
-    void fetchMeta().then((fetched) => {
-      setMeta(fetched)
-      setFolderDraft(fetched.folder)
-    }).catch(() => toast.notify('không kết nối được server'))
+    void refreshMeta()
     void (async () => {
       try {
         let listing = await listSessions()
@@ -72,19 +92,18 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // The draft is a view of the active session's explicit folder. An inherited
+  // session receives the default folder as its visible starting point; submit
+  // is still session-scoped and an empty draft explicitly resets inheritance.
+  useEffect(() => {
+    setFolderDraft(currentSession?.folder ?? meta?.folder ?? '')
+  }, [currentSession?.id, currentSession?.folder, meta?.folder])
+
   useEffect(() => {
     if (streamError === null) return
     toast.notify(streamError)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamError])
-
-  const refreshList = useCallback(async () => {
-    try {
-      setSessions(await listSessions())
-    } catch (cause) {
-      toast.notify(String(cause))
-    }
-  }, [toast])
 
   const closeSidebar = useCallback(() => setSidebarOpen(false), [])
   const openSession = useCallback((id: string) => {
@@ -93,7 +112,7 @@ export function App() {
   }, [])
 
   const send = useCallback(async () => {
-    if (current === null || draft.trim() === '' || running) return
+    if (current === null || draft.trim() === '' || running || modelValue === null) return
     const content = draft
     setDraft('')
     try {
@@ -102,7 +121,7 @@ export function App() {
     } catch (cause) {
       toast.notify(String(cause))
     }
-  }, [current, draft, running, refreshList, toast])
+  }, [current, draft, running, modelValue, refreshList, toast])
 
   const stop = useCallback(async () => {
     if (current === null) return
@@ -124,23 +143,23 @@ export function App() {
   const newSession = useCallback(async () => {
     try {
       const { id } = await createSession()
-      setSessions(await listSessions())
+      await refreshList()
       setCurrent(id)
       setSidebarOpen(false)
     } catch (cause) {
       toast.notify(String(cause))
     }
-  }, [toast])
+  }, [refreshList, toast])
 
   const rename = useCallback(async (id: string, title: string) => {
     try {
       const renamed = await renameSession(id, title)
-      setSessions(await listSessions())
+      await refreshList()
       toast.notify(`phiên đổi tên thành "${renamed.title}"`, 'ok')
     } catch (cause) {
       toast.notify(String(cause))
     }
-  }, [toast])
+  }, [refreshList, toast])
 
   const confirmDelete = useCallback(async () => {
     if (pendingDelete === null) return
@@ -157,22 +176,25 @@ export function App() {
     }
   }, [pendingDelete, current, toast])
 
-  const applyFolder = useCallback(async () => {
-    const folder = folderDraft.trim()
-    if (folder === '') return
+  const applySessionFolder = useCallback(async () => {
+    if (current === null) return
     try {
-      const updated = await setFolder(folder)
-      setMeta(updated)
-      setFolderDraft(updated.folder)
-      toast.notify(`workspace: ${updated.folder}`, 'ok')
+      const updated = await setSessionFolder(current, folderDraft.trim())
+      setSessions((previous) => previous.map((session) => (
+        session.id === current ? { ...session, folder: updated.folder } : session
+      )))
+      setFolderDraft(updated.folder ?? meta?.folder ?? '')
+      toast.notify(updated.folder === null ? 'session đang dùng workspace mặc định' : `workspace session: ${updated.folder}`, 'ok')
     } catch (cause) {
       toast.notify(String(cause))
     }
-  }, [folderDraft, toast])
+  }, [current, folderDraft, meta?.folder, toast])
 
-  const selectModel = useCallback(async (model: string) => {
+  const selectModel = useCallback(async (value: string) => {
+    const choice = decodeModelChoice(value)
+    if (choice === null) return
     try {
-      setMeta(await setModel(model))
+      setMeta(await setModel(choice.model, choice.provider))
     } catch (cause) {
       toast.notify(String(cause))
     }
@@ -183,7 +205,8 @@ export function App() {
     { key: 'k', mod: true, onPress: () => setSidebarOpen(true) },
   ])
 
-  const activeTitle = sessions.find((session) => session.id === current)?.title ?? ''
+  const activeTitle = currentSession?.title ?? ''
+  const folderLabel = (currentSession?.folder ?? meta?.folder ?? '').split(/[\\/]/).at(-1) ?? ''
 
   return (
     <div className={`app${sidebarOpen ? ' nav-open' : ''}${envOpen ? ' env-open' : ''}`}>
@@ -192,11 +215,14 @@ export function App() {
         meta={meta}
         stream={stream}
         sidebarOpen={sidebarOpen}
+        sessionFolder={currentSession?.folder ?? null}
         folderDraft={folderDraft}
+        canSetFolder={current !== null}
         onFolderDraft={setFolderDraft}
-        onApplyFolder={() => void applyFolder()}
+        onApplyFolder={() => void applySessionFolder()}
         onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
         onToggleEnv={() => setEnvOpen((prev) => !prev)}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
       <div className="app-body">
         <Sidebar
@@ -205,7 +231,7 @@ export function App() {
           filter={filter}
           stream={stream}
           provider={meta?.provider ?? null}
-          folderLabel={meta?.folder.split(/[\\/]/).at(-1) ?? ''}
+          folderLabel={folderLabel}
           running={running}
           open={sidebarOpen}
           onFilter={setFilter}
@@ -222,13 +248,14 @@ export function App() {
                 <div className="empty-mark" aria-hidden="true">⌬</div>
                 <p className="empty-title">Bắt đầu một hội thoại</p>
                 <p className="empty-sub">Agent đọc file, chạy bash và xin phép trước khi thay đổi.</p>
+                {modelValue === null ? <Button variant="primary" size="sm" onClick={() => setSettingsOpen(true)}>Cấu hình provider</Button> : null}
                 <div className="suggestions">
                   {SUGGESTIONS.map((suggestion) => (
                     <Button
                       key={suggestion}
                       variant="outline"
                       size="sm"
-                      disabled={current === null}
+                      disabled={current === null || modelValue === null}
                       onClick={() => {
                         if (current !== null) {
                           void sendMessage(current, suggestion).then(() => void refreshList())
@@ -253,9 +280,9 @@ export function App() {
             onDraft={setDraft}
             onSend={() => void send()}
             onStop={() => void stop()}
-            model={meta?.model ?? null}
-            models={meta?.models ?? []}
-            onModel={(model) => void selectModel(model)}
+            modelValue={modelValue}
+            modelOptions={availableModelOptions}
+            onModel={(value) => void selectModel(value)}
           />
         </main>
         <EnvPanel
@@ -263,18 +290,23 @@ export function App() {
           meta={meta}
           stream={stream}
           sessionId={current}
+          sessionFolder={currentSession?.folder ?? null}
           eventCount={events.length}
-          onModel={(model) => void selectModel(model)}
-        />
-        <EnvPanel
-          open={envOpen}
-          meta={meta}
-          stream={stream}
-          sessionId={current}
-          eventCount={events.length}
-          onModel={(model) => void selectModel(model)}
+          modelValue={modelValue}
+          modelOptions={availableModelOptions}
+          onModel={(value) => void selectModel(value)}
         />
       </div>
+      <SettingsModal
+        open={settingsOpen}
+        providers={meta?.providers ?? []}
+        activeProvider={meta?.provider ?? ''}
+        onDismiss={() => setSettingsOpen(false)}
+        onRefresh={refreshMeta}
+        onSelectActive={async (provider, model) => {
+          setMeta(await setModel(model, provider))
+        }}
+      />
       <ConfirmDialog
         open={pendingDelete !== null}
         title={pendingDelete !== null ? `Xóa phiên "${pendingDelete.title || 'untitled'}"?` : ''}

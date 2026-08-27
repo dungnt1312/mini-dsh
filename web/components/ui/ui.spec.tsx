@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import Icon, { ICON_NAMES } from '../common/Icon.tsx'
 import { SHOW_SLOTS } from '../../lib/config.ts'
+import { activeModelValue, decodeModelChoice, encodeModelChoice, modelOptions } from '../../lib/providers.ts'
+import { SettingsModal } from '../settings/SettingsModal.tsx'
 
 describe('icon set', () => {
   it('covers the shell + kit vocabulary', () => {
@@ -25,6 +27,47 @@ describe('icon set', () => {
 describe('feature flag', () => {
   it('ships with future-view slots hidden', () => {
     expect(SHOW_SLOTS).toBe(false)
+  })
+})
+
+describe('runtime provider UI helpers', () => {
+  const meta = {
+    provider: 'cliproxy1',
+    model: 'gpt-5.6-sol',
+    folder: '/workspace',
+    models: ['gpt-5.6-sol'],
+    providers: [
+      { id: 'cliproxy1', name: 'cliproxy1', baseUrl: 'http://proxy/v1', enabled: true, keyMasked: '••••1234', models: ['gpt-5.6-sol', 'gpt-5.6-terra'] },
+      { id: 'disabled', name: 'disabled', baseUrl: 'http://off/v1', enabled: false, keyMasked: '••••9999', models: ['nope'] },
+    ],
+  } as const
+
+  it('encodes a model choice without ambiguity and excludes disabled providers', () => {
+    expect(encodeModelChoice('cliproxy1', 'gpt-5.6-sol')).toBe('cliproxy1:gpt-5.6-sol')
+    expect(decodeModelChoice('cliproxy1:gpt-5.6-sol')).toEqual({ provider: 'cliproxy1', model: 'gpt-5.6-sol' })
+    expect(decodeModelChoice('not-a-choice')).toBeNull()
+    expect(modelOptions(meta).map((option) => option.value)).toEqual([
+      'cliproxy1:gpt-5.6-sol',
+      'cliproxy1:gpt-5.6-terra',
+    ])
+    expect(activeModelValue(meta)).toBe('cliproxy1:gpt-5.6-sol')
+  })
+
+  it('settings modal only renders masked API key data', () => {
+    const html = renderToStaticMarkup(
+      <SettingsModal
+        open
+        providers={meta.providers}
+        activeProvider="cliproxy1"
+        onDismiss={() => undefined}
+        onRefresh={async () => undefined}
+        onSelectActive={async () => undefined}
+      />,
+    )
+    expect(html).toContain('Providers &amp; Models')
+    expect(html).toContain('cliproxy1')
+    expect(html).not.toContain('sk-real-secret')
+    expect(html).toContain('Test connection')
   })
 })
 
