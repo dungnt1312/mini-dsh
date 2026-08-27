@@ -44,4 +44,9 @@ export class SessionsService extends Service {
     this.sessions.set(child.id, child)
     return child
   }
+
+  /** Remove a session; unknown ids are silently ignored (like a no-op delete). */
+  delete(id: SessionId): void {
+    this.sessions.delete(id)
+  }
 }

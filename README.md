@@ -20,7 +20,7 @@ Full docs live in [`docs/`](docs/README.md):
 - **Phase 0–1 (done)** — mini-Cordis kernel: event bus with all five dispatch modes, fiber lifecycle with reverse-order effect disposal, service store with `inject` dependency tracking, and a YAML composition loader. 37 tests reproduce tutorial chapters 2–4 on this kernel.
 - **Phase 2 (done)** — agent core: durable session log (event sourcing, `deriveMessages()`, fork), LLM streaming seam (`agent/request` + `llm/stream` waterfalls, mock + DeepSeek SSE providers), and the turn/step driver (inbox with `send`/`inject`, `agent/pre-step`, `agent/turn-stopping`). Headless CLI chats multi-turn.
 - **Phase 3 (done)** — tool pipeline: `ToolsService` with the guarded `tools/pre-execute` → execute → `tools/post-execute` path, approval policy (allow/ask/deny riding pre-execute), filesystem tools (`read`/`write`/`edit`/`glob`/`grep`, root-confined) and `bash` (timeout, process-group kill); the loop spends another step while tools owe the model their results, with unbounded tool continuation — the model decides when the turn ends. Verified end-to-end against the real DeepSeek API.
-- **Phase 4 (done)** — web UI: `createWebServer` (REST + SSE) with the React client (`web/`, built by Vite). The client renders purely from the session event stream — snapshot replay plus live `session/event` frames — and approval questions ride the same stream, answered over `POST /api/approvals/:id`; routing to the right session goes through the ambient agent scope (`AsyncLocalStorage`), so concurrent sessions share one policy listener without cross-talk. A failed step closes its turn durably (`turn/end: failed`). 97 tests cover kernel, harness, capabilities, and the web API.
+- **Phase 4 (done)** — web UI: `createWebServer` (REST + SSE) with the React client (`web/`, built by Vite). The client renders purely from the session event stream — snapshot replay plus live `session/event` frames — and approval questions ride the same stream, answered over `POST /api/approvals/:id`; routing to the right session goes through the ambient agent scope (`AsyncLocalStorage`), so concurrent sessions share one policy listener without cross-talk. A failed step closes its turn durably (`turn/end: failed`). The UI is product-grade: collapsible thinking panel, expandable tool cards, session rename/delete/search, a stop button (`turn/end: stopped`), syntax-highlighted code blocks, toasts, and a mobile drawer. 105 tests cover kernel, harness, capabilities, and the web API.
 - Phase 5 — dynamic plugins: patch layers, hot (un)load, provider swap restarting dependents.
 - Phase 6 — polish: SQLite persistence, compaction, an `architecture.md` for this project.
 
@@ -62,7 +62,17 @@ The toolbar switches the active model (`PUT /api/model`, offered names come
 from the provider's `models` list; every step's request is stamped through
 the `agent/request` waterfall) and the workspace folder (`PUT /api/folder`,
 re-scoping the fs/bash tools through live root accessors without
-re-registering them).
+re-registering them). The sidebar lists sessions with search, rename
+(`PATCH /api/sessions/:id`) and delete (`DELETE /api/sessions/:id`), and the
+composer turns into a Stop button while a turn runs
+(`POST /api/sessions/:id/stop`, closing it with a durable
+`turn/end: stopped`). Ctrl/Cmd+K starts a new session.
+
+The browser client is stateless by design: it holds no model state of its
+own — the transcript (including a collapsible thinking trace for reasoning
+models and expandable tool cards) is projected from the durable session
+events streamed over SSE, approval questions arrive on the same stream, and
+answers go back over one POST.
 
 The browser client is stateless by design: it holds no model state of its
 own — the transcript is projected from the durable session events streamed

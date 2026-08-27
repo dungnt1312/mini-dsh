@@ -1,0 +1,24 @@
+/**
+ * pm2 ecosystem for the mini-dsh web host.
+ *
+ *   pm2 start ecosystem.config.cjs
+ *
+ * Runs the web bin through tsx so the session log, tools, and SSE stream are
+ * live; serve the built client first (npm run build:web).
+ */
+module.exports = {
+  apps: [
+    {
+      name: 'mini-dsh',
+      cwd: __dirname,
+      script: 'node_modules/tsx/dist/cli.mjs',
+      args: 'src/bins/web.ts --port 3082 --root .',
+      interpreter: 'node',
+      max_memory_restart: '300M',
+      autorestart: true,
+      env: {
+        NODE_ENV: 'development',
+      },
+    },
+  ],
+}

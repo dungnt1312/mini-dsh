@@ -18,7 +18,7 @@ export type SessionEvent =
   | ({ readonly type: 'turn/start'; readonly turnId: TurnId } & SessionEventStamp)
   | ({ readonly type: 'user/message'; readonly turnId: TurnId; readonly content: string } & SessionEventStamp)
   | ({ readonly type: 'step/start'; readonly turnId: TurnId; readonly stepId: StepId } & SessionEventStamp)
-  | ({ readonly type: 'assistant/chunk'; readonly stepId: StepId; readonly delta: string } & SessionEventStamp)
+  | ({ readonly type: 'assistant/chunk'; readonly stepId: StepId; readonly delta: string; readonly thinking?: boolean } & SessionEventStamp)
   | ({ readonly type: 'assistant/message'; readonly stepId: StepId; readonly content: string; readonly toolCalls?: readonly ToolCall[] } & SessionEventStamp)
   | ({ readonly type: 'tool/call'; readonly stepId: StepId; readonly call: ToolCall } & SessionEventStamp)
   | ({ readonly type: 'tool/result'; readonly stepId: StepId; readonly callId: string; readonly ok: boolean; readonly output: string } & SessionEventStamp)
@@ -31,6 +31,7 @@ export type TurnEndReason =
   | 'rejected'
   | 'empty'
   | 'failed'
+  | 'stopped'
 
 /** Distributive Omit so the union stays a union after removing stamped fields. */
 type DistributiveOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K> : never

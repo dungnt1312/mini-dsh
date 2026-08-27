@@ -11,6 +11,13 @@ interface ToolRuntime {
   execute(call: ToolCall): Promise<{ ok: boolean; output: string }>
 }
 
+/** Thrown inside a step when the user asks the loop to stop; closes the turn, not a failure. */
+class StopRequested extends Error {
+  constructor() {
+    super('agent: stop requested')
+  }
+}
+
 /**
  * The default driver: one agent bound to one durable session, running the
  * turn/step flow over an inbox.
@@ -25,15 +32,30 @@ export class Agent {
   status: AgentStatus = 'idle'
 
   private inbox: InboxItem[] = []
+  private abortController: AbortController | null = null
 
   constructor(
     private readonly ctx: Context,
     readonly session: Session,
   ) {}
 
+  /** Whether a run is in flight; the web UI's Stop button reads this. */
+  get busy(): boolean {
+    return this.status === 'running'
+  }
+
   /** Queue a user message; wakes the driver on the next `run()`. */
   send(content: string): void {
     this.inbox.push({ kind: 'user', content })
+  }
+
+  /**
+   * Ask the in-flight run to stop: the chunk loop notices between stream
+   * events and closes the open turn with a durable `turn/end: stopped`
+   * instead of failing it. A no-op while idle.
+   */
+  stop(): void {
+    this.abortController?.abort()
   }
 
   /**
@@ -52,6 +74,7 @@ export class Agent {
   async run(): Promise<void> {
     if (this.status === 'running') return
     this.status = 'running'
+    this.abortController = new AbortController()
     try {
       // The scope lets pipeline listeners (approval routing) attribute a
       // tool call to this agent's session while the turn is in flight.
@@ -69,6 +92,7 @@ export class Agent {
       })
     } finally {
       this.status = 'idle'
+      this.abortController = null
     }
   }
 
@@ -124,9 +148,20 @@ export class Agent {
     // A turn keeps spending steps while tools owe the model their results,
     // without a step bound — the model decides when it is done.
     for (let spent = 1; ; spent++) {
-      const { stepId, toolCalls } = await this.step(turnId, spent === 1 ? decision.contents : [])
-      lastStep = stepId
-      if (toolCalls.length === 0) break
+      let step: { stepId: StepId; toolCalls: readonly ToolCall[] }
+      try {
+        step = await this.step(turnId, spent === 1 ? decision.contents : [])
+      } catch (error) {
+        // A user stop is a durable result, not a failure: close the turn
+        // with the `stopped` reason and let the run continue.
+        if (error instanceof StopRequested) {
+          this.session.append({ type: 'turn/end', turnId, reason: 'stopped' })
+          return
+        }
+        throw error
+      }
+      lastStep = step.stepId
+      if (step.toolCalls.length === 0) break
     }
 
     await this.ctx.serial('agent/turn-stopping', { turnId, lastStep })
@@ -162,10 +197,21 @@ export class Agent {
 
     let full = ''
     let calls: readonly ToolCall[] = []
-    for await (const event of this.ctx.llm.stream(request)) {
+    const stream = this.ctx.llm.stream(request)
+    // The abort check runs between stream events: a stopped run closes the
+    // turn durably without draining the rest of the (possibly long) reply.
+    for await (const event of stream) {
+      if (this.abortController?.signal.aborted === true) throw new StopRequested()
       if (event.type === 'delta') {
-        full += event.delta
-        this.session.append({ type: 'assistant/chunk', stepId, delta: event.delta })
+        // Thinking deltas are logged for UI fidelity but never join the
+        // assembled assistant message — the model's answer is content only.
+        if (event.thinking !== true) full += event.delta
+        this.session.append({
+          type: 'assistant/chunk',
+          stepId,
+          delta: event.delta,
+          ...(event.thinking === true ? { thinking: true } : {}),
+        })
       } else {
         calls = event.calls
       }

@@ -1,0 +1,3 @@
+Đây là file test cho tool write
+Tạo ngày: 2025-04-04
+Mục đích: Kiểm tra tool write hoạt động an toàn
