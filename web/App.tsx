@@ -161,10 +161,12 @@ export function App() {
   const controls = useRef(new Generation())
 
   useEffect(() => {
-    if (leftDocked) setSidebarOpen(!preferences.leftCollapsed)
+    // A docked panel becoming a drawer must not suddenly cover the conversation.
+    // Drawer state is opened only by its explicit trigger on compact layouts.
+    setSidebarOpen(leftDocked ? !preferences.leftCollapsed : false)
   }, [leftDocked, preferences.leftCollapsed])
   useEffect(() => {
-    if (rightDocked) setEnvOpen(!preferences.rightCollapsed)
+    setEnvOpen(rightDocked ? !preferences.rightCollapsed : false)
   }, [rightDocked, preferences.rightCollapsed])
 
   const onLeftOpenChange = useCallback((open: boolean) => {

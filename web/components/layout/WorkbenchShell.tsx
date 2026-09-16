@@ -43,18 +43,11 @@ function Drawer({ open, onOpenChange, label, side, children }: {
   useEffect(() => {
     if (!open) return
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    const onFocusIn = (event: FocusEvent): void => {
-      const target = event.target
-      if (!(target instanceof HTMLElement) || target.closest('[data-conversation-dock]') !== null || dialogRef.current?.contains(target) === true) return
-      dialogRef.current?.focus()
-    }
     const onComposerOpen = (): void => setComposerMenuOpen(true)
     const onComposerEscape = (): void => { suppressEscapeRef.current = true; setComposerMenuOpen(false) }
-    document.addEventListener('focusin', onFocusIn)
     document.addEventListener('mini-dsh:composer-menu-open', onComposerOpen)
     document.addEventListener('mini-dsh:composer-menu-escape', onComposerEscape)
     return () => {
-      document.removeEventListener('focusin', onFocusIn)
       document.removeEventListener('mini-dsh:composer-menu-open', onComposerOpen)
       document.removeEventListener('mini-dsh:composer-menu-escape', onComposerEscape)
       if (opener?.isConnected) opener.focus()
