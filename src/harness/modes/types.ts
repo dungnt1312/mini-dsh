@@ -1,0 +1,67 @@
+import type { ApprovalMode } from '../approval/policy.ts'
+
+/**
+ * A mode has exactly four fields: instructions, context sources, tool
+ * exposure, and permission defaults. Defaults and hard restrictions are
+ * distinct: permission defaults are defaults the workspace/host policy
+ * still constrains; tool exposure is a hard ceiling no override can widen.
+ */
+export interface ModeDefinition {
+  /** Stable id; bundled ids are fixed, custom ids are file-derived. */
+  readonly id: string
+  /** Display name. */
+  readonly name: string
+  /** System-level instructions injected for every request in this mode. */
+  readonly instructions: string
+  /** What the context builder may load for this mode. */
+  readonly sources: ModeSources
+  /** The hard ceiling of exposed tools (canonical names). */
+  readonly toolExposure: readonly string[]
+  /** Permission defaults per tool; the workspace policy still constrains. */
+  readonly permissionDefaults: Readonly<Record<string, ApprovalMode>>
+}
+
+/** Context sources a mode enables. Disabled loaders contribute nothing. */
+export interface ModeSources {
+  /** `none` drops previous Turns from the prompt; the current Turn's tool loop still works. */
+  readonly history: 'none' | 'recent' | 'compact'
+  /** Workspace/project instruction files. */
+  readonly workspaceInstructions: boolean
+  /** Skill loading: off, or on-demand via the Skill tool. */
+  readonly skills: 'off' | 'on-demand'
+  /** Pinned memory entries load automatically; retrieval is a tool call. */
+  readonly memoryPinned: boolean
+  readonly memoryRetrieval: boolean
+}
+
+/** Raw frontmatter shape of a custom mode file (Markdown + YAML frontmatter). */
+export interface ModeFrontmatter {
+  readonly name?: string
+  readonly description?: string
+  readonly history?: 'none' | 'recent' | 'compact'
+  readonly workspaceInstructions?: boolean
+  readonly skills?: 'off' | 'on-demand'
+  readonly memoryPinned?: boolean
+  readonly memoryRetrieval?: boolean
+  readonly toolExposure?: readonly string[]
+  readonly permissionDefaults?: Readonly<Record<string, string>>
+}
+
+/** A validated, ready-to-use mode with its provenance. */
+export interface ResolvedMode {
+  readonly definition: ModeDefinition
+  /** 'bundled' modes are read-only; customization duplicates them. */
+  readonly source: 'bundled' | 'workspace'
+  /** sha256 of the raw file for workspace modes (undefined for bundled). */
+  readonly hash?: string
+}
+
+export class ModeError extends Error {
+  constructor(
+    readonly code: 'not-found' | 'invalid' | 'duplicate',
+    message: string,
+  ) {
+    super(message)
+    this.name = 'ModeError'
+  }
+}

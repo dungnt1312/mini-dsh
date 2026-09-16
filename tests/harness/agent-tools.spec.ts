@@ -60,10 +60,11 @@ function bootHarness(steps: readonly (string | { toolCalls: readonly { name: str
   }
   kernel.ctx.llm.register(recorder)
 
-  for (const tool of fsTools(root)) {
+  for (const tool of fsTools()) {
     kernel.ctx.tools.register(tool)
   }
   kernel.ctx.tools.register(bashTool())
+  kernel.ctx.tools.setRootResolver(() => ({ root }))
 
   const session = kernel.ctx.sessions.create()
   const agent = kernel.ctx.agents.create(session)
@@ -127,7 +128,7 @@ describe('agent loop with tools', () => {
       {
         role: 'assistant',
         content: '',
-        toolCalls: [{ id: 'call-1-0', name: 'read', args: { path: 'fact.txt' } }],
+        toolCalls: [{ id: 'call-1-0', name: 'Read', args: { path: 'fact.txt' } }],
       },
       { role: 'tool', content: 'pi is 3.14', toolCallId: 'call-1-0' },
       { role: 'assistant', content: 'done' },
@@ -147,9 +148,11 @@ describe('agent loop with tools', () => {
     await agent.run()
 
     expect(requests).toHaveLength(2)
-    const names = requests[0]?.tools?.map((schema) => schema.name)
-    expect(names).toContain('read')
-    expect(names).toContain('bash')
+    const names = requests[0]?.tools?.map((schema) => schema.name) ?? []
+    expect(names).toContain('Read')
+    expect(names).toContain('Bash')
+    // Legacy aliases are normalized, never exposed as duplicates.
+    expect(names.filter((name) => name.toLowerCase() === name)).toEqual([])
 
     const followUp = requests[1]?.messages
     expect(followUp?.at(-1)).toEqual({ role: 'tool', content: 'x', toolCallId: 'call-1-0' })

@@ -1,4 +1,5 @@
-import type { LlmProvider, ModelMessage, ModelRequest, StreamEvent } from './types.ts'
+import { applyThinkingOverride } from './model-catalog.ts'
+import type { LlmProvider, ModelMessage, ModelRequest, StreamEvent, StreamOptions } from './types.ts'
 
 interface StreamChoice {
   delta?: {
@@ -92,24 +93,30 @@ export class OpenAiCompletionsProvider implements LlmProvider {
     this.defaultModel = options.defaultModel ?? options.models?.[0] ?? 'default'
   }
 
-  async *stream(request: ModelRequest): AsyncIterable<StreamEvent> {
+  async *stream(request: ModelRequest, options?: StreamOptions): AsyncIterable<StreamEvent> {
+    // The body is assembled as an object first so the documented per-model
+    // thinking override can patch it; unsupported (model, level) pairs
+    // leave it untouched rather than risking an undocumented field.
+    const model = request.model ?? this.defaultModel
+    const body: Record<string, unknown> = {
+      model,
+      messages: toWireMessages(request.messages),
+      ...(request.tools !== undefined && request.tools.length > 0
+        ? { tools: request.tools.map((tool) => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } })) }
+        : {}),
+      stream: true,
+    }
+    applyThinkingOverride(body, model, request.thinkingLevel)
     const response = await fetch(`${this.options.baseUrl}/chat/completions`, {
       method: 'POST',
+      ...(options?.signal !== undefined ? { signal: options.signal } : {}),
       headers: {
         'content-type': 'application/json',
         // Local gateways often accept no credential at all; sending an empty
         // Bearer makes some of them reject the call outright.
         ...(this.options.apiKey === '' ? {} : { authorization: `Bearer ${this.options.apiKey}` }),
       },
-      body: JSON.stringify({
-        model: request.model ?? this.defaultModel,
-        messages: toWireMessages(request.messages),
-        tools: request.tools?.map((tool) => ({
-          type: 'function',
-          function: { name: tool.name, description: tool.description, parameters: tool.parameters },
-        })),
-        stream: true,
-      }),
+      body: JSON.stringify(body),
     })
     if (!response.ok) {
       throw new Error(`${this.name}: HTTP ${response.status}: ${await response.text()}`)

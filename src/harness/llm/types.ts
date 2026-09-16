@@ -41,6 +41,20 @@ export interface ModelRequest {
   readonly messages: readonly ModelMessage[]
   /** Tool schemas the model may call this step; omitted when none. */
   readonly tools?: readonly ToolSchema[]
+  /**
+   * Host-stamped execution metadata: the registered provider that must
+   * serve this request (e.g. the owning workspace's selection). It is
+   * resolved by `LlmService.streamVia` at the dispatch boundary and never
+   * reaches the wire — providers serialize known fields only.
+   */
+  readonly providerName?: string
+  /**
+   * Host-stamped thinking/reasoning level ('off' | 'minimal' | … | 'max').
+   * Providers translate it into the model's DOCUMENTED request fields
+   * (see model-catalog's `applyThinkingOverride`); it never serializes
+   * directly onto the wire.
+   */
+  readonly thinkingLevel?: string
 }
 
 /** What a provider yields while streaming one completion. */
@@ -58,5 +72,11 @@ export interface LlmProvider {
   readonly name: string
   /** Model names this provider offers, for UI selection. */
   readonly models?: readonly string[]
-  stream(request: ModelRequest): AsyncIterable<StreamEvent>
+  stream(request: ModelRequest, options?: StreamOptions): AsyncIterable<StreamEvent>
+}
+
+/** Per-request stream options. */
+export interface StreamOptions {
+  /** Fires when the owning turn stops or a limit kills the request. */
+  readonly signal?: AbortSignal
 }

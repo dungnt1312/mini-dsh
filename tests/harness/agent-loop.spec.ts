@@ -236,7 +236,7 @@ describe('agent loop', () => {
     await agent.run()
 
     const boundary = session.events[session.events.length - 1]?.seq
-    const child = kernel.ctx.sessions.fork(session, boundary)
+    const child = await kernel.ctx.sessions.fork(session, boundary)
 
     const childAgent = kernel.ctx.agents.create(child)
     childAgent.send('from the fork')

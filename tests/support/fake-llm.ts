@@ -1,4 +1,4 @@
-import type { LlmProvider, ModelRequest, StreamEvent, ToolCall } from '../../src/harness/llm/types.ts'
+import type { LlmProvider, ModelRequest, StreamEvent, StreamOptions, ToolCall } from '../../src/harness/llm/types.ts'
 
 /** One deterministic test turn: plain text, or a tool call with lead-in text. */
 export type ScriptStep =
@@ -25,7 +25,7 @@ export class FakeScriptedLlm implements LlmProvider {
 
   constructor(private readonly steps: readonly ScriptStep[]) {}
 
-  async *stream(_request: ModelRequest): AsyncIterable<StreamEvent> {
+  async *stream(_request: ModelRequest, _options?: StreamOptions): AsyncIterable<StreamEvent> {
     const last = this.steps[this.steps.length - 1]
     const step = this.steps[this.index] ?? last
     if (step === undefined) throw new Error('fake llm: no scripted steps')

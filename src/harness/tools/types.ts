@@ -1,9 +1,29 @@
+import type { SessionId } from '../../util/brand.ts'
 import type { ToolCall, ToolSchema } from '../llm/types.ts'
 
 /** What one tool run answers: success text, or a failure the model must see. */
 export interface ToolResult {
   readonly ok: boolean
   readonly output: string
+}
+
+/**
+ * The execution context the pipeline grants to one tool run: the explicitly
+ * granted workspace root, the run's cancellation signal, and the identities
+ * attributing the run. Root-aware tools fail closed when the grant is
+ * missing — they never derive authority from a UI-global folder.
+ */
+export interface ToolExecution {
+  /** The granted workspace root (already resolved for this session). */
+  readonly root: string
+  /** Additional absolute paths tools must refuse (e.g. app-internal storage). */
+  readonly deniedRoots?: readonly string[]
+  /** Fires when the owning turn is stopping; cancellable tools honor it. An already-aborted signal never fires its listener — check `aborted` up front. */
+  readonly signal?: AbortSignal
+  /** Model-visible output cap for one tool result (from the harness limits). */
+  readonly outputLimit?: number
+  readonly sessionId?: SessionId
+  readonly toolCallId?: string
 }
 
 /**
@@ -16,7 +36,16 @@ export interface ToolDefinition {
   readonly name: string
   readonly description: string
   readonly parameters: ToolSchema['parameters']
-  execute(args: Record<string, unknown>): Promise<string>
+  /**
+   * Optional live schema resolver (G5 MCP): the same public MCP name can
+   * exist independently in Work/Life with different schemas. Resolve from
+   * trusted execution scope at request assembly; do not leak the workspace
+   * that happened to register first.
+   */
+  readonly schema?: () => { readonly description: string; readonly parameters: ToolSchema['parameters'] } | undefined
+  /** True when the tool cannot run without a granted workspace root. */
+  readonly requiresRoot?: boolean
+  execute(args: Record<string, unknown>, exec: ToolExecution): Promise<string>
 }
 
 /**
@@ -25,19 +54,46 @@ export interface ToolDefinition {
  */
 export type PreExecuteDecision =
   | { readonly kind: 'allow'; readonly call: ToolCall }
-  | { readonly kind: 'deny'; readonly reason: string }
+  | {
+      readonly kind: 'deny'
+      readonly reason: string
+      /** The exact (possibly hook-rewritten) call the denial applies to. */
+      readonly call?: ToolCall
+    }
+
+/**
+ * A fully gated tool call. The agent durably records `call` before invoking
+ * `execute`, so rewritten arguments and the approval binding are the same
+ * intent that precedes the side effect.
+ */
+export interface PreparedToolCall {
+  readonly call: ToolCall
+  execute(): Promise<ToolResult>
+}
 
 declare module 'mini-dsh' {
   interface Events {
     /**
+     * Input-rewrite phase BEFORE authorization (G5 hooks). Listeners may
+     * rewrite the call or deny it. ToolsService then runs the COMPLETE
+     * tools/pre-execute authorization chain against the rewritten call,
+     * excluding this phase to prevent rewrite recursion.
+     */
+    'tools/rewrite'(
+      payload: { readonly call: ToolCall; readonly exec: ToolExecution },
+      next: (replacement?: { readonly call: ToolCall; readonly exec?: ToolExecution }) => Promise<PreExecuteDecision>,
+    ): Promise<PreExecuteDecision>
+
+    /**
      * Around-middleware before a tool runs: listeners may rewrite the call
      * by forwarding a replacement through `next()`, or deny it by returning
      * `{ kind: 'deny' }` without calling `next()`. Approval policies hook
-     * here. The default allows the call unchanged.
+     * here; `exec.signal` lets waiters honor a stop. The default allows the
+     * call unchanged.
      */
     'tools/pre-execute'(
-      payload: { readonly call: ToolCall },
-      next: (replacement?: { readonly call: ToolCall }) => Promise<PreExecuteDecision>,
+      payload: { readonly call: ToolCall; readonly exec: ToolExecution },
+      next: (replacement?: { readonly call: ToolCall; readonly exec?: ToolExecution }) => Promise<PreExecuteDecision>,
     ): Promise<PreExecuteDecision>
 
     /**
@@ -46,7 +102,7 @@ declare module 'mini-dsh' {
      * through `next()`. The default passes the result through.
      */
     'tools/post-execute'(
-      payload: { readonly call: ToolCall; readonly result: ToolResult },
+      payload: { readonly call: ToolCall; readonly exec: ToolExecution; readonly result: ToolResult },
       next: (replacement?: { readonly result: ToolResult }) => Promise<ToolResult>,
     ): Promise<ToolResult>
   }

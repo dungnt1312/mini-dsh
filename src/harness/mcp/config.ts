@@ -1,0 +1,554 @@
+/**
+ * G5 workspace-owned configuration: `mcp.json` (servers), `secrets.json`
+ * (credential store), `hooks.json` (hook bindings). Strict validation — an
+ * invalid file surfaces a full error and is never partially executed.
+ * Secrets are referenced from `mcp.json` via `${VAR}` and resolved ONLY
+ * from the secrets store; `mcp.json` never carries plain credentials.
+ */
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
+import { promises as fs } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import path from 'node:path'
+import { replaceFileAtomic } from '../storage/events-jsonl.ts'
+
+export type McpTransport = 'stdio' | 'http'
+
+export interface McpServerConfig {
+  readonly name: string
+  readonly transport: McpTransport
+  /** stdio: executable + args. */
+  readonly command?: string
+  readonly args?: readonly string[]
+  /** stdio env — values may reference secrets via ${VAR}. */
+  readonly env?: Readonly<Record<string, string>>
+  /** http: Streamable HTTP endpoint. */
+  readonly url?: string
+  /** Custom HTTP headers; values may reference encrypted secrets. */
+  readonly headers?: Readonly<Record<string, string>>
+  /** HTTP auth: Bearer, or OAuth access-token reference (flow/provider metadata). */
+  readonly auth?:
+    | { readonly type: 'bearer'; readonly token: string }
+    | { readonly type: 'oauth'; readonly provider: string; readonly accessToken: string }
+  readonly enabled: boolean
+  readonly timeoutMs?: number
+  /** Subprocess resource watchdogs (stdio): hard kill on breach. */
+  readonly resourceLimits?: { readonly memoryMb?: number; readonly cpuPercent?: number; readonly maxLifetimeMs?: number }
+  /** Exposure filter: only these tools register (never a permission bypass). */
+  readonly allowedTools?: readonly string[]
+  readonly provenance?: { readonly importedFrom?: 'claude' | 'codex'; readonly importedAt?: number }
+}
+
+export interface McpConfig {
+  readonly version: 1
+  readonly servers: Readonly<Record<string, McpServerConfig>>
+}
+
+export interface HookBinding {
+  readonly matcher: string
+  readonly type: 'command'
+  readonly command: string
+  readonly args?: readonly string[]
+  readonly timeoutMs?: number
+  readonly onFailure: 'deny' | 'allow'
+}
+
+export interface HooksConfig {
+  readonly version: 1
+  readonly hooks: Partial<Record<'PreToolUse' | 'PostToolUse' | 'UserPromptSubmit' | 'SessionStart' | 'SessionEnd' | 'PreCompact', readonly HookBinding[]>>
+}
+
+export class McpConfigError extends Error {
+  constructor(
+    readonly code: 'invalid' | 'not-found' | 'reserved-name' | 'bad-name',
+    message: string,
+  ) {
+    super(message)
+    this.name = 'McpConfigError'
+  }
+}
+
+/** The reserved built-in tool identities (G4/G5 canonical list). */
+export const RESERVED_TOOL_NAMES = new Set([
+  'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'Skill',
+  'MemorySearch', 'MemoryRead', 'MemoryCreate', 'MemoryUpdate', 'MemoryForget', 'Agent',
+])
+
+const SERVER_NAME_RE = /^[A-Za-z0-9_-]+$/
+
+/** `mcp__<server>__<tool>` — the Claude-convention full tool name. */
+export function mcpToolName(server: string, tool: string): string {
+  return `mcp__${server}__${tool}`
+}
+
+/** Validate one server name: charset + reserved-name protection. */
+export function validateServerName(name: string): void {
+  if (!SERVER_NAME_RE.test(name)) {
+    throw new McpConfigError('bad-name', `server name '${name}' must match ${SERVER_NAME_RE.source}`)
+  }
+}
+
+/** Strict `mcp.json` parse: invalid content is an error, never partial. */
+export function parseMcpConfig(raw: string): McpConfig {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (error) {
+    throw new McpConfigError('invalid', `mcp.json is not valid JSON: ${String(error)}`)
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new McpConfigError('invalid', 'mcp.json must be an object')
+  }
+  const record = parsed as Record<string, unknown>
+  for (const key of Object.keys(record)) {
+    if (!['version', 'servers'].includes(key)) throw new McpConfigError('invalid', `mcp.json: unknown top-level key '${key}'`)
+  }
+  if (record['version'] !== 1) {
+    throw new McpConfigError('invalid', `mcp.json version must be 1, got ${JSON.stringify(record['version'])}`)
+  }
+  const serversRaw = record['servers']
+  if (serversRaw === null || typeof serversRaw !== 'object' || Array.isArray(serversRaw)) {
+    throw new McpConfigError('invalid', "'servers' must be an object keyed by server name")
+  }
+  const servers: Record<string, McpServerConfig> = {}
+  for (const [name, value] of Object.entries(serversRaw as Record<string, unknown>)) {
+    validateServerName(name)
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new McpConfigError('invalid', `server '${name}' must be an object`)
+    }
+    const server = value as Record<string, unknown>
+    if (server['name'] !== undefined && server['name'] !== name) {
+      throw new McpConfigError('invalid', `server '${name}': persisted name must match its map key`)
+    }
+    const transport = server['transport']
+    if (transport !== 'stdio' && transport !== 'http') {
+      throw new McpConfigError('invalid', `server '${name}': transport must be stdio|http`)
+    }
+    if (transport === 'stdio' && (typeof server['command'] !== 'string' || server['command'] === '')) {
+      throw new McpConfigError('invalid', `server '${name}': stdio transport needs a command`)
+    }
+    if (transport === 'http' && (typeof server['url'] !== 'string' || !/^https?:\/\//.test(server['url'] as string))) {
+      throw new McpConfigError('invalid', `server '${name}': http transport needs an http(s) url`)
+    }
+    if (server['enabled'] !== undefined && typeof server['enabled'] !== 'boolean') {
+      throw new McpConfigError('invalid', `server '${name}': 'enabled' must be a boolean`)
+    }
+    if (server['timeoutMs'] !== undefined && (typeof server['timeoutMs'] !== 'number' || !Number.isFinite(server['timeoutMs']) || (server['timeoutMs'] as number) <= 0)) {
+      throw new McpConfigError('invalid', `server '${name}': 'timeoutMs' must be a positive number`)
+    }
+    if (server['args'] !== undefined && (!Array.isArray(server['args']) || !(server['args'] as unknown[]).every((item) => typeof item === 'string'))) {
+      throw new McpConfigError('invalid', `server '${name}': 'args' must be an array of strings`)
+    }
+    if (server['allowedTools'] !== undefined && (!Array.isArray(server['allowedTools']) || !(server['allowedTools'] as unknown[]).every((item) => typeof item === 'string'))) {
+      throw new McpConfigError('invalid', `server '${name}': 'allowedTools' must be an array of strings`)
+    }
+    for (const field of ['env', 'headers'] as const) {
+      const value = server[field]
+      if (value === undefined) continue
+      if (value === null || typeof value !== 'object' || Array.isArray(value) || !Object.values(value as Record<string, unknown>).every((item) => typeof item === 'string')) {
+        throw new McpConfigError('invalid', `server '${name}': '${field}' must be an object of string values`)
+      }
+    }
+    if (server['resourceLimits'] !== undefined) {
+      const limits = server['resourceLimits']
+      if (limits === null || typeof limits !== 'object' || Array.isArray(limits)) throw new McpConfigError('invalid', `server '${name}': resourceLimits must be an object`)
+      for (const [key, value] of Object.entries(limits as Record<string, unknown>)) {
+        if (!['memoryMb', 'cpuPercent', 'maxLifetimeMs'].includes(key)) throw new McpConfigError('invalid', `server '${name}': unknown resource limit '${key}'`)
+        if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) throw new McpConfigError('invalid', `server '${name}': resource limit '${key}' must be positive`)
+      }
+    }
+    if (server['provenance'] !== undefined) {
+      const value = server['provenance']
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new McpConfigError('invalid', `server '${name}': invalid provenance`)
+      const provenance = value as Record<string, unknown>
+      for (const key of Object.keys(provenance)) {
+        if (!['importedFrom', 'importedAt'].includes(key)) throw new McpConfigError('invalid', `server '${name}': unknown provenance key '${key}'`)
+      }
+      if (provenance['importedFrom'] !== undefined && provenance['importedFrom'] !== 'claude' && provenance['importedFrom'] !== 'codex') {
+        throw new McpConfigError('invalid', `server '${name}': provenance.importedFrom must be claude|codex`)
+      }
+      if (provenance['importedAt'] !== undefined && (typeof provenance['importedAt'] !== 'number' || !Number.isFinite(provenance['importedAt']))) {
+        throw new McpConfigError('invalid', `server '${name}': provenance.importedAt must be a finite number`)
+      }
+    }
+    for (const key of Object.keys(server)) {
+      if (!['name', 'transport', 'command', 'args', 'env', 'url', 'headers', 'auth', 'enabled', 'timeoutMs', 'resourceLimits', 'allowedTools', 'provenance'].includes(key)) {
+        throw new McpConfigError('invalid', `server '${name}': unknown key '${key}'`)
+      }
+    }
+    servers[name] = {
+      name,
+      transport,
+      ...(typeof server['command'] === 'string' ? { command: server['command'] } : {}),
+      ...(Array.isArray(server['args']) ? { args: server['args'] as string[] } : {}),
+      ...(server['env'] !== undefined && typeof server['env'] === 'object' && server['env'] !== null
+        ? { env: sanitizeStringRecord(server['env']) }
+        : {}),
+      ...(typeof server['url'] === 'string' ? { url: server['url'] } : {}),
+      ...(server['headers'] !== undefined ? { headers: server['headers'] as Record<string, string> } : {}),
+      ...(server['auth'] !== undefined ? { auth: parseAuth(name, server['auth']) } : {}),
+      enabled: server['enabled'] !== false,
+      ...(typeof server['timeoutMs'] === 'number' ? { timeoutMs: server['timeoutMs'] } : {}),
+      ...(server['resourceLimits'] !== undefined ? { resourceLimits: server['resourceLimits'] as NonNullable<McpServerConfig['resourceLimits']> } : {}),
+      ...(Array.isArray(server['allowedTools']) ? { allowedTools: server['allowedTools'] as string[] } : {}),
+      ...(server['provenance'] !== undefined && server['provenance'] !== null
+        ? { provenance: server['provenance'] as NonNullable<McpServerConfig['provenance']> }
+        : {}),
+    }
+  }
+  return { version: 1, servers }
+}
+
+function parseAuth(serverName: string, value: unknown): NonNullable<McpServerConfig['auth']> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new McpConfigError('invalid', `server '${serverName}': 'auth' must be an object`)
+  }
+  const auth = value as Record<string, unknown>
+  if (auth['type'] === 'bearer') {
+    for (const key of Object.keys(auth)) {
+      if (!['type', 'token'].includes(key)) throw new McpConfigError('invalid', `server '${serverName}': unknown bearer auth key '${key}'`)
+    }
+    if (typeof auth['token'] !== 'string' || !/^\$\{[A-Za-z0-9_]+\}$/.test(auth['token'])) {
+      throw new McpConfigError('invalid', `server '${serverName}': auth.token must be a non-empty ${'${'}VAR} reference`)
+    }
+    return { type: 'bearer', token: auth['token'] }
+  }
+  if (auth['type'] === 'oauth') {
+    for (const key of Object.keys(auth)) {
+      if (!['type', 'provider', 'accessToken'].includes(key)) throw new McpConfigError('invalid', `server '${serverName}': unknown oauth auth key '${key}'`)
+    }
+    if (typeof auth['provider'] !== 'string' || auth['provider'] === '') {
+      throw new McpConfigError('invalid', `server '${serverName}': oauth.provider must be a non-empty string`)
+    }
+    if (typeof auth['accessToken'] !== 'string' || !/^\$\{[A-Za-z0-9_]+\}$/.test(auth['accessToken'])) {
+      throw new McpConfigError('invalid', `server '${serverName}': oauth.accessToken must reference an encrypted secret`)
+    }
+    return { type: 'oauth', provider: auth['provider'], accessToken: auth['accessToken'] }
+  }
+  throw new McpConfigError('invalid', `server '${serverName}': auth.type must be bearer|oauth`)
+}
+
+function sanitizeStringRecord(value: unknown): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof entry === 'string') out[key] = entry
+  }
+  return out
+}
+
+/** Strict `hooks.json` parse. */
+export function parseHooksConfig(raw: string): HooksConfig {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (error) {
+    throw new McpConfigError('invalid', `hooks.json is not valid JSON: ${String(error)}`)
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new McpConfigError('invalid', 'hooks.json must be an object')
+  }
+  const record = parsed as Record<string, unknown>
+  for (const key of Object.keys(record)) {
+    if (!['version', 'hooks'].includes(key)) throw new McpConfigError('invalid', `hooks.json: unknown top-level key '${key}'`)
+  }
+  if (record['version'] !== 1) {
+    throw new McpConfigError('invalid', `hooks.json version must be 1, got ${JSON.stringify(record['version'])}`)
+  }
+  const hooksRaw = record['hooks']
+  if (hooksRaw === null || typeof hooksRaw !== 'object' || Array.isArray(hooksRaw)) {
+    throw new McpConfigError('invalid', "'hooks' must be an object keyed by event")
+  }
+  const EVENTS = ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'SessionStart', 'SessionEnd', 'PreCompact'] as const
+  const hooks: HooksConfig['hooks'] = {}
+  for (const [event, bindingsRaw] of Object.entries(hooksRaw as Record<string, unknown>)) {
+    if (!(EVENTS as readonly string[]).includes(event)) {
+      throw new McpConfigError('invalid', `unknown hook event '${event}'`)
+    }
+    if (!Array.isArray(bindingsRaw)) {
+      throw new McpConfigError('invalid', `hooks.${event} must be an array`)
+    }
+    const bindings: HookBinding[] = []
+    for (const bindingRaw of bindingsRaw) {
+      if (bindingRaw === null || typeof bindingRaw !== 'object') {
+        throw new McpConfigError('invalid', `hooks.${event} entries must be objects`)
+      }
+      const binding = bindingRaw as Record<string, unknown>
+      for (const key of Object.keys(binding)) {
+        if (!['matcher', 'type', 'command', 'args', 'timeoutMs', 'onFailure'].includes(key)) throw new McpConfigError('invalid', `hooks.${event}: unknown key '${key}'`)
+      }
+      if (binding['type'] !== 'command') {
+        throw new McpConfigError('invalid', `hooks.${event}: only 'command' type is supported in G5`)
+      }
+      if (typeof binding['command'] !== 'string' || binding['command'] === '') {
+        throw new McpConfigError('invalid', `hooks.${event}: 'command' must be a non-empty string`)
+      }
+      if (binding['args'] !== undefined && (!Array.isArray(binding['args']) || !(binding['args'] as unknown[]).every((item) => typeof item === 'string'))) {
+        throw new McpConfigError('invalid', `hooks.${event}: 'args' must be an array of strings`)
+      }
+      if (binding['timeoutMs'] !== undefined && (typeof binding['timeoutMs'] !== 'number' || !Number.isFinite(binding['timeoutMs']) || binding['timeoutMs'] <= 0)) {
+        throw new McpConfigError('invalid', `hooks.${event}: 'timeoutMs' must be a finite positive number`)
+      }
+      if (binding['onFailure'] !== 'deny' && binding['onFailure'] !== 'allow') {
+        throw new McpConfigError('invalid', `hooks.${event}: 'onFailure' must be deny|allow`)
+      }
+      bindings.push({
+        matcher: typeof binding['matcher'] === 'string' ? binding['matcher'] : '*',
+        type: 'command',
+        command: binding['command'],
+        ...(Array.isArray(binding['args']) ? { args: binding['args'] as string[] } : {}),
+        ...(typeof binding['timeoutMs'] === 'number' ? { timeoutMs: binding['timeoutMs'] } : {}),
+        onFailure: binding['onFailure'],
+      })
+    }
+    hooks[event as (typeof EVENTS)[number]] = bindings
+  }
+  return { version: 1, hooks }
+}
+
+
+/** Explicit Claude `.mcp.json` import: provenance recorded, every server disabled (never spawned). */
+export function importClaudeMcp(raw: string): McpConfig {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (error) {
+    throw new McpConfigError('invalid', `Claude .mcp.json is invalid JSON: ${String(error)}`)
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new McpConfigError('invalid', 'Claude .mcp.json must be an object')
+  }
+  const root = parsed as Record<string, unknown>
+  const serversRaw = root['mcpServers'] ?? root
+  if (serversRaw === null || typeof serversRaw !== 'object' || Array.isArray(serversRaw)) {
+    throw new McpConfigError('invalid', 'Claude import needs an mcpServers object')
+  }
+  const servers: Record<string, unknown> = {}
+  for (const [name, value] of Object.entries(serversRaw as Record<string, unknown>)) {
+    validateServerName(name)
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new McpConfigError('invalid', `Claude server '${name}' must be an object`)
+    }
+    const source = value as Record<string, unknown>
+    const entry: Record<string, unknown> = {
+      enabled: false, // import never auto-enables/spawns
+      provenance: { importedFrom: 'claude', importedAt: Date.now() },
+    }
+    if (typeof source['command'] === 'string') {
+      entry.transport = 'stdio'
+      entry.command = source['command']
+      if (Array.isArray(source['args'])) entry.args = (source['args'] as unknown[]).map(String)
+      if (source['env'] !== undefined) entry.env = source['env']
+    } else if (typeof source['url'] === 'string') {
+      entry.transport = 'http'
+      entry.url = source['url']
+    } else {
+      throw new McpConfigError('invalid', `Claude server '${name}' has neither command nor url`)
+    }
+    servers[name] = entry
+  }
+  return parseMcpConfig(JSON.stringify({ version: 1, servers }))
+}
+
+/** Pinned Codex MCP import: strict version gate, provenance, disabled by default. */
+export function importCodexMcp(toml: string, sourceVersion: string): McpConfig {
+  const PINNED = 'openai/codex@38cbebaf3fe3e81a94bf462079e7cf9659fc9e50'
+  if (sourceVersion !== PINNED) {
+    throw new McpConfigError('invalid', `Codex MCP import version '${sourceVersion}' is outside pinned adapter ${PINNED}`)
+  }
+  // Minimal pinned fixture subset: [mcp_servers.NAME] + command/url fields.
+  const sections = [...toml.matchAll(/\[mcp_servers\.([A-Za-z0-9_-]+)\]([\s\S]*?)(?=\n\[|$)/g)]
+  if (sections.length === 0) throw new McpConfigError('invalid', 'Codex import has no [mcp_servers.NAME] sections')
+  const servers: Record<string, unknown> = {}
+  for (const section of sections) {
+    const name = section[1] ?? ''
+    const body = section[2] ?? ''
+    const command = /(?:^|\n)command\s*=\s*"([^"]+)"/.exec(body)?.[1]
+    const url = /(?:^|\n)url\s*=\s*"([^"]+)"/.exec(body)?.[1]
+    if (command === undefined && url === undefined) {
+      throw new McpConfigError('invalid', `Codex server '${name}' has neither command nor url`)
+    }
+    servers[name] = command !== undefined
+      ? { transport: 'stdio', command, enabled: false, provenance: { importedFrom: 'codex', importedAt: Date.now() } }
+      : { transport: 'http', url, enabled: false, provenance: { importedFrom: 'codex', importedAt: Date.now() } }
+  }
+  return parseMcpConfig(JSON.stringify({ version: 1, servers }))
+}
+
+/** Workspace-scoped G5 config store: mcp.json / hooks.json / secrets.json. */
+export class McpConfigStore {
+  constructor(private readonly home: string) {}
+
+  private workspaceDir(workspaceId: string): string {
+    return path.join(this.home, 'workspaces', workspaceId)
+  }
+
+  mcpPath(workspaceId: string): string {
+    return path.join(this.workspaceDir(workspaceId), 'mcp.json')
+  }
+
+  hooksPath(workspaceId: string): string {
+    return path.join(this.workspaceDir(workspaceId), 'hooks.json')
+  }
+
+  secretsPath(workspaceId: string): string {
+    return path.join(this.workspaceDir(workspaceId), 'secrets.json')
+  }
+
+  /** Load + validate mcp.json; a missing file is an empty config. */
+  async loadMcp(workspaceId: string): Promise<McpConfig> {
+    const raw = await fs.readFile(this.mcpPath(workspaceId), 'utf8').catch(() => undefined)
+    if (raw === undefined) return { version: 1, servers: {} }
+    return parseMcpConfig(raw)
+  }
+
+  async saveMcp(workspaceId: string, config: McpConfig): Promise<void> {
+    await fs.mkdir(this.workspaceDir(workspaceId), { recursive: true })
+    await replaceFileAtomic(this.mcpPath(workspaceId), `${JSON.stringify(config, null, 2)}\n`)
+  }
+
+  async loadHooks(workspaceId: string): Promise<HooksConfig> {
+    const raw = await fs.readFile(this.hooksPath(workspaceId), 'utf8').catch(() => undefined)
+    if (raw === undefined) return { version: 1, hooks: {} }
+    return parseHooksConfig(raw)
+  }
+
+  async saveHooks(workspaceId: string, config: HooksConfig): Promise<void> {
+    await fs.mkdir(this.workspaceDir(workspaceId), { recursive: true })
+    await replaceFileAtomic(this.hooksPath(workspaceId), `${JSON.stringify(config, null, 2)}\n`)
+  }
+
+  /**
+   * Secrets are encrypted at rest (AES-256-GCM) in secrets.json; the local
+   * master key is a separate 32-byte file under the application home with
+   * restrictive permissions where supported. This is file encryption, not
+   * an OS-keychain guarantee — the keychain integration remains a platform
+   * hardening seam. Plain values never enter mcp.json or exports.
+   */
+  async loadSecrets(workspaceId: string): Promise<Record<string, string>> {
+    const raw = await fs.readFile(this.secretsPath(workspaceId), 'utf8').catch(() => undefined)
+    if (raw === undefined) return {}
+    let envelope: { v?: unknown; iv?: unknown; tag?: unknown; ciphertext?: unknown }
+    try {
+      envelope = JSON.parse(raw) as typeof envelope
+    } catch {
+      throw new McpConfigError('invalid', 'secrets.json is not valid encrypted JSON')
+    }
+    if (envelope.v !== 1 || typeof envelope.iv !== 'string' || typeof envelope.tag !== 'string' || typeof envelope.ciphertext !== 'string') {
+      throw new McpConfigError('invalid', 'secrets.json has an invalid encrypted envelope')
+    }
+    try {
+      const key = await this.masterKey()
+      const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(envelope.iv, 'base64'))
+      decipher.setAuthTag(Buffer.from(envelope.tag, 'base64'))
+      const plaintext = Buffer.concat([
+        decipher.update(Buffer.from(envelope.ciphertext, 'base64')),
+        decipher.final(),
+      ]).toString('utf8')
+      const parsed = JSON.parse(plaintext) as Record<string, unknown>
+      const out: Record<string, string> = {}
+      for (const [name, value] of Object.entries(parsed)) {
+        if (typeof value === 'string') out[name] = value
+      }
+      return out
+    } catch (error) {
+      throw new McpConfigError('invalid', `secrets.json cannot be decrypted: ${String(error instanceof Error ? error.message : error)}`)
+    }
+  }
+
+  async saveSecrets(workspaceId: string, secrets: Record<string, string>): Promise<void> {
+    await fs.mkdir(this.workspaceDir(workspaceId), { recursive: true })
+    const key = await this.masterKey()
+    const iv = randomBytes(12)
+    const cipher = createCipheriv('aes-256-gcm', key, iv)
+    const ciphertext = Buffer.concat([
+      cipher.update(JSON.stringify(secrets), 'utf8'),
+      cipher.final(),
+    ])
+    const envelope = {
+      v: 1,
+      alg: 'aes-256-gcm',
+      iv: iv.toString('base64'),
+      tag: cipher.getAuthTag().toString('base64'),
+      ciphertext: ciphertext.toString('base64'),
+    }
+    await replaceFileAtomic(this.secretsPath(workspaceId), `${JSON.stringify(envelope, null, 2)}
+`)
+  }
+
+  private async masterKey(): Promise<Buffer> {
+    const file = path.join(this.home, 'secrets.master.key')
+    try {
+      const key = await fs.readFile(file)
+      if (key.length !== 32) throw new Error('master key must be 32 bytes')
+      await this.verifyMasterKeyProtection(file)
+      return key
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      const key = randomBytes(32)
+      await fs.mkdir(this.home, { recursive: true })
+      const handle = await fs.open(file, 'wx', 0o600)
+      try {
+        await handle.writeFile(key)
+        await handle.sync()
+      } finally {
+        await handle.close()
+      }
+      await this.protectMasterKey(file)
+      await this.verifyMasterKeyProtection(file)
+      return key
+    }
+  }
+
+  /**
+   * Establish user-scoped key protection. Windows uses an explicit ACL;
+   * POSIX uses chmod 0600. If protection cannot be established, fail
+   * closed — never claim encrypted-at-rest with a world-readable key.
+   */
+  private async protectMasterKey(file: string): Promise<void> {
+    if (process.platform !== 'win32') {
+      await fs.chmod(file, 0o600)
+      return
+    }
+    const identity = process.env['USERDOMAIN'] && process.env['USERNAME']
+      ? `${process.env['USERDOMAIN']}\\${process.env['USERNAME']}`
+      : process.env['USERNAME']
+    if (identity === undefined || identity === '') {
+      throw new McpConfigError('invalid', 'cannot determine Windows identity for secret master-key ACL')
+    }
+    const result = spawnSync('icacls', [file, '/inheritance:r', '/grant:r', `${identity}:F`], { encoding: 'utf8' })
+    if (result.status !== 0) {
+      throw new McpConfigError('invalid', `cannot protect secrets.master.key with a user-scoped Windows ACL`)
+    }
+  }
+
+  private async verifyMasterKeyProtection(file: string): Promise<void> {
+    if (process.platform !== 'win32') {
+      const stat = await fs.stat(file)
+      if ((stat.mode & 0o077) !== 0) throw new McpConfigError('invalid', 'secrets.master.key permissions are broader than 0600')
+      return
+    }
+    const result = spawnSync('icacls', [file], { encoding: 'utf8' })
+    if (result.status !== 0) throw new McpConfigError('invalid', 'cannot verify Windows ACL on secrets.master.key')
+    const output = `${result.stdout}
+${result.stderr}`
+    // Inheritance must be removed; broad well-known groups must not appear.
+    if (/BUILTIN\Users|Everyone|Authenticated Users/i.test(output)) {
+      throw new McpConfigError('invalid', 'secrets.master.key ACL is not user-scoped')
+    }
+  }
+}
+
+/** Resolve ${VAR} references against the secrets store; missing → surfaced error. */
+export function resolveSecretRefs(value: string, secrets: Readonly<Record<string, string>>, context: string): string {
+  return value.replace(/\$\{([A-Za-z0-9_]+)\}/g, (whole, name: string) => {
+    const resolved = secrets[name]
+    if (resolved === undefined) {
+      throw new McpConfigError('invalid', `${context}: secret \${${name}} is not present in secrets.json`)
+    }
+    return resolved
+  })
+}
+
+/** Hash for audit records: never the raw content. */
+export function auditHash(content: unknown): string {
+  return createHash('sha256').update(JSON.stringify(content) ?? '', 'utf8').digest('hex').slice(0, 16)
+}
