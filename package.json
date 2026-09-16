@@ -16,7 +16,8 @@
     "chat:mock": "tsx src/bins/headless.ts --mock",
     "web": "tsx src/bins/web.ts",
     "build:web": "vite build",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "test:live-ui": "node scripts/live-ui-smoke.mjs"
   },
   "dependencies": {
     "@fontsource/instrument-sans": "^5.3.0",
