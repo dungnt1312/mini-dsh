@@ -1,103 +1,415 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { modeLabel } from './lib/copy.ts'
+import { Generation, composerKey, emptyComposer, acceptedDraft, validConversationScope, type ComposerState } from './lib/interaction.ts'
+import { parseRoute, routePath, sessionRoute, workspaceRoute, type AppRoute } from './lib/route.ts'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   answerApproval,
-  createSession,
-  deleteSession,
-  fetchMeta,
-  listSessions,
-  renameSession,
-  sendMessage,
-  setModel,
-  setSessionFolder,
-  stopSession,
+  createProject,
+  createSessionIn,
+  createWorkspace,
+  deleteSessionIn,
+  fetchManifest,
+  fetchWorkspaceMeta,
+  listProjects,
+  listSessionsIn,
+  listWorkspaces,
+  renameSessionIn,
+  sendMessageIn,
+  stopSessionIn,
+  setMode,
+  listModes,
+  setPolicy,
+  setWorkspaceModel,
+  setWorkspaceThinking,
 } from './lib/api.ts'
 import { decodeModelChoice, activeModelValue, modelOptions } from './lib/providers.ts'
-import { isTurnRunning } from './lib/project.ts'
+import { isTurnRunning, projectItems } from './lib/project.ts'
+import { latestWorkbenchItem } from './components/chat/workbench-projector.ts'
 import { useSessionStream } from './hooks/useSessionStream.ts'
+import { useApprovalNotify } from './hooks/useApprovalNotify.ts'
+import { useWorkbenchPreferences } from './hooks/useWorkbenchPreferences.ts'
 import { useHotkeys } from './hooks/useHotkeys.ts'
 import { useToast } from './components/common/Toast.tsx'
 import { Button } from './components/ui/Button.tsx'
 import { Sidebar } from './components/layout/Sidebar.tsx'
 import { TopBar } from './components/layout/TopBar.tsx'
-import { EnvPanel } from './components/layout/EnvPanel.tsx'
+import { InspectorPanel } from './components/layout/InspectorPanel.tsx'
+import { WorkbenchShell, useWorkbenchDocked } from './components/layout/WorkbenchShell.tsx'
 import { SettingsModal } from './components/settings/SettingsModal.tsx'
+import { TaskStatus } from './components/chat/TaskStatus.tsx'
 import { Transcript } from './components/chat/Transcript.tsx'
+import { WorkbenchSurface } from './components/chat/WorkbenchSurface.tsx'
 import { ApprovalBar } from './components/chat/ApprovalBar.tsx'
-import { Composer } from './components/composer/Composer.tsx'
+import { Composer, ConversationDock } from './components/composer/Composer.tsx'
+import { FolderPickerModal } from './components/composer/FolderPickerModal.tsx'
 import ConfirmDialog from './components/common/ConfirmDialog.tsx'
-import type { Meta, SessionListing } from './lib/types.ts'
+import type { ContextManifestView } from './lib/api.ts'
+import type { ProjectRow, SessionListing, WorkspaceMeta, WorkspaceRow } from './lib/types.ts'
 
 const SUGGESTIONS: readonly string[] = [
-  'Liệt kê các file trong workspace này',
-  'Tóm tắt kiến trúc của project bằng tiếng Việt',
-  'Tìm chỗ có từ "tool" trong code rồi giải thích',
+  'List the files in this project',
+  'Explain the project architecture',
+  'Find the tool pipeline and explain how it works',
 ]
 
 /**
- * The web client: workspace shell around a stateless chat pane. All chat
+ * The web client: a workspace shell around a stateless chat pane. All chat
  * state derives from the session event stream — the UI holds no model state
- * of its own, mirroring "render from session/event". Provider metadata and
- * session workspace are server facts reflected into selection controls.
+ * of its own. The active workspace is tab/navigation state: switching it
+ * never touches a running Turn (execution scope is fixed server-side), and
+ * the model selector writes the ACTIVE workspace's control, not a global.
  */
 export function App() {
   const toast = useToast()
+  const initialRoute = useRef<AppRoute | null>(parseRoute(window.location.pathname))
+  const routeRef = useRef<AppRoute | null>(initialRoute.current)
+  const [workspaces, setWorkspaces] = useState<readonly WorkspaceRow[]>([])
+  const [activeWs, setActiveWs] = useState<string | null>(null)
   const [sessions, setSessions] = useState<readonly SessionListing[]>([])
+  const [listedWorkspace, setListedWorkspace] = useState<string | null>(null)
+  const [projects, setProjects] = useState<readonly ProjectRow[]>([])
+  // No-modal new-chat flow (spec: App shell): New conversation clears the
+  // canvas; the composer's scope chip picks the project; the session is
+  // created by the first sent message. The scope choice persists per
+  // workspace in localStorage ('' = chat only).
+  const [draftProject, setDraftProjectState] = useState<string | null>(null)
+  function beginConversation(): void {
+    // Invalidate an in-flight first-session creation before showing a new draft.
+    navigation.current.next()
+    setCurrent(null)
+    setFilter('')
+    if (activeWs !== null) navigate(workspaceRoute(activeWs))
+    requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.composer-input')?.focus())
+  }
+  function newInProject(projectId: string): void {
+    // This is navigation too: a late creation must not replace this new draft.
+    navigation.current.next()
+    setDraftProjectState(projectId)
+    setCurrent(null)
+    if (activeWs !== null) navigate(workspaceRoute(activeWs))
+    requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.composer-input')?.focus())
+  }
+  const [newWorkspaceName, setNewWorkspaceName] = useState('')
+  const [wsSignal, setWsSignal] = useState(0)
+  const activeWorkspace = workspaces.find((row) => row.id === activeWs) ?? null
+
+  // Draft scope: validate against registered projects; '' in storage = chat only.
+  const changeDraftProject = useCallback((projectId: string | null) => {
+    setDraftProjectState(projectId)
+    try {
+      if (activeWs !== null) window.localStorage.setItem(`mini-dsh.scope.${activeWs}`, projectId ?? '')
+    } catch { /* storage may be unavailable */ }
+  }, [activeWs])
+  useEffect(() => {
+    if (activeWs === null) return
+    let stored: string | null = null
+    try { stored = window.localStorage.getItem(`mini-dsh.scope.${activeWs}`) } catch { /* storage may be unavailable */ }
+    setDraftProjectState(stored !== null && stored !== '' ? stored : null)
+  }, [activeWs])
+  const effectiveDraftProject = projects.some((project) => project.id === draftProject) ? draftProject : null
+  // Folder picker (server-backed directory browser): browsers never reveal a
+  // chosen folder's absolute path, so the picker navigates real directories
+  // listed by the web host and registers the confirmed one as a project.
+  const [folderPickerOpen, setFolderPickerOpen] = useState(false)
+  const scopeOptions = useMemo(() => [
+    { id: null, name: 'Chat only', path: 'No project folder — chat without file or shell tools' },
+    ...projects.map((project) => ({ id: project.id, name: project.name, path: project.path })),
+  ], [projects])
+
   const [current, setCurrent] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
-  const [draft, setDraft] = useState('')
-  const [meta, setMeta] = useState<Meta | null>(null)
-  const [folderDraft, setFolderDraft] = useState('')
-  const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [envOpen, setEnvOpen] = useState(() => window.innerWidth >= 1280)
+  const [composers, setComposersState] = useState<Record<string, ComposerState>>({})
+  const composersRef = useRef(composers)
+  composersRef.current = composers
+  const setComposers = useCallback((update: (all: Record<string, ComposerState>) => Record<string, ComposerState>) => {
+    const next = update(composersRef.current)
+    composersRef.current = next
+    setComposersState(next)
+  }, [])
+  const key = composerKey(activeWs, current)
+  const composer = composers[key] ?? emptyComposer
+  const { draft, sending, error: sendError } = composer
+  const updateComposer = (scope: string, update: (state: ComposerState) => ComposerState) => setComposers((all) => ({ ...all, [scope]: update(all[scope] ?? emptyComposer) }))
+  const setDraft = (draft: string) => updateComposer(key, (state) => ({ ...state, draft, revision: state.revision + 1 }))
+  const [meta, setMeta] = useState<WorkspaceMeta | null>(null)
+  const [modeSelection, setModeSelection] = useState<{ modes: readonly { value: string; label: string }[]; selected: string | null }>({ modes: [], selected: null })
+  const { preferences, patchPreferences } = useWorkbenchPreferences()
+  const leftDocked = useWorkbenchDocked(1024)
+  const rightDocked = useWorkbenchDocked(1280)
+  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 1024 ? !preferences.leftCollapsed : false)
+  const [envOpen, setEnvOpen] = useState(() => window.innerWidth >= 1280 ? !preferences.rightCollapsed : false)
+  const inspectorTab = preferences.inspectorTab
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsSection, setSettingsSection] = useState<'providers' | 'projects' | 'skills' | 'memory' | 'agents' | 'mcp' | 'hooks' | 'secrets'>('providers')
   const [pendingDelete, setPendingDelete] = useState<SessionListing | null>(null)
+  const [manifest, setManifest] = useState<ContextManifestView | null>(null)
+  const [compactNonce, setCompactNonce] = useState(0)
+  const workspaceRef = useRef(activeWs)
+  workspaceRef.current = activeWs
+  const currentRef = useRef(current)
+  currentRef.current = current
+  const sendingRef = useRef(new Set<string>())
+  const navigation = useRef(new Generation())
+  const lists = useRef(new Generation())
+  const metadata = useRef(new Generation())
+  const controls = useRef(new Generation())
 
-  const { events, approvals, stream, error: streamError } = useSessionStream(current)
+  useEffect(() => {
+    if (leftDocked) setSidebarOpen(!preferences.leftCollapsed)
+  }, [leftDocked, preferences.leftCollapsed])
+  useEffect(() => {
+    if (rightDocked) setEnvOpen(!preferences.rightCollapsed)
+  }, [rightDocked, preferences.rightCollapsed])
+
+  const onLeftOpenChange = useCallback((open: boolean) => {
+    setSidebarOpen(open)
+    if (leftDocked) patchPreferences({ leftCollapsed: !open })
+  }, [leftDocked, patchPreferences])
+  const onRightOpenChange = useCallback((open: boolean) => {
+    setEnvOpen(open)
+    if (rightDocked) patchPreferences({ rightCollapsed: !open })
+  }, [rightDocked, patchPreferences])
+
+  // A route-selected session becomes streamable only after the current
+  // workspace listing has confirmed membership. This prevents foreign or stale
+  // deep links from ever opening an SSE connection.
+  const validatedCurrent = listedWorkspace === activeWs && sessions.some((session) => session.id === current) ? current : null
+  const { events, approvals, stream, error: streamError, dismissApproval } = useSessionStream(activeWs, validatedCurrent)
+  const notify = useApprovalNotify(approvals, activeWorkspace?.name)
+  const projectedItems = useMemo(() => projectItems(events), [events])
+  const workbenchItem = useMemo(() => latestWorkbenchItem(projectedItems), [projectedItems])
   const running = useMemo(() => isTurnRunning(events), [events])
   const currentSession = useMemo(() => sessions.find((session) => session.id === current) ?? null, [sessions, current])
   const modelValue = useMemo(() => activeModelValue(meta), [meta])
   const availableModelOptions = useMemo(() => modelOptions(meta), [meta])
+  /** Per-model settings of the ACTIVE provider (thinking default, capabilities). */
+  const activeModelSettings = useMemo(() => {
+    if (meta === null || meta.provider === '') return undefined
+    return meta.providers.find((provider) => provider.id === meta.provider)?.modelSettings
+  }, [meta])
+  /** `provider/model` display form for the composer's model trigger. */
+  const modelLabel = useMemo(() => {
+    if (meta === null || meta.model === '') return null
+    const name = meta.providers.find((provider) => provider.id === meta.provider)?.name ?? meta.provider
+    return name === '' ? meta.model : `${name}/${meta.model}`
+  }, [meta])
+  const currentProject = useMemo(
+    () => projects.find((project) => project.id === currentSession?.projectId) ?? null,
+    [projects, currentSession],
+  )
+  const draftProjectName = useMemo(
+    () => projects.find((project) => project.id === effectiveDraftProject)?.name,
+    [projects, effectiveDraftProject],
+  )
+  const envModeLabel = useMemo(
+    () => modeSelection.modes.find((mode) => mode.value === modeSelection.selected)?.label ?? null,
+    [modeSelection],
+  )
+  const sessionCounts = useMemo(() => {
+    const counts: Record<string, number> = {}
+    for (const session of sessions) {
+      if (session.projectId === undefined || session.projectId === null) continue
+      counts[session.projectId] = (counts[session.projectId] ?? 0) + 1
+    }
+    return counts
+  }, [sessions])
 
   const refreshMeta = useCallback(async () => {
+    if (activeWs === null) return
+    const nav = navigation.current.current()
+    const request = metadata.current.next()
     try {
-      setMeta(await fetchMeta())
+      const [wsMeta, modeRows] = await Promise.all([fetchWorkspaceMeta(activeWs), listModes(activeWs)])
+      if (workspaceRef.current !== activeWs || !navigation.current.matches(nav) || !metadata.current.matches(request)) return
+      setMeta(wsMeta)
+      setModeSelection({
+        modes: modeRows.modes.map((row) => ({ value: row.id, label: modeLabel(row) })),
+        selected: modeRows.selected,
+      })
     } catch (cause) {
       toast.notify(String(cause))
     }
-  }, [toast])
+  }, [activeWs, toast])
 
   const refreshList = useCallback(async () => {
+    if (activeWs === null) return
+    const nav = navigation.current.current()
+    const request = lists.current.next()
     try {
-      setSessions(await listSessions())
+      const [listing, projectRows] = await Promise.all([listSessionsIn(activeWs), listProjects(activeWs)])
+      if (workspaceRef.current !== activeWs || !navigation.current.matches(nav) || !lists.current.matches(request)) return
+      setSessions(listing)
+      setListedWorkspace(activeWs)
+      setProjects(projectRows)
     } catch (cause) {
       toast.notify(String(cause))
     }
+  }, [activeWs, toast])
+
+  const refreshWorkspaces = useCallback(async () => {
+    try {
+      const rows = await listWorkspaces()
+      setWorkspaces(rows)
+      return rows
+    } catch (cause) {
+      toast.notify(String(cause))
+      return []
+    }
   }, [toast])
 
-  useEffect(() => {
-    void refreshMeta()
-    void (async () => {
-      try {
-        let listing = await listSessions()
-        if (listing.length === 0) {
-          await createSession()
-          listing = await listSessions()
-        }
-        setSessions(listing)
-        setCurrent((existing) => existing ?? listing[0]?.id ?? null)
-      } catch (cause) {
-        toast.notify(String(cause))
-      }
-    })()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const navigate = useCallback((route: AppRoute, mode: 'push' | 'replace' = 'push') => {
+    const path = routePath(route)
+    if (window.location.pathname !== path) window.history[mode === 'push' ? 'pushState' : 'replaceState'](null, '', path)
+    routeRef.current = route
   }, [])
 
-  // The draft is a view of the active session's explicit folder. An inherited
-  // session receives the default folder as its visible starting point; submit
-  // is still session-scoped and an empty draft explicitly resets inheritance.
+  const applyRoute = useCallback((route: AppRoute | null, rows: readonly WorkspaceRow[], mode: 'push' | 'replace') => {
+    const fallback = rows.find((row) => row.default === true) ?? rows[0]
+    const requestedWorkspaceId = route?.kind === 'root' ? null : route?.workspaceId
+    const workspace = requestedWorkspaceId === null ? fallback : rows.find((row) => row.id === requestedWorkspaceId)
+    if (workspace === undefined) {
+      if (fallback !== undefined) {
+        navigation.current.next()
+        workspaceRef.current = fallback.id
+        setPendingDelete(null)
+        setActiveWs(fallback.id)
+        navigate(workspaceRoute(fallback.id), 'replace')
+      } else {
+        navigation.current.next()
+        workspaceRef.current = null
+        setPendingDelete(null)
+        setActiveWs(null)
+        setCurrent(null)
+        navigate({ kind: 'root' }, 'replace')
+      }
+      return
+    }
+    navigation.current.next()
+    workspaceRef.current = workspace.id
+    setPendingDelete(null)
+    setActiveWs(workspace.id)
+    setCurrent(route?.kind === 'session' ? route.sessionId : null)
+    navigate(route?.kind === 'session' ? route : workspaceRoute(workspace.id), mode)
+  }, [navigate])
+
+  /** Register the picker's confirmed folder and scope the draft to it. */
+  const registerFolder = useCallback(async (folderPath: string) => {
+    if (activeWs === null) return
+    try {
+      const created = await createProject(activeWs, folderPath.split(/[\\/]/).filter(Boolean).at(-1) ?? folderPath, folderPath)
+      await refreshList()
+      changeDraftProject(created.id)
+      toast.notify(`Project folder registered: ${created.name}`, 'ok')
+    } catch (cause) {
+      toast.notify(String(cause))
+    }
+  }, [activeWs, refreshList, changeDraftProject, toast])
+
   useEffect(() => {
-    setFolderDraft(currentSession?.folder ?? meta?.folder ?? '')
-  }, [currentSession?.id, currentSession?.folder, meta?.folder])
+    void (async () => {
+      const rows = await refreshWorkspaces()
+      applyRoute(initialRoute.current, rows, 'replace')
+    })()
+  }, [applyRoute, refreshWorkspaces])
+
+  useEffect(() => {
+    const onPopState = (): void => {
+      void (async () => {
+        const rows = await refreshWorkspaces()
+        applyRoute(parseRoute(window.location.pathname), rows, 'replace')
+      })()
+    }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [applyRoute, refreshWorkspaces])
+
+  // An externally removed workspace cannot remain selected in this tab.
+  useEffect(() => {
+    if (activeWs !== null && workspaces.length > 0 && !workspaces.some((workspace) => workspace.id === activeWs)) {
+      applyRoute(routeRef.current, workspaces, 'replace')
+    }
+  }, [activeWs, applyRoute, workspaces])
+
+  // Spec (Sidebar v2 behavior): a slow visible-tab poll keeps live badges
+  // truthful within ≤10s, plus refresh on window focus.
+  useEffect(() => {
+    const tick = (): void => {
+      if (document.visibilityState !== 'visible') return
+      void refreshList()
+      void refreshWorkspaces()
+    }
+    const timer = window.setInterval(tick, 10_000)
+    window.addEventListener('focus', tick)
+    document.addEventListener('visibilitychange', tick)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', tick)
+      document.removeEventListener('visibilitychange', tick)
+    }
+  }, [refreshList, refreshWorkspaces])
+
+  // Switching the active workspace re-scopes listings and controls. It does
+  // NOT close a running Turn server-side; only this browser's selected stream changes.
+  useEffect(() => {
+    if (activeWs === null) return
+    let cancelled = false
+    const requestedSession = currentRef.current
+    const nav = navigation.current.current()
+    const listingToken = lists.current.next()
+    const metaToken = metadata.current.next()
+    setMeta(null)
+    setManifest(null)
+    setSessions([])
+    setListedWorkspace(null)
+    setProjects([])
+    setModeSelection({ modes: [], selected: null })
+    void (async () => {
+      try {
+        const [listing, projectRows, wsMeta, modeRows] = await Promise.all([
+          listSessionsIn(activeWs),
+          listProjects(activeWs),
+          fetchWorkspaceMeta(activeWs),
+          listModes(activeWs),
+        ])
+        if (cancelled || !navigation.current.matches(nav)) return
+        if (metadata.current.matches(metaToken)) {
+          setModeSelection({ modes: modeRows.modes.map((row) => ({ value: row.id, label: modeLabel(row) })), selected: modeRows.selected })
+          setMeta(wsMeta)
+        }
+        if (!lists.current.matches(listingToken)) return
+        setSessions(listing)
+        setProjects(projectRows)
+        if (requestedSession !== null && !listing.some((session) => session.id === requestedSession)) {
+          setCurrent(null)
+          navigate(workspaceRoute(activeWs), 'replace')
+        }
+      } catch (cause) {
+        if (!cancelled && navigation.current.matches(nav)) toast.notify(String(cause))
+      }
+    })()
+    return () => { cancelled = true }
+  }, [activeWs, navigate, toast])
+
+  // Inspector: refresh the last request's manifest when the conversation settles.
+  useEffect(() => {
+    setManifest(null)
+    if (!envOpen || inspectorTab !== 'context' || activeWs === null || current === null || running) return
+    let cancelled = false
+    const timer = setTimeout(() => {
+      void fetchManifest(activeWs, current).then(
+        (view) => {
+          if (!cancelled) setManifest(view)
+        },
+        () => {
+          if (!cancelled) setManifest(null)
+        },
+      )
+    }, 600)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [envOpen, inspectorTab, activeWs, current, running, events.length, compactNonce])
 
   useEffect(() => {
     if (streamError === null) return
@@ -105,216 +417,328 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamError])
 
-  const closeSidebar = useCallback(() => setSidebarOpen(false), [])
+  useEffect(() => {
+    if (activeWs === null || current === null || listedWorkspace !== activeWs || sessions.some((session) => session.id === current)) return
+    setCurrent(null)
+    navigate(workspaceRoute(activeWs), 'replace')
+  }, [activeWs, current, listedWorkspace, navigate, sessions])
+
+  const closeSidebar = useCallback(() => onLeftOpenChange(false), [onLeftOpenChange])
   const openSession = useCallback((id: string) => {
+    if (activeWs === null || id === '') return
+    navigation.current.next()
     setCurrent(id)
-    setSidebarOpen(false)
-  }, [])
+    navigate(sessionRoute(activeWs, id))
+    if (window.innerWidth < 1024) onLeftOpenChange(false)
+  }, [activeWs, navigate, onLeftOpenChange])
 
   const send = useCallback(async () => {
-    if (current === null || draft.trim() === '' || running || modelValue === null) return
+    if (sendingRef.current.has(key) || draft.trim() === '' || modelValue === null || activeWs === null) return
+    if (!validConversationScope(effectiveDraftProject, projects.map((project) => project.id))) return
+    const workspaceId = activeWs
+    const sourceKey = key
+    sendingRef.current.add(sourceKey)
+    updateComposer(sourceKey, (state) => ({ ...state, sending: true, error: null }))
+    const revision = composer.revision
+    const nav = navigation.current.current()
     const content = draft
-    setDraft('')
+    let targetKey = sourceKey
     try {
-      await sendMessage(current, content)
-      void refreshList()
+      let sessionId = current
+      if (sessionId === null) {
+        // Session creation is allowed to finish after navigation changes, but
+        // only the operation's original navigation/workspace may select it.
+        const created = await createSessionIn(workspaceId, effectiveDraftProject ?? undefined)
+        sessionId = created.id
+        targetKey = composerKey(workspaceId, sessionId)
+        // Move the latest source state atomically. Because every composer write
+        // updates the ref before scheduling React, immediate acceptance cannot
+        // overtake migration, and edits made after submission retain their newer
+        // revision when acceptedDraft runs on the target.
+        setComposers((all) => {
+          const source = all[sourceKey] ?? { ...composer, draft: content }
+          const next = { ...all, [targetKey]: { ...source, sending: true } }
+          delete next[sourceKey]
+          return next
+        })
+        if (workspaceRef.current === workspaceId && navigation.current.matches(nav)) {
+          setCurrent(sessionId)
+          navigate(sessionRoute(workspaceId, sessionId))
+        }
+        void refreshList()
+      }
+      try {
+        // Clear only the submitted draft after durable acceptance.
+        await sendMessageIn(workspaceId, sessionId, content, globalThis.crypto.randomUUID())
+        updateComposer(targetKey, (state) => acceptedDraft(state, revision))
+      } catch (cause) {
+        updateComposer(targetKey, (state) => ({ ...state, error: String(cause) }))
+      }
+      if (workspaceRef.current === workspaceId && navigation.current.matches(nav)) void refreshList()
+      void refreshWorkspaces()
     } catch (cause) {
-      toast.notify(String(cause))
+      // Creation failed — the workspace-null composer retains its draft.
+      updateComposer(sourceKey, (state) => ({ ...state, error: String(cause) }))
+    } finally {
+      sendingRef.current.delete(sourceKey)
+      updateComposer(targetKey, (state) => ({ ...state, sending: false }))
     }
-  }, [current, draft, running, modelValue, refreshList, toast])
+  }, [current, draft, composer, key, modelValue, activeWs, effectiveDraftProject, navigate, projects, refreshList, refreshWorkspaces])
 
   const stop = useCallback(async () => {
-    if (current === null) return
+    if (current === null || activeWs === null) return
     try {
-      await stopSession(current)
+      await stopSessionIn(activeWs, current)
+      void refreshWorkspaces()
     } catch (cause) {
       toast.notify(String(cause))
     }
-  }, [current, toast])
+  }, [current, activeWs, toast])
+
+  // Re-send the newest user message verbatim after a failed request. Safe by
+  // construction: the failure card is only reachable when the request never
+  // completed, so no tool side effects can be duplicated.
+  const retryLast = useCallback(async () => {
+    if (sendingRef.current.has(key) || current === null || activeWs === null || running || modelValue === null) return
+    const lastUser = [...projectedItems].reverse().find((item) => item.kind === 'user' && item.queued !== true)
+    if (lastUser === undefined || (lastUser.kind !== 'user')) return
+    sendingRef.current.add(key)
+    updateComposer(key, (state) => ({ ...state, sending: true, error: null }))
+    const nav = navigation.current.current()
+    try {
+      await sendMessageIn(activeWs, current, lastUser.content, globalThis.crypto.randomUUID())
+      if (navigation.current.matches(nav)) void refreshList()
+      void refreshWorkspaces()
+    } catch (cause) {
+      updateComposer(key, (state) => ({ ...state, error: String(cause) }))
+    } finally {
+      sendingRef.current.delete(key)
+      updateComposer(key, (state) => ({ ...state, sending: false }))
+    }
+  }, [projectedItems, current, activeWs, running, modelValue, key, refreshList, toast])
 
   const answer = useCallback(async (approvalId: string, allow: boolean) => {
     try {
       await answerApproval(approvalId, allow)
+      dismissApproval(approvalId)
+      void refreshWorkspaces()
     } catch (cause) {
-      toast.notify(String(cause))
+      throw cause
     }
-  }, [toast])
+  }, [toast, dismissApproval])
 
-  const newSession = useCallback(async () => {
-    try {
-      const { id } = await createSession()
-      await refreshList()
-      setCurrent(id)
-      setSidebarOpen(false)
-    } catch (cause) {
-      toast.notify(String(cause))
-    }
-  }, [refreshList, toast])
+  /** Persist `{tool: allow}` for the approval's Always-allow action. */
+  const alwaysAllow = useCallback(async (tool: string) => {
+    if (activeWs === null) throw new Error('no workspace context for a policy change')
+    await setPolicy(activeWs, { ...(meta?.policy ?? {}), [tool]: 'allow' })
+    await refreshMeta()
+    toast.notify(`${tool} will now run without asking in this workspace. Revert it in the permission popover.`, 'ok')
+  }, [activeWs, meta, refreshMeta, toast])
 
   const rename = useCallback(async (id: string, title: string) => {
+    if (activeWs === null) return
+    const nav = navigation.current.current()
     try {
-      const renamed = await renameSession(id, title)
+      const renamed = await renameSessionIn(activeWs, id, title)
+      if (!navigation.current.matches(nav)) return
       await refreshList()
-      toast.notify(`phiên đổi tên thành "${renamed.title}"`, 'ok')
+      toast.notify(`Conversation renamed to "${renamed.title}"`, 'ok')
     } catch (cause) {
       toast.notify(String(cause))
     }
-  }, [refreshList, toast])
+  }, [activeWs, refreshList, toast])
 
   const confirmDelete = useCallback(async () => {
-    if (pendingDelete === null) return
+    if (pendingDelete === null || activeWs === null) return
+    const nav = navigation.current.current()
+    const request = lists.current.next()
     const id = pendingDelete.id
     setPendingDelete(null)
     try {
-      await deleteSession(id)
-      const listing = await listSessions()
+      await deleteSessionIn(activeWs, id)
+      const listing = await listSessionsIn(activeWs)
+      if (!navigation.current.matches(nav) || !lists.current.matches(request)) return
       setSessions(listing)
-      if (current === id) setCurrent(listing[0]?.id ?? null)
-      toast.notify('đã xóa phiên', 'ok')
+      if (current === id) {
+        const next = listing[0]
+        setCurrent(next?.id ?? null)
+        navigate(next !== undefined ? sessionRoute(activeWs, next.id) : workspaceRoute(activeWs), 'replace')
+      }
+      toast.notify('Conversation deleted', 'ok')
     } catch (cause) {
       toast.notify(String(cause))
     }
-  }, [pendingDelete, current, toast])
-
-  const applySessionFolder = useCallback(async () => {
-    if (current === null) return
-    try {
-      const updated = await setSessionFolder(current, folderDraft.trim())
-      setSessions((previous) => previous.map((session) => (
-        session.id === current ? { ...session, folder: updated.folder } : session
-      )))
-      setFolderDraft(updated.folder ?? meta?.folder ?? '')
-      toast.notify(updated.folder === null ? 'session đang dùng workspace mặc định' : `workspace session: ${updated.folder}`, 'ok')
-    } catch (cause) {
-      toast.notify(String(cause))
-    }
-  }, [current, folderDraft, meta?.folder, toast])
+  }, [pendingDelete, current, activeWs, navigate, toast])
 
   const selectModel = useCallback(async (value: string) => {
     const choice = decodeModelChoice(value)
-    if (choice === null) return
+    if (choice === null || activeWs === null) return
+    const nav = navigation.current.current()
+    const token = controls.current.next()
+    metadata.current.next()
     try {
-      setMeta(await setModel(choice.model, choice.provider))
+      await setWorkspaceModel(activeWs, choice.model, choice.provider)
+      if (navigation.current.matches(nav) && controls.current.matches(token)) await refreshMeta()
     } catch (cause) {
       toast.notify(String(cause))
     }
-  }, [toast])
+  }, [activeWs, refreshMeta, toast])
+
+  const selectMode = useCallback(async (modeId: string) => {
+    if (activeWs === null) return
+    const nav = navigation.current.current()
+    const token = controls.current.next()
+    metadata.current.next()
+    try {
+      await setMode(activeWs, modeId)
+      if (navigation.current.matches(nav) && controls.current.matches(token)) await refreshMeta()
+    } catch (cause) {
+      toast.notify(String(cause))
+    }
+  }, [activeWs, refreshMeta, toast])
+
+  /** Live thinking control: null clears back to the model's default. */
+  const selectThinking = useCallback(async (level: string | null) => {
+    if (activeWs === null) return
+    const nav = navigation.current.current()
+    const token = controls.current.next()
+    metadata.current.next()
+    try {
+      await setWorkspaceThinking(activeWs, level)
+      if (navigation.current.matches(nav) && controls.current.matches(token)) await refreshMeta()
+    } catch (cause) {
+      toast.notify(String(cause))
+    }
+  }, [activeWs, refreshMeta, toast])
+
+  const switchWorkspace = useCallback((id: string) => {
+    if (id === '') return
+    navigation.current.next()
+    workspaceRef.current = id
+    setCurrent(null)
+    setPendingDelete(null)
+    setActiveWs(id)
+    navigate(workspaceRoute(id))
+    if (window.innerWidth < 1024) onLeftOpenChange(false)
+  }, [navigate])
+
+  const addWorkspace = useCallback(async () => {
+    const name = newWorkspaceName.trim()
+    if (name === '') return
+    const nav = navigation.current.current()
+    try {
+      const created = await createWorkspace(name)
+      if (!navigation.current.matches(nav)) return
+      setNewWorkspaceName('')
+      await refreshWorkspaces()
+      if (!navigation.current.matches(nav)) return
+      switchWorkspace(created.id)
+      toast.notify(`Created workspace "${created.name}"`, 'ok')
+    } catch (cause) {
+      toast.notify(String(cause))
+    }
+  }, [newWorkspaceName, refreshWorkspaces, switchWorkspace, toast])
 
   useHotkeys([
-    { key: 'n', mod: true, onPress: () => void newSession() },
-    { key: 'k', mod: true, onPress: () => setSidebarOpen(true) },
+    { key: 'n', mod: true, onPress: beginConversation },
+    { key: 'k', mod: true, onPress: () => onLeftOpenChange(true) },
+    { key: ',', mod: true, onPress: () => setSettingsOpen(true) },
   ])
 
-  const activeTitle = currentSession?.title ?? ''
-  const folderLabel = (currentSession?.folder ?? meta?.folder ?? '').split(/[\\/]/).at(-1) ?? ''
 
-  return (
-    <div className={`app${sidebarOpen ? ' nav-open' : ''}${envOpen ? ' env-open' : ''}`}>
-      <TopBar
-        title={activeTitle}
-        meta={meta}
-        stream={stream}
-        sidebarOpen={sidebarOpen}
-        sessionFolder={currentSession?.folder ?? null}
-        folderDraft={folderDraft}
-        canSetFolder={current !== null}
-        onFolderDraft={setFolderDraft}
-        onApplyFolder={() => void applySessionFolder()}
-        onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
-        onToggleEnv={() => setEnvOpen((prev) => !prev)}
-        onOpenSettings={() => setSettingsOpen(true)}
-      />
-      <div className="app-body">
-        <Sidebar
-          sessions={sessions}
-          current={current}
-          filter={filter}
-          stream={stream}
-          provider={meta?.provider ?? null}
-          folderLabel={folderLabel}
-          running={running}
-          open={sidebarOpen}
-          onFilter={setFilter}
-          onSelect={openSession}
-          onNew={() => void newSession()}
-          onRename={(id, title) => void rename(id, title)}
-          onDeleteRequest={setPendingDelete}
-          onClose={closeSidebar}
-        />
-        <main className="chat">
-          <div className="chat-area">
-            {events.length === 0 ? (
-              <div className="empty">
-                <div className="empty-mark" aria-hidden="true">⌬</div>
-                <p className="empty-title">Bắt đầu một hội thoại</p>
-                <p className="empty-sub">Agent đọc file, chạy bash và xin phép trước khi thay đổi.</p>
-                {modelValue === null ? <Button variant="primary" size="sm" onClick={() => setSettingsOpen(true)}>Cấu hình provider</Button> : null}
-                <div className="suggestions">
-                  {SUGGESTIONS.map((suggestion) => (
-                    <Button
-                      key={suggestion}
-                      variant="outline"
-                      size="sm"
-                      disabled={current === null || modelValue === null}
-                      onClick={() => {
-                        if (current !== null) {
-                          void sendMessage(current, suggestion).then(() => void refreshList())
-                            .catch((cause: unknown) => toast.notify(String(cause)))
-                        }
-                      }}
-                    >
-                      {suggestion}
-                    </Button>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <Transcript events={events} />
-            )}
+  const topBar = (
+    <TopBar
+      stream={stream}
+      sidebarOpen={sidebarOpen}
+      envOpen={envOpen}
+      workspaces={workspaces}
+      activeWorkspaceId={activeWs}
+      newWorkspaceName={newWorkspaceName}
+      onNewWorkspaceName={setNewWorkspaceName}
+      onSelectWorkspace={switchWorkspace}
+      onCreateWorkspace={() => void addWorkspace()}
+      onWorkspacesChanged={async () => { await refreshWorkspaces() }}
+      openSignal={wsSignal}
+      onToggleSidebar={() => onLeftOpenChange(!sidebarOpen)}
+      onToggleEnv={() => onRightOpenChange(!envOpen)}
+      onOpenSettings={() => { setSettingsSection('providers'); setSettingsOpen(true) }}
+    />
+  )
+  const navigationPanel = (
+    <Sidebar sessions={sessions} projects={projects} current={current} filter={filter} stream={stream} provider={meta?.provider ?? null} running={running}
+      workspaceArchived={activeWorkspace?.archived === true} open={sidebarOpen} onFilter={setFilter} onSelect={openSession} onNew={beginConversation}
+      onNewInProject={newInProject} onOpenWorkspaces={() => setWsSignal((n) => n + 1)} notifyEnabled={notify.enabled} notifyBlocked={notify.blocked}
+      onToggleNotify={notify.toggle} onRename={(id, title) => void rename(id, title)} onDeleteRequest={setPendingDelete} onClose={closeSidebar} hosted />
+  )
+  const conversation = (
+    <main className="chat">
+      {current !== null ? <TaskStatus events={events} pending={approvals.length} sending={sending} connected={stream === 'open'} /> : null}
+      <div className="chat-area">
+        {events.length === 0 ? (
+          <div className="empty"><div className="empty-mark" aria-hidden="true">⌬</div><p className="empty-title">What can I help with?</p>
+            <p className="empty-sub">{draftProjectName !== undefined ? `Working in ${draftProjectName}. Pick another folder from the chip under the input.` : 'Pick a project folder from the chip under the input for file and shell tools, or keep Chat only.'}</p>
+            {modelValue === null ? <Button variant="primary" size="sm" onClick={() => setSettingsOpen(true)}>Configure provider</Button> : null}
+            <div className="suggestions">{(draftProjectName !== undefined ? [`Explain ${draftProjectName}`, 'Find TODOs / bugs', `Plan a change in ${draftProjectName}`] : ['Explain how to register a project and get started', 'Help me plan a feature']).map((suggestion) => <Button key={suggestion} variant="outline" size="sm" disabled={modelValue === null} onClick={() => setDraft(suggestion)}>{suggestion}</Button>)}</div>
           </div>
-          <ApprovalBar approvals={approvals} onAnswer={(id, allow) => void answer(id, allow)} />
-          <Composer
-            connected={stream === 'open'}
-            running={running}
-            draft={draft}
-            onDraft={setDraft}
-            onSend={() => void send()}
-            onStop={() => void stop()}
-            modelValue={modelValue}
-            modelOptions={availableModelOptions}
-            onModel={(value) => void selectModel(value)}
-          />
-        </main>
-        <EnvPanel
-          open={envOpen}
-          meta={meta}
-          stream={stream}
-          sessionId={current}
-          sessionFolder={currentSession?.folder ?? null}
-          eventCount={events.length}
-          modelValue={modelValue}
-          modelOptions={availableModelOptions}
-          onModel={(value) => void selectModel(value)}
+        ) : <><WorkbenchSurface item={workbenchItem} workspaceId={activeWs} onOpenChild={openSession} /><Transcript items={projectedItems} {...(modelValue !== null && meta?.model !== undefined && meta.model !== '' ? { modelLabel: meta.model } : {})} workspaceId={activeWs} onReuse={(text) => { setDraft(text); requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.composer-input')?.focus()) }} onOpenChild={openSession} onRetry={() => void retryLast()} onOpenSettings={() => setSettingsOpen(true)} /></>}
+      </div>
+      <div className="conversation-dock-anchor">
+        <ConversationDock
+          approvals={<ApprovalBar key={key} approvals={approvals} scope={currentProject?.path ?? 'No project attached'} onAnswer={answer} {...(activeWorkspace !== null ? { workspaceName: activeWorkspace.name } : {})} onAlwaysAllow={alwaysAllow} />}
+          sendError={sendError ? <div className="send-error" role="alert"><strong>Send not confirmed. Your draft has been kept.</strong><p>Check the conversation before sending again to avoid duplicate work.</p><details><summary>Error details</summary><pre>{sendError}</pre></details><Button size="sm" onClick={() => setSettingsOpen(true)}>Check provider</Button></div> : null}
+          composer={<Composer scope={currentProject?.path ?? null} {...(current === null ? { scopePicker: { value: effectiveDraftProject, options: scopeOptions, onChange: changeDraftProject, onPickFolder: () => setFolderPickerOpen(true) } } : {})} policy={meta?.policy} workspaceId={activeWs} onPolicySaved={() => void refreshMeta()} onManageModels={() => { setSettingsSection('providers'); setSettingsOpen(true) }} sending={sending} connected={stream === 'open' || current === null} running={running} draft={draft} onDraft={setDraft} onSend={() => void send()} onStop={() => void stop()} modelValue={modelValue} {...(modelLabel !== null ? { modelLabel } : {})} modelOptions={availableModelOptions} providers={meta?.providers ?? []} onModel={(value) => void selectModel(value)} thinkingValue={meta?.thinkingLevel ?? null} {...(activeModelSettings !== undefined ? { modelSettings: activeModelSettings } : {})} onThinking={(level) => void selectThinking(level)} modes={modeSelection.modes} modeValue={modeSelection.selected} onMode={(value) => void selectMode(value)} />}
         />
       </div>
+    </main>
+  )
+  const inspector = <InspectorPanel tab={inspectorTab} onTabChange={(tab) => patchPreferences({ inspectorTab: tab })} onClose={() => onRightOpenChange(false)} events={events} context={{ meta, stream, sessionId: current, sessionFolder: currentProject?.path ?? null, eventCount: events.length, manifest, workspaceId: activeWs, running, modeLabel: envModeLabel, onCompacted: () => setCompactNonce((nonce) => nonce + 1), onOpenSettingsTab: (tab) => { setSettingsSection(tab); setSettingsOpen(true) } }} />
+
+  return (
+    <>
+      <WorkbenchShell topBar={topBar} navigation={navigationPanel} conversation={conversation} inspector={inspector} leftOpen={sidebarOpen} rightOpen={envOpen} leftWidth={preferences.leftWidth} rightWidth={preferences.rightWidth}
+        onLeftOpenChange={onLeftOpenChange}
+        onRightOpenChange={onRightOpenChange}
+        onLeftWidthChange={(leftWidth) => patchPreferences({ leftWidth })} onRightWidthChange={(rightWidth) => patchPreferences({ rightWidth })} />
       <SettingsModal
+        initialTab={settingsSection}
+        workspaceName={activeWorkspace?.name}
+        projects={projects}
+        onProjectsChanged={refreshList}
+        onOpenChild={openSession}
+        sessionCounts={sessionCounts}
         open={settingsOpen}
+        workspaceId={activeWs}
+        rootSessionId={current}
         providers={meta?.providers ?? []}
         activeProvider={meta?.provider ?? ''}
         activeModel={meta?.model ?? ''}
         onDismiss={() => setSettingsOpen(false)}
         onRefresh={refreshMeta}
         onSelectActive={async (provider, model) => {
-          setMeta(await setModel(model, provider))
+          if (activeWs !== null) {
+            const nav = navigation.current.current()
+            const token = controls.current.next()
+            metadata.current.next()
+            await setWorkspaceModel(activeWs, model, provider)
+            if (navigation.current.matches(nav) && controls.current.matches(token)) await refreshMeta()
+          }
         }}
       />
       <ConfirmDialog
         open={pendingDelete !== null}
-        title={pendingDelete !== null ? `Xóa phiên "${pendingDelete.title || 'untitled'}"?` : ''}
-        confirmLabel="Xóa"
+        title={pendingDelete !== null ? `Delete conversation "${pendingDelete.title || 'untitled'}"?` : ''}
+        confirmLabel="Delete"
         onConfirm={() => void confirmDelete()}
         onDismiss={() => setPendingDelete(null)}
       />
-    </div>
+      <FolderPickerModal
+        open={folderPickerOpen}
+        onDismiss={() => setFolderPickerOpen(false)}
+        onConfirm={(folderPath) => {
+          setFolderPickerOpen(false)
+          void registerFolder(folderPath)
+        }}
+      />
+    </>
   )
 }

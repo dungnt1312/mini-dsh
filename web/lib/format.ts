@@ -2,7 +2,7 @@
 
 export function formatTime(ts?: number): string {
   if (ts === undefined) return ''
-  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  return new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
 }
 
 export function formatDuration(start?: number, end?: number): string {
@@ -44,4 +44,13 @@ export function toolTarget(args: Record<string, unknown>): string {
     if (typeof value === 'string' && value !== '') return value
   }
   return ''
+}
+
+/** Budget fill tone by usage ratio: state color thresholds (≥80 warn, ≥95 bad). */
+export function budgetTone(usedTokens: number, availableTokens: number): 'ok' | 'warn' | 'bad' {
+  if (availableTokens <= 0) return 'bad'
+  const ratio = usedTokens / availableTokens
+  if (ratio >= 0.95) return 'bad'
+  if (ratio >= 0.8) return 'warn'
+  return 'ok'
 }

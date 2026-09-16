@@ -163,6 +163,33 @@ const PATHS: Readonly<Record<string, ReactNode>> = {
       <path d="M12 11v5M12 8h.01" />
     </>
   ),
+  shield: <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />,
+  pin: (
+    <>
+      <path d="M12 17v5" />
+      <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z" />
+    </>
+  ),
+  dots: (
+    <>
+      <circle cx="5" cy="12" r="1.4" fill="currentColor" strokeWidth={0} />
+      <circle cx="12" cy="12" r="1.4" fill="currentColor" strokeWidth={0} />
+      <circle cx="19" cy="12" r="1.4" fill="currentColor" strokeWidth={0} />
+    </>
+  ),
+  archive: (
+    <>
+      <rect x="3" y="4" width="18" height="4" rx="1" />
+      <path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8" />
+      <path d="M10 12h4" />
+    </>
+  ),
+  bell: (
+    <>
+      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+      <path d="M13.7 21a2 2 0 0 1-3.4 0" />
+    </>
+  ),
 }
 
 function Icon({

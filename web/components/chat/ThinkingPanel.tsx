@@ -24,7 +24,7 @@ export function ThinkingPanel({ thinking, live }: { readonly thinking: readonly 
         aria-expanded={open}
       >
         <Icon name="chevron" size={13} className={`chevron ${open ? 'chevron-up' : ''}`} />
-        <span className="thinking-label">{live ? 'Đang suy nghĩ…' : 'Suy nghĩ'}</span>
+        <span className="thinking-label">{live ? 'Thinking…' : 'Thinking'}</span>
         {live ? <Spinner className="thinking-spinner" /> : null}
         {!live && content !== '' ? (
           <span className="thinking-preview">{content.replace(/\s+/g, ' ').slice(0, 80)}</span>

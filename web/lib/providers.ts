@@ -19,7 +19,7 @@ export function decodeModelChoice(value: string): { readonly provider: string; r
 }
 
 /** Flatten enabled provider/model sets for the composer and Environment panel. */
-export function modelOptions(meta: Meta | null): readonly ModelOption[] {
+export function modelOptions(meta: Pick<Meta, 'provider' | 'model' | 'providers' | 'models'> | null): readonly ModelOption[] {
   if (meta === null) return []
   const options: ModelOption[] = []
   for (const provider of meta.providers) {
@@ -47,7 +47,7 @@ export function modelOptions(meta: Meta | null): readonly ModelOption[] {
   return options
 }
 
-export function activeModelValue(meta: Meta | null): string | null {
+export function activeModelValue(meta: Pick<Meta, 'provider' | 'model' | 'providers' | 'models'> | null): string | null {
   if (meta === null || meta.provider === '' || meta.model === '') return null
   return encodeModelChoice(meta.provider, meta.model)
 }

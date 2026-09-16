@@ -13,7 +13,7 @@ export default defineConfig({
   test: {
     // React-component smoke tests live under web/ (tsconfig.web owns DOM+JSX
     // libs); everything else stays in tests/.
-    include: ['tests/**/*.spec.ts', 'web/**/*.spec.tsx'],
+    include: ['tests/**/*.spec.ts', 'web/**/*.spec.ts', 'web/**/*.spec.tsx'],
     environment: 'node',
     // Deterministic effect-teardown tests need real microtask ordering, not fake timers.
     testTimeout: 10_000,

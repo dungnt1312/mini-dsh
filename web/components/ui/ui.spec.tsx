@@ -57,6 +57,7 @@ describe('runtime provider UI helpers', () => {
     const html = renderToStaticMarkup(
       <SettingsModal
         open
+        workspaceId="ws-1"
         providers={meta.providers}
         activeProvider="cliproxy1"
         activeModel="gpt-5.6-sol"
@@ -68,7 +69,15 @@ describe('runtime provider UI helpers', () => {
     // Dialog chrome comes from the Modal primitive, not bespoke markup.
     expect(html).toContain('ui-modal-backdrop')
     expect(html).toContain('aria-modal="true"')
-    expect(html).toContain('Providers &amp; Models')
+    // Header follows the active tab; the section tabs label every surface.
+    expect(html).toContain('PROVIDERS')
+    expect(html).toContain('MCP')
+    expect((html.match(/role="tab"/g) ?? []).length).toBe(8)
+    expect((html.match(/role="tabpanel"/g) ?? []).length).toBe(8)
+    expect((html.match(/aria-controls=/g) ?? []).length).toBe(8)
+    expect((html.match(/aria-selected="true"/g) ?? []).length).toBe(1)
+    // One additional programmatically focusable option is rendered by the searchable select.
+    expect((html.match(/tabindex="-1"/g) ?? []).length).toBe(8)
     // Every configured provider is selectable, with its model count as subtitle.
     expect(html).toContain('cliproxy1')
     expect(html).toContain('2 models')
@@ -80,6 +89,7 @@ describe('runtime provider UI helpers', () => {
     const html = renderToStaticMarkup(
       <SettingsModal
         open
+        workspaceId="ws-1"
         providers={meta.providers}
         activeProvider="cliproxy1"
         onDismiss={() => undefined}
@@ -117,10 +127,10 @@ describe('primitives render their class contract', () => {
 
   it('IconButton carries an aria-label', () => {
     const html = renderToStaticMarkup(
-      <IconButton label="Đóng" onClick={() => undefined}><span>x</span></IconButton>,
+      <IconButton label="Close" onClick={() => undefined}><span>x</span></IconButton>,
     )
     expect(html).toContain('ui-icon-btn')
-    expect(html).toContain('aria-label="Đóng"')
+    expect(html).toContain('aria-label="Close"')
   })
 
   it('Badge tones, Kbd, CodeChip, Panel', () => {
@@ -169,7 +179,7 @@ describe('dialog / form primitives', () => {
 
   it('Field pairs a label with one hint line, tone-aware', () => {
     const html = renderToStaticMarkup(
-      <Field label="Base URL" tone="bad" hint="Phải là http(s) URL.">
+      <Field label="Base URL" tone="bad" hint="Enter an HTTP or HTTPS URL.">
         <TextInput value="ftp://x" readOnly invalid />
       </Field>,
     )
@@ -271,11 +281,12 @@ describe('chat surfaces', () => {
     const html = renderToStaticMarkup(
       <ApprovalBar
         approvals={[{ approvalId: 'a1', call: { id: 't', name: 'edit', args: { path: 'web/App.tsx' } } }]}
-        onAnswer={() => undefined}
+        onAnswer={async () => undefined}
       />,
     )
-    expect(html).toContain('edit · web/App.tsx')
-    expect(html).toContain('Allow')
+    expect(html).toContain('web/App.tsx')
+    expect(html).toContain('Exact arguments')
+    expect(html).toContain('Allow once')
     expect(html).toContain('Deny')
   })
 })

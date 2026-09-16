@@ -1,145 +1,101 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import * as Popover from '@radix-ui/react-popover'
+import { useEffect, useRef, useState } from 'react'
 import Icon from '../common/Icon.tsx'
 import { Badge } from '../ui/Badge.tsx'
-import { Button } from '../ui/Button.tsx'
-import { Chip } from '../ui/Chip.tsx'
 import { IconButton } from '../ui/IconButton.tsx'
-import { TextInput } from '../ui/TextInput.tsx'
-import { SHOW_SLOTS } from '../../lib/config.ts'
-import { pathBasename } from '../../lib/format.ts'
+import { WorkspacePopover } from './WorkspacePopover.tsx'
 import type { StreamState } from '../../lib/api.ts'
-import type { Meta } from '../../lib/types.ts'
+import type { WorkspaceRow } from '../../lib/types.ts'
 
 /**
- * Global chrome: a session-scoped workspace switcher, centered conversation
- * context, layout toggles, and the provider Settings entry point. Folder
- * submission deliberately allows an empty value: that resets this session to
- * the server's default workspace instead of modifying any other chat.
+ * Global chrome (spec: TopBar v2): rail toggle, wordmark, workspace chip —
+ * which carries the active workspace's stream dot plus ONE optional amber
+ * approval badge (running counts never render on the chip) — and the
+ * inspector / settings entry points. The popover owns switching AND
+ * management (inline rename, kebab archive/restore/delete).
  */
 export function TopBar({
-  title,
-  meta,
   stream,
   sidebarOpen,
-  sessionFolder,
-  folderDraft,
-  canSetFolder,
-  onFolderDraft,
-  onApplyFolder,
+  envOpen,
+  workspaces,
+  activeWorkspaceId,
+  newWorkspaceName,
+  onNewWorkspaceName,
+  onSelectWorkspace,
+  onCreateWorkspace,
+  onWorkspacesChanged,
+  openSignal,
   onToggleSidebar,
   onToggleEnv,
   onOpenSettings,
 }: {
-  readonly title: string
-  readonly meta: Meta | null
   readonly stream: StreamState
   readonly sidebarOpen: boolean
-  readonly sessionFolder: string | null
-  readonly folderDraft: string
-  readonly canSetFolder: boolean
-  readonly onFolderDraft: (value: string) => void
-  readonly onApplyFolder: () => void
+  readonly envOpen?: boolean
+  readonly workspaces: readonly WorkspaceRow[]
+  readonly activeWorkspaceId: string | null
+  readonly newWorkspaceName: string
+  readonly onNewWorkspaceName: (value: string) => void
+  readonly onSelectWorkspace: (id: string) => void
+  readonly onCreateWorkspace: () => void
+  readonly onWorkspacesChanged: () => Promise<void>
+  /** Bump to open the switcher from elsewhere (archived banner link). */
+  readonly openSignal?: number
   readonly onToggleSidebar: () => void
   readonly onToggleEnv: () => void
   readonly onOpenSettings: () => void
 }) {
-  const [folderOpen, setFolderOpen] = useState(false)
-  const popRef = useRef<HTMLDivElement | null>(null)
-  const resolvedFolder = sessionFolder ?? meta?.folder ?? ''
+  const [wsOpen, setWsOpen] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const active = workspaces.find((row) => row.id === activeWorkspaceId) ?? null
+  const approvals = active?.approvals ?? 0
+  const seenSignal = useRef<number | undefined>(undefined)
 
   useEffect(() => {
-    if (!folderOpen) return
-    const onDown = (event: MouseEvent): void => {
-      if (popRef.current !== null && !popRef.current.contains(event.target as Node)) setFolderOpen(false)
+    if (openSignal === undefined) return
+    if (seenSignal.current === undefined) { seenSignal.current = openSignal; return }
+    if (openSignal !== seenSignal.current) {
+      seenSignal.current = openSignal
+      setWsOpen(true)
     }
-    const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') setFolderOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [folderOpen])
-
-  const submit = (event: FormEvent): void => {
-    event.preventDefault()
-    if (!canSetFolder) return
-    onApplyFolder()
-    setFolderOpen(false)
-  }
+  }, [openSignal])
 
   return (
     <header className="topbar">
-      <div className="topbar-brand">
-        <span className="topbar-logo" aria-hidden="true">⌬</span>
-        <div className="topbar-workspace" ref={popRef}>
-          <Chip
-            interactive={canSetFolder}
-            caret={canSetFolder}
-            onClick={() => setFolderOpen((prev) => !prev)}
-            title={canSetFolder ? 'Đổi workspace của session này' : 'Chọn một session trước'}
-          >
-            <span className={`ws-dot ws-dot-${stream}`} aria-hidden="true" />
-            <b>{resolvedFolder === '' ? 'workspace' : pathBasename(resolvedFolder)}</b>
-          </Chip>
-          {folderOpen ? (
-            <form className="topbar-folder-pop" onSubmit={submit}>
-              <TextInput
-                autoFocus
-                leading={<Icon name="folder" size={13} />}
-                value={folderDraft}
-                placeholder="/path/to/workspace"
-                onChange={(event) => onFolderDraft(event.target.value)}
-              />
-              <Button variant="primary" size="sm">
-                Dùng
-              </Button>
-              <Button type="button" variant="ghost" size="sm" onClick={() => onFolderDraft('')}>
-                Inherit
-              </Button>
-            </form>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="topbar-center">
-        <h1 className="topbar-title">{title || 'untitled session'}</h1>
-        {resolvedFolder !== '' ? (
-          <span className="topbar-path-chip">
-            <Chip title={sessionFolder === null ? 'Inherited default workspace' : 'Session workspace'}>
-              <Icon name="folder" size={11} />
-              {resolvedFolder}
-            </Chip>
-          </span>
-        ) : null}
-        {meta !== null && meta.provider !== '' ? (
-          <Chip title="Active LLM provider">
-            <Icon name="zap" size={11} className="accent-icon" />
-            {meta.provider}
-          </Chip>
-        ) : null}
-      </div>
-
-      <div className="topbar-actions">
-        <IconButton label="Mở provider settings" size="md" onClick={onOpenSettings}>
-          <Icon name="sliders" size={15} />
-        </IconButton>
-        <IconButton label="Environment panel" size="md" onClick={onToggleEnv}>
-          <Icon name="panelRight" size={15} />
-        </IconButton>
-        <IconButton label={sidebarOpen ? 'Đóng danh sách phiên' : 'Danh sách phiên'} size="md" onClick={onToggleSidebar}>
+      <div className="topbar-left">
+        <IconButton label={sidebarOpen ? 'Close conversation navigation' : 'Open conversation navigation'} size="md" onClick={onToggleSidebar}>
           <Icon name="panelLeft" size={15} />
         </IconButton>
-        {SHOW_SLOTS ? (
-          <>
-            <IconButton label="File browser — sắp ra mắt" size="md" variant="outline" className="ui-icon-btn-slot" disabled>
-              <Icon name="fileText" size={15} />
-            </IconButton>
-            <Badge tone="amber">slot sau</Badge>
-          </>
-        ) : null}
+        <span className="topbar-wordmark">mini-dsh</span>
+        <Popover.Root open={wsOpen} onOpenChange={setWsOpen}>
+          <div className="topbar-workspace">
+          <Popover.Trigger ref={triggerRef} className="ui-chip ui-chip-btn inline-flex items-center gap-1 rounded-control px-2 py-1 text-xs cursor-pointer hover:bg-surface-muted" title="Choose workspace (running work is unaffected)">
+            <span className={`ws-dot ws-dot-${stream}`} aria-hidden="true" />
+            <b>{active?.name ?? 'workspace'}</b>
+            {active?.archived === true ? <Badge tone="gray">archived</Badge> : null}
+            {approvals > 0 ? <Badge tone="amber">⚠{approvals}</Badge> : null}
+            <Icon name="chevron" size={11} className="ui-chip-caret chevron" />
+          </Popover.Trigger>
+          <Popover.Portal>
+            <Popover.Content className="topbar-folder-pop topbar-ws-pop" side="bottom" align="start" sideOffset={6} collisionPadding={16} onCloseAutoFocus={(event) => { event.preventDefault(); triggerRef.current?.focus() }}>
+              <div className="ws-pop-head">WORKSPACES</div>
+              <WorkspacePopover workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onSelect={(id) => { onSelectWorkspace(id); setWsOpen(false) }} onChanged={onWorkspacesChanged} newWorkspaceName={newWorkspaceName} onNewWorkspaceName={onNewWorkspaceName} onCreate={() => { onCreateWorkspace(); setWsOpen(false) }} />
+            </Popover.Content>
+          </Popover.Portal>
+          </div>
+        </Popover.Root>
+      </div>
+
+      <div className="topbar-spacer" />
+
+      <div className="topbar-actions">
+        <IconButton label={envOpen ? 'Close context inspector' : 'Open context inspector'} size="md" onClick={onToggleEnv}>
+          <Icon name="panelRight" size={15} />
+        </IconButton>
+        <IconButton label="Open settings" size="md" onClick={onOpenSettings}>
+          <Icon name="sliders" size={15} />
+        </IconButton>
       </div>
     </header>
   )
