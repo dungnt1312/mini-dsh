@@ -1,0 +1,236 @@
+/**
+ * G4 over HTTP: agent definition routes, spawn/wait/cancel lifecycle,
+ * one-level enforcement, and root Stop cleaning up children.
+ */
+import { promises as fs } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { createWebServer, type LlmProvider, type WebServer } from 'mini-dsh'
+
+let root = ''
+const servers: WebServer[] = []
+
+beforeAll(async () => {
+  root = await fs.mkdtemp(path.join(tmpdir(), 'mini-dsh-g4-web-'))
+})
+
+afterAll(async () => {
+  for (const server of servers) await server.close().catch(() => {})
+  await fs.rm(root, { recursive: true, force: true })
+})
+
+async function post(base: string, pathname: string, body?: unknown): Promise<Response> {
+  return fetch(`${base}${pathname}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  })
+}
+
+describe('G4 HTTP surface', () => {
+  it('spawns a child from a root session, lists children, and root Stop cancels them', async () => {
+    // The child provider stalls forever so children are provably RUNNING
+    // when the lifecycle operations fire (no completion race).
+    const gate: LlmProvider = {
+      name: 'scripted',
+      models: ['scripted'],
+      async *stream() {
+        await new Promise(() => {})
+        yield { type: 'delta', delta: 'never' }
+      },
+    }
+    const home = await fs.mkdtemp(path.join(tmpdir(), 'mini-dsh-g4-home-'))
+    const server = await createWebServer({ home, providers: [gate], configFile: path.join(home, 'p.json') })
+    servers.push(server)
+    const base = server.url
+    const wsId = (await (await fetch(`${base}/api/workspaces`)).json() as { id: string }[])[0]!.id
+
+    const rootSession = (await (await post(base, `/api/workspaces/${wsId}/sessions`)).json()) as { id: string }
+    const spawned = await post(base, `/api/workspaces/${wsId}/agents/worker`, {
+      rootSessionId: rootSession.id,
+      task: { objective: 'do a unit of work', constraints: ['stay minimal'], requiredResult: 'summary' },
+    })
+    expect(spawned.status).toBe(202)
+    const handle = (await spawned.json()) as { childSessionId: string; status: string }
+    expect(handle.status).toBe('running')
+
+    // Children listed under the root.
+    const children = (await (await fetch(`${base}/api/workspaces/${wsId}/agents/children?root=${rootSession.id}`)).json()) as { status: string }[]
+    expect(children.length).toBe(1)
+
+    // Cancel via the lifecycle route.
+    const cancelled = await post(base, `/api/workspaces/${wsId}/children/${handle.childSessionId}/cancel`)
+    expect(cancelled.status).toBe(200)
+    expect(((await cancelled.json()) as { status: string }).status).toBe('cancelled')
+
+    // A second spawn + root Stop cleans it up.
+    await post(base, `/api/workspaces/${wsId}/agents/worker`, {
+      rootSessionId: rootSession.id,
+      task: { objective: 'another unit', constraints: [], requiredResult: 'summary' },
+    })
+    const stop = await post(base, `/api/workspaces/${wsId}/sessions/${rootSession.id}/stop`)
+    expect(stop.status).toBe(202)
+    expect(((await stop.json()) as { childrenCancelled?: number }).childrenCancelled).toBe(1)
+
+    // Unknown definition 404s.
+    expect((await post(base, `/api/workspaces/${wsId}/agents/no-such-role`, {
+      rootSessionId: rootSession.id,
+      task: { objective: 'x' },
+    })).status).toBe(404)
+    await server.close()
+  }, 20_000)
+
+  it('the child definition ceiling denies Bash for an Explorer even in Full access', async () => {
+    // Full access exposes Bash at the MODE level; the Explorer definition
+    // ceiling must still deny it — the trust boundary under test.
+    const bash: LlmProvider = {
+      name: 'scripted',
+      models: ['scripted'],
+      async *stream() {
+        yield { type: 'toolCalls', calls: [{ id: 'c1', name: 'Bash', args: { command: 'echo hacked > hacked.txt' } }] }
+      },
+    }
+    const home = await fs.mkdtemp(path.join(tmpdir(), 'mini-dsh-g4-ceil-'))
+    const server = await createWebServer({ home, providers: [bash], configFile: path.join(home, 'p.json') })
+    servers.push(server)
+    const base = server.url
+    const wsId = (await (await fetch(`${base}/api/workspaces`)).json() as { id: string }[])[0]!.id
+    expect((await fetch(`${base}/api/workspaces/${wsId}/mode`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ modeId: 'full-access' }),
+    })).status).toBe(200)
+
+    const rootSession = (await (await post(base, `/api/workspaces/${wsId}/sessions`)).json()) as { id: string }
+    const spawned = await post(base, `/api/workspaces/${wsId}/agents/explorer`, {
+      rootSessionId: rootSession.id,
+      task: { objective: 'run bash', constraints: [], requiredResult: 'summary' },
+    })
+    expect(spawned.status).toBe(202)
+    const handle = (await spawned.json()) as { childSessionId: string }
+
+    // Wait for the child turn to settle, then read the durable log.
+    const settled = await (await fetch(`${base}/api/workspaces/${wsId}/children/${handle.childSessionId}?waitMs=8000`)).json() as { status: string }
+    expect(settled.status).toBe('completed')
+
+    const response = await fetch(`${base}/api/workspaces/${wsId}/sessions/${handle.childSessionId}/events`)
+    const reader = (response.body as ReadableStream).getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    const deadline = Date.now() + 5_000
+    let denial = ''
+    try {
+      while (Date.now() < deadline) {
+        const remaining = deadline - Date.now()
+        const chunk = await Promise.race([
+          reader.read(),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), remaining)),
+        ])
+        if (chunk.done) break
+        buffer += decoder.decode(chunk.value, { stream: true })
+        const boundary = buffer.indexOf('\n\n')
+        if (boundary >= 0) {
+          const frame = buffer.slice(0, boundary)
+          const dataLine = frame.split('\n').find((line) => line.startsWith('data: '))
+          if (dataLine === undefined) continue
+          const envelope = JSON.parse(dataLine.slice('data: '.length)) as { kind: string; events?: { type: string; output?: string }[] }
+          if (envelope.kind === 'snapshot' && envelope.events !== undefined) {
+            for (const event of envelope.events) {
+              if (event.type === 'tool/result' && (event.output ?? '').includes('does not expose')) {
+                denial = event.output ?? ''
+                break
+              }
+            }
+            break
+          }
+        }
+      }
+    } finally {
+      reader.cancel().catch(() => {})
+    }
+    expect(denial).toMatch(/agent 'explorer' does not expose 'Bash'/)
+    // The command never executed: no side effect file exists.
+    await expect(fs.readFile(path.join(root, 'hacked.txt'), 'utf8')).rejects.toThrow()
+    await server.close()
+  }, 20_000)
+
+  it('one-level delegation: a child session cannot spawn a grandchild', async () => {
+    const stall: LlmProvider = {
+      name: 'scripted', models: ['scripted'],
+      async *stream() { await new Promise(() => {}); yield { type: 'delta', delta: 'never' } },
+    }
+    const home = await fs.mkdtemp(path.join(tmpdir(), 'mini-dsh-g4-depth-'))
+    const server = await createWebServer({ home, providers: [stall], configFile: path.join(home, 'p.json') })
+    servers.push(server)
+    const base = server.url
+    const wsId = (await (await fetch(`${base}/api/workspaces`)).json() as { id: string }[])[0]!.id
+
+    const rootSession = (await (await post(base, `/api/workspaces/${wsId}/sessions`)).json()) as { id: string }
+    const child = await post(base, `/api/workspaces/${wsId}/agents/worker`, {
+      rootSessionId: rootSession.id,
+      task: { objective: 'child task', constraints: [], requiredResult: 'summary' },
+    })
+    expect(child.status).toBe(202)
+    const childHandle = (await child.json()) as { childSessionId: string }
+
+    // The CHILD session attempts to spawn: refused by durable depth check.
+    const grandchild = await post(base, `/api/workspaces/${wsId}/agents/worker`, {
+      rootSessionId: childHandle.childSessionId,
+      task: { objective: 'grandchild task', constraints: [], requiredResult: 'summary' },
+    })
+    expect(grandchild.status).toBe(404)
+    expect(((await grandchild.json()) as { error: string }).error).toMatch(/one-level|child/)
+    await post(base, `/api/workspaces/${wsId}/sessions/${rootSession.id}/stop`)
+    await server.close()
+  }, 20_000)
+
+  it('Claude import over HTTP reports blocked fields and prevents activation', async () => {
+    const home = await fs.mkdtemp(path.join(tmpdir(), 'mini-dsh-g4-imp-'))
+    const server = await createWebServer({
+      home,
+      providers: [{ name: 'scripted', models: ['scripted'], async *stream() { yield { type: 'delta', delta: 'x' } } }],
+      configFile: path.join(home, 'p.json'),
+    })
+    servers.push(server)
+    const base = server.url
+    const wsId = (await (await fetch(`${base}/api/workspaces`)).json() as { id: string }[])[0]!.id
+    const imported = await post(base, `/api/workspaces/${wsId}/agents/from-claude/import`, {
+      content: `---
+name: auditor
+description: audits
+tools: ["Read"]
+hooks:
+  PreToolUse: x
+---
+
+body`,
+    })
+    // Blocked content is QUARANTINED (422): never saved as executable.
+    expect(imported.status).toBe(422)
+    const body = (await imported.json()) as { blocked: string[]; preview: { name: string } }
+    expect(body.blocked).toContain('hooks')
+    expect(body.preview.name).toBe('auditor')
+    // A clean import (no blocking fields) saves and activates.
+    const clean = await post(base, `/api/workspaces/${wsId}/agents/from-claude/import`, {
+      content: `---
+name: cleaner
+description: clean import
+tools: ["Read"]
+---
+
+body`,
+    })
+    expect(clean.status).toBe(201)
+    expect(((await clean.json()) as { active: boolean }).active).toBe(true)
+    const catalog = await (await fetch(`${base}/api/workspaces/${wsId}/agents`)).json() as { definition: { name: string } }[]
+    expect(catalog.map(row => row.definition.name)).toContain('from-claude')
+    expect((await fetch(`${base}/api/workspaces/${wsId}/agents/from-claude`)).status).toBe(200)
+    const session = await (await post(base, `/api/workspaces/${wsId}/sessions`)).json() as { id: string }
+    expect((await post(base, `/api/workspaces/${wsId}/agents/from-claude`, { rootSessionId: session.id, task: { objective: 'Inspect only' } })).status).toBe(202)
+    expect((await fetch(`${base}/api/workspaces/${wsId}/agents/from-claude`, { method: 'DELETE' })).status).toBe(200)
+    const remaining = await (await fetch(`${base}/api/workspaces/${wsId}/agents`)).json() as typeof catalog
+    expect(remaining.map(row => row.definition.name)).not.toContain('from-claude')
+    await server.close()
+  }, 15_000)
+})

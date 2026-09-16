@@ -61,4 +61,25 @@ describe('provider store', () => {
     }]))
     expect(seeded[0]?.defaultModel).toBe('deepseek-chat')
   })
+
+  it('parses per-model settings and drops junk fields', () => {
+    const loaded = parseProviders(JSON.stringify([{
+      id: 'p', name: 'P', baseUrl: 'http://x/v1', apiKey: '',
+      models: ['a'],
+      modelSettings: {
+        a: { contextTokens: 300_000, vision: true, thinkingLevel: 'high' },
+        b: { contextTokens: -5, vision: 'yes', thinkingLevel: 'ultra' },
+      },
+    }]))
+    expect(loaded[0]?.modelSettings).toEqual({ a: { contextTokens: 300_000, vision: true, thinkingLevel: 'high' } })
+  })
+
+  it('legacy contextLimits migrate into modelSettings.contextTokens', () => {
+    const loaded = parseProviders(JSON.stringify([{
+      id: 'p', name: 'P', baseUrl: 'http://x/v1', apiKey: '',
+      models: ['a', 'b'],
+      contextLimits: { a: 128_000, b: 0 },
+    }]))
+    expect(loaded[0]?.modelSettings).toEqual({ a: { contextTokens: 128_000 } })
+  })
 })

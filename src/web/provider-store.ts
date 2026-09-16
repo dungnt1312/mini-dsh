@@ -1,5 +1,16 @@
 import { mkdir, readFile, readFileSync, rename, writeFile } from 'node:fs'
 import path from 'node:path'
+import { isThinkingLevel } from '../harness/llm/model-catalog.ts'
+
+/** Per-model operator overrides stored on one provider entry. */
+export interface ModelSettings {
+  /** Context-window override in tokens; blank = catalog default. */
+  readonly contextTokens?: number
+  /** Vision capability override; absent = catalog value. */
+  readonly vision?: boolean
+  /** Default thinking level for this model; absent = catalog default. */
+  readonly thinkingLevel?: string
+}
 
 /** One configured OpenAI-completions provider, persisted as JSON. */
 export interface ProviderConfig {
@@ -11,6 +22,13 @@ export interface ProviderConfig {
   readonly models: readonly string[]
   readonly defaultModel?: string | undefined
   readonly enabled: boolean
+  /**
+   * Per-model operator overrides (context window, capabilities, thinking
+   * default). A contextTokens override makes the budget VERIFIED (from the
+   * operator); without one the builder resolves the model catalog's
+   * documented window and labels its estimate as such.
+   */
+  readonly modelSettings?: Readonly<Record<string, ModelSettings>>
 }
 
 /**
@@ -49,7 +67,36 @@ export function parseProviders(raw: string): ProviderConfig[] {
         : []
       const defaultModel = typeof candidate['defaultModel'] === 'string' ? candidate['defaultModel'] : undefined
       const enabled = candidate['enabled'] !== false
-      out.push({ id, name, baseUrl, apiKey, models, ...(defaultModel !== undefined ? { defaultModel } : {}), enabled })
+      // Per-model settings survive restarts: finite positive integer context
+      // overrides, boolean vision flags, and documented thinking levels.
+      // Legacy `contextLimits` entries (model → tokens) migrate in as
+      // contextTokens overrides.
+      const modelSettings: Record<string, ModelSettings> = {}
+      if (candidate['contextLimits'] !== null && typeof candidate['contextLimits'] === 'object' && !Array.isArray(candidate['contextLimits'])) {
+        for (const [model, tokens] of Object.entries(candidate['contextLimits'] as Record<string, unknown>)) {
+          if (typeof tokens === 'number' && Number.isInteger(tokens) && tokens > 0) modelSettings[model] = { ...modelSettings[model], contextTokens: tokens }
+        }
+      }
+      if (candidate['modelSettings'] !== null && typeof candidate['modelSettings'] === 'object' && !Array.isArray(candidate['modelSettings'])) {
+        for (const [model, raw] of Object.entries(candidate['modelSettings'] as Record<string, unknown>)) {
+          if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) continue
+          const entry = raw as Record<string, unknown>
+          const parsed: ModelSettings = {
+            ...(typeof entry['contextTokens'] === 'number' && Number.isInteger(entry['contextTokens']) && entry['contextTokens'] > 0
+              ? { contextTokens: entry['contextTokens'] }
+              : {}),
+            ...(typeof entry['vision'] === 'boolean' ? { vision: entry['vision'] } : {}),
+            ...(isThinkingLevel(entry['thinkingLevel']) ? { thinkingLevel: entry['thinkingLevel'] } : {}),
+          }
+          if (Object.keys(parsed).length > 0) modelSettings[model] = { ...modelSettings[model], ...parsed }
+        }
+      }
+      out.push({
+        id, name, baseUrl, apiKey, models,
+        ...(defaultModel !== undefined ? { defaultModel } : {}),
+        enabled,
+        ...(Object.keys(modelSettings).length > 0 ? { modelSettings } : {}),
+      })
     }
     return out
   } catch {
