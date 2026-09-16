@@ -149,6 +149,12 @@ export function App() {
   const currentRef = useRef(current)
   currentRef.current = current
   const sendingRef = useRef(new Set<string>())
+  /**
+   * Sessions created by this tab whose listing has not caught up yet. The
+   * membership guards must not treat a just-created conversation as invalid:
+   * `POST /sessions` returns before the refreshed listing contains it.
+   */
+  const createdHere = useRef(new Set<string>())
   const navigation = useRef(new Generation())
   const lists = useRef(new Generation())
   const metadata = useRef(new Generation())
@@ -173,7 +179,7 @@ export function App() {
   // A route-selected session becomes streamable only after the current
   // workspace listing has confirmed membership. This prevents foreign or stale
   // deep links from ever opening an SSE connection.
-  const validatedCurrent = listedWorkspace === activeWs && sessions.some((session) => session.id === current) ? current : null
+  const validatedCurrent = listedWorkspace === activeWs && (sessions.some((session) => session.id === current) || (current !== null && createdHere.current.has(current))) ? current : null
   const { events, approvals, stream, error: streamError, dismissApproval } = useSessionStream(activeWs, validatedCurrent)
   const notify = useApprovalNotify(approvals, activeWorkspace?.name)
   const projectedItems = useMemo(() => projectItems(events), [events])
@@ -241,6 +247,7 @@ export function App() {
       setSessions(listing)
       setListedWorkspace(activeWs)
       setProjects(projectRows)
+      for (const row of listing) createdHere.current.delete(row.id)
     } catch (cause) {
       toast.notify(String(cause))
     }
@@ -378,7 +385,12 @@ export function App() {
         }
         if (!lists.current.matches(listingToken)) return
         setSessions(listing)
+        // The listing that just landed belongs to the active workspace. Without
+        // this the stream gate (`listedWorkspace === activeWs`) stays closed and
+        // a cold load shows an empty conversation until the next 10s poll.
+        setListedWorkspace(activeWs)
         setProjects(projectRows)
+        for (const row of listing) createdHere.current.delete(row.id)
         if (requestedSession !== null && !listing.some((session) => session.id === requestedSession)) {
           setCurrent(null)
           navigate(workspaceRoute(activeWs), 'replace')
@@ -418,7 +430,8 @@ export function App() {
   }, [streamError])
 
   useEffect(() => {
-    if (activeWs === null || current === null || listedWorkspace !== activeWs || sessions.some((session) => session.id === current)) return
+    if (activeWs === null || current === null || listedWorkspace !== activeWs) return
+    if (sessions.some((session) => session.id === current) || createdHere.current.has(current)) return
     setCurrent(null)
     navigate(workspaceRoute(activeWs), 'replace')
   }, [activeWs, current, listedWorkspace, navigate, sessions])
@@ -450,6 +463,7 @@ export function App() {
         // only the operation's original navigation/workspace may select it.
         const created = await createSessionIn(workspaceId, effectiveDraftProject ?? undefined)
         sessionId = created.id
+        createdHere.current.add(sessionId)
         targetKey = composerKey(workspaceId, sessionId)
         // Move the latest source state atomically. Because every composer write
         // updates the ref before scheduling React, immediate acceptance cannot
