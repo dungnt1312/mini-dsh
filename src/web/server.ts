@@ -2490,7 +2490,10 @@ async function handleApi(
       }
       const manifest = deps.lastManifests.get(entry.session.id)
       if (manifest === undefined) {
-        send(404, { error: 'no request assembled yet for this session' })
+        // This is a valid state for a newly created or historical conversation,
+        // not a missing endpoint. Returning 204 keeps the inspector quiet.
+        res.writeHead(204)
+        res.end()
         return
       }
       send(200, manifest)

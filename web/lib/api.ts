@@ -360,10 +360,12 @@ export interface ContextManifestView {
   readonly omissions: readonly string[]
 }
 
-export function fetchManifest(workspaceId: string, sessionId: string): Promise<ContextManifestView> {
-  return fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}/manifest`).then((r) =>
-    json<ContextManifestView>(r),
-  )
+/** `null` means the valid no-request-yet state (HTTP 204), not an error. */
+export function fetchManifest(workspaceId: string, sessionId: string): Promise<ContextManifestView | null> {
+  return fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}/manifest`).then((r) => {
+    if (r.status === 204) return null
+    return json<ContextManifestView>(r)
+  })
 }
 
 /** Manual compaction: older turns become an immutable checkpoint. */

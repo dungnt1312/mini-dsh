@@ -183,6 +183,16 @@ describe('live mode control', () => {
     await expect(fs.readFile(path.join(root, 'blocked.txt'), 'utf8')).rejects.toThrow()
   }, 30_000)
 
+  it('returns 204 rather than a false 404 before any request has a manifest', async () => {
+    const server = await start([])
+    const base = server.url
+    const wsId = (await (await fetch(`${base}/api/workspaces`)).json() as { id: string }[])[0]!.id
+    const { id } = (await (await post(base, `/api/workspaces/${wsId}/sessions`)).json()) as { id: string }
+    const response = await fetch(`${base}/api/workspaces/${wsId}/sessions/${id}/manifest`)
+    expect(response.status).toBe(204)
+    expect(await response.text()).toBe('')
+  })
+
   it('the manifest endpoint records mode/model/revision and omissions', async () => {
     const server = await start([{
       name: 'scripted', models: ['scripted'],

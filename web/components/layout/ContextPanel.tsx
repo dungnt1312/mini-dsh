@@ -91,32 +91,34 @@ export function ContextPanel({
         <Row term="folder"><span className="env-path">{folder}</span></Row>
       </Panel>
 
+      <div className="env-label env-label-row">
+        <span>Last request manifest</span>
+        <button type="button" className="env-compact" disabled={!canCompact || running || busy}
+          title={!canCompact ? 'Select a conversation' : running ? 'Stop the turn first' : 'Summarize older turns into a checkpoint'}
+          onClick={() => setConfirming(true)}>{busy ? 'Compacting…' : 'Compact…'}</button>
+      </div>
       {manifest !== undefined && manifest !== null ? (
-        <>
-          <div className="env-label env-label-row">
-            <span>Last request manifest</span>
-            <button type="button" className="env-compact" disabled={!canCompact || running || busy}
-              title={!canCompact ? 'Select a conversation' : running ? 'Stop the turn first' : 'Summarize older turns into a checkpoint'}
-              onClick={() => setConfirming(true)}>{busy ? 'Compacting…' : 'Compact…'}</button>
-          </div>
-          <Panel variant="raised" className="env-card">
-            <Row term="mode">{manifest.modeId} · rev {manifest.modeRevision}</Row>
-            <Row term="budget">
-              {budget !== undefined ? (
-                <span className="budget-stack" style={budgetStyle}>
-                  <span className={`budget-bar budget-bar-${tone}`}><span className="budget-fill w-[var(--budget-percent)]" /></span>
-                  ~{budget.usedTokens}/{budget.availableTokens} tok {budget.estimated ? '(est)' : '(verified)'}
-                </span>
-              ) : '—'}
-            </Row>
-            <Row term="history">{manifest.history.setting}: {manifest.history.includedTurns} turns{manifest.history.omittedTurns > 0 ? ` (${manifest.history.omittedTurns} omitted)` : ''}</Row>
-            <Row term="tools">{manifest.sources.toolNames !== undefined && manifest.sources.toolNames.length > 0 ? manifest.sources.toolNames.join(', ') : String(manifest.sources.toolSchemas)}</Row>
-            {manifest.sources.skills.length > 0 ? <Row term="skills">{onOpenSettingsTab !== undefined ? <button type="button" className="env-link" onClick={() => onOpenSettingsTab('skills')}>{manifest.sources.skills.join(', ')}</button> : <>{manifest.sources.skills.join(', ')}</>}</Row> : null}
-            {manifest.sources.memory.length > 0 ? <Row term="memory">{onOpenSettingsTab !== undefined ? <button type="button" className="env-link" onClick={() => onOpenSettingsTab('memory')}>{manifest.sources.memory.join(', ')}</button> : <>{manifest.sources.memory.join(', ')}</>}</Row> : null}
-            {manifest.omissions.length > 0 ? <Row term="omitted"><span title={manifest.omissions.join('\n')}>{manifest.omissions.length} sources omitted</span></Row> : null}
-          </Panel>
-        </>
-      ) : null}
+        <Panel variant="raised" className="env-card">
+          <Row term="mode">{manifest.modeId} · rev {manifest.modeRevision}</Row>
+          <Row term="budget">
+            {budget !== undefined ? (
+              <span className="budget-stack" style={budgetStyle}>
+                <span className={`budget-bar budget-bar-${tone}`}><span className="budget-fill w-[var(--budget-percent)]" /></span>
+                ~{budget.usedTokens}/{budget.availableTokens} tok {budget.estimated ? '(est)' : '(verified)'}
+              </span>
+            ) : '—'}
+          </Row>
+          <Row term="history">{manifest.history.setting}: {manifest.history.includedTurns} turns{manifest.history.omittedTurns > 0 ? ` (${manifest.history.omittedTurns} omitted)` : ''}</Row>
+          <Row term="tools">{manifest.sources.toolNames !== undefined && manifest.sources.toolNames.length > 0 ? manifest.sources.toolNames.join(', ') : String(manifest.sources.toolSchemas)}</Row>
+          {manifest.sources.skills.length > 0 ? <Row term="skills">{onOpenSettingsTab !== undefined ? <button type="button" className="env-link" onClick={() => onOpenSettingsTab('skills')}>{manifest.sources.skills.join(', ')}</button> : <>{manifest.sources.skills.join(', ')}</>}</Row> : null}
+          {manifest.sources.memory.length > 0 ? <Row term="memory">{onOpenSettingsTab !== undefined ? <button type="button" className="env-link" onClick={() => onOpenSettingsTab('memory')}>{manifest.sources.memory.join(', ')}</button> : <>{manifest.sources.memory.join(', ')}</>}</Row> : null}
+          {manifest.omissions.length > 0 ? <Row term="omitted"><span title={manifest.omissions.join('\n')}>{manifest.omissions.length} sources omitted</span></Row> : null}
+        </Panel>
+      ) : (
+        <Panel variant="raised" className="env-card env-manifest-empty">
+          No request has been assembled for this conversation yet.
+        </Panel>
+      )}
 
       <ConfirmDialog open={confirming && !running} title="Compact this conversation?" confirmLabel="Compact" tone="success" busy={busy || running}
         onConfirm={() => void compact()} onDismiss={() => { if (!busy) setConfirming(false) }}
