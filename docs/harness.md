@@ -7,11 +7,21 @@ kernel — the harness depends only on the kernel, never on the web host.
 
 ```
 src/harness/
+├── storage/   File-first session store: events.jsonl canonical, summary.json rebuildable
 ├── session/   Durable log: SessionEvent union, deriveMessages(), fork
 ├── llm/       Seam: provider registry + agent-facing stream, mock + DeepSeek
 ├── agent/     Turn/step driver: inbox, pre-step admission, turn-stopping
 ├── tools/     Registry + guarded pipeline: pre-execute -> run -> post-execute
-└── approval/  Policy riding tools/pre-execute: allow | ask | deny
+├── approval/  Policy riding tools/pre-execute: allow | ask | deny
+├── workspace/ Workspace registry, project binding, ownership, writer leases
+├── modes/     Five bundled + custom file modes (instructions, sources, exposure, permissions)
+├── context/   Mode-driven builder: budget, trim order, compaction, per-request manifest
+├── skills/    Workspace skill files + on-demand, mode-gated loading
+├── memory/    Workspace/project Markdown memory + five tools
+├── agents/    Definitions, bounded one-level delegation, Claude/Codex adapters
+├── mcp/       MCP client (stdio + Streamable HTTP), config/secrets, health/retry/breaker
+├── hooks/     Command hook runner behind the tool-gate waterfalls
+└── limits.ts  Centralized bounded-execution defaults
 ```
 
 ## Session log (`session/`)
@@ -29,9 +39,21 @@ step/start          opens one model request
 assistant/chunk     a streamed delta (UI fidelity only — never model history)
 assistant/message   the assembled assistant reply (+ optional toolCalls)
 tool/call           the model requested a tool
-tool/result         the tool answered (ok, output)
+tool/result         the tool answered (ok, output); `recovery: true` marks a
+                    synthesized record whose real outcome is unknown
 step/end            closes one model request
-turn/end            closes the turn (reason: completed | rejected | empty | failed)
+turn/end            closes the turn (reason: completed | rejected | empty |
+                    failed | cancelled | interrupted | limit)
+approval/request    a pending approval question, recorded durably
+approval/decision   its settlement: allow | deny | expired | cancelled | invalidated
+input/queued        a pending input waiting for the current turn to close
+session/title       derived or custom session title
+session/project     session project binding
+session/child-meta  child-session provenance (parent turn, definition, objective)
+agent/child-spawn   durable spawn intent, written before a child agent starts
+agent/child-result  a child agent's settled status
+mcp/call            one MCP tool call (hashed args/results, duration, error flag)
+hook/run            one hook execution (event, matcher, exit code, decision)
 ```
 
 Every event is stamped with `seq` (monotonic, 1-based) and `timestamp`.
@@ -59,9 +81,33 @@ session.fork(boundarySeq?)      // child session with copied history, seq rebase
 
 ### `SessionsService` (`service.ts`)
 
-Registers the `sessions` service: `create()`, `get(id)` (fails loud on an
-unknown id), and `fork(source, boundarySeq?)`. Today the store is in memory;
-persistence arrives in a later phase.
+Registers the `sessions` service. `create(workspaceId?)` opens a session
+scoped to a workspace; `get`/`delete`/listing resolve ownership the same way,
+and a missing summary is rebuilt from the log rather than treated as data
+loss. `fork(source, boundarySeq?)` is unchanged.
+
+### Durable storage (`storage/`)
+
+The store is **file-first**: for every session, `events.jsonl` under
+`workspaces/<ws>/sessions/<id>/` is the canonical record; `summary.json` is a
+rebuildable projection (a missing or stale summary only delays listing, it
+never loses data). One writer per session keeps appends serialized with
+monotonic `seq` and a schema version on every record.
+
+- **Durability barriers**: an append is acknowledged only after the record is
+  `fsync`-ed; directory entries are synced best-effort (Windows cannot fsync a
+  directory handle — a documented limit), and replacements use
+  temp + sync + rename.
+- **Torn-tail quarantine**: a truncated final record — the classic
+  crash-while-writing shape — is preserved verbatim to a `.partial-<ts>`
+  sibling, then the log is repaired to its good prefix. Middle corruption is
+  an error, never a silent skip.
+- **Recovery semantics**: a host restart marks still-open turns `interrupted`
+  (queued input stays queued); a missing `tool/result` for a durable
+  `tool/call` is answered by a synthesized recovery record whose content says
+  the outcome is unknown (never a tool replay); approvals left pending are
+  settled as `invalidated` — late answers are refused. A late event never
+  revives a terminal turn.
 
 ## LLM seam (`llm/`)
 
@@ -237,6 +283,55 @@ The typical policy (used by both bins and the web host) allows reads/globs/greps
 and asks on writes/edits/bash. The headless bin prompts on stderr; the web host
 rides `agentScope` to route the question to the right session's SSE stream.
 
+An approval is bound to the exact call it names: it carries an expiry
+(undecided requests settle as `expired` — never an implicit approval), and a
+stop/cancel or a policy change settles it as `cancelled`/`invalidated` before
+it can be answered. Every settlement is a durable `approval/decision` event,
+and late answers to a settled approval are refused rather than replayed.
+
+## Live controls, queued input, and limits
+
+Three controls take effect **without steering** — each resolves at its gate,
+so a change lands on the next opportunity instead of interrupting a running
+turn:
+
+- **Model** — re-resolved per model request (the next request uses it).
+- **Permission** — re-resolved at each tool-start gate (the next gated call).
+- **Mode** — the strongest: re-gates tool exposure and permission defaults at
+  the next tool start *and* reassembles context at the next model request,
+  with pending approvals re-evaluated (newly unexposed calls are cancelled).
+
+Messages sent while a turn runs are **queued, never injected**: each pending
+input gets a stable id, duplicate `clientRequestId`s dedup, the queue is
+bounded (`maxPendingInputs`), and queued items wait for the current turn to
+close before claiming the next one.
+
+Bounded execution is centralized in `limits.ts`: `maxSteps` (a turn over
+budget closes as `limit`), `turnDeadlineMs`, `streamInactivityMs`,
+`toolTimeoutMs`, `approvalExpiryMs`, `toolOutputLimit`, `maxPendingInputs`,
+and `automaticCompactionChars` (auto-compaction trigger at a completed
+boundary; 0 disables).
+
+## Mode-driven context assembly
+
+Every model request is assembled by one context builder
+(`src/harness/context/builder.ts`) from the active mode's definition
+(`src/harness/modes/`): system + mode instructions, workspace/project
+instructions, history per the mode's history setting (`none`/`recent`/
+`compact` — `none` still keeps the current turn's tool loop), active skills,
+pinned/retrieved memory, tool results and the schemas the mode's exposure
+ceiling allows. The budget is `context window − output reserve − safety
+margin` — the window is the operator's per-model override when set
+(verified), else the shared model catalog's documented value for the model
+(exact ID → known family → a 256k default; see
+`src/harness/llm/model-catalog.ts`). Over-budget content trims in a defined
+order or fails loud, and
+disabled loaders contribute nothing. Compaction (`context/compaction.ts`)
+writes immutable checkpoints with range/provenance at completed boundaries and
+never mutates the original JSONL. Each request carries a truthful **manifest**
+(mode/model revisions, source hashes, ranges, budget, omission decisions) that
+the UI's inspector renders as-is.
+
 ## Reading further
 
 - Turn-flow tests: `tests/harness/agent-loop.spec.ts` (durable event order,
@@ -244,3 +339,8 @@ rides `agentScope` to route the question to the right session's SSE stream.
 - Tools + approval tests: `tests/harness/agent-tools.spec.ts`, `tools.spec.ts`.
 - Provider tests: `tests/harness/llm.spec.ts`; session tests:
   `tests/harness/session.spec.ts`.
+- Storage/recovery and lifecycle: `tests/harness/storage.spec.ts`,
+  `tests/harness/g1-lifecycle.spec.ts`, `tests/harness/g1-approval.spec.ts`.
+- Modes/context and workspace isolation: `tests/harness/modes.spec.ts`,
+  `tests/harness/g3-context.spec.ts`, `tests/harness/g3-compaction.spec.ts`,
+  `tests/harness/workspace-isolation.spec.ts`.

@@ -11,8 +11,9 @@ composition that consumes the harness through the context.
 │   REST + SSE over the harness; renders from session/event   │
 ├─────────────────────────────────────────────────────────────┤
 │ agent harness (src/harness/)                                │
-│   session log · llm seam · turn/step driver · tools ·       │
-│   approval                                                   │
+│   storage · session log · llm seam · turn/step driver ·     │
+│   tools · approval · workspaces · modes/context · skills ·  │
+│   memory · agents/delegation · mcp client · hooks           │
 ├─────────────────────────────────────────────────────────────┤
 │ capabilities (src/capabilities/)                            │
 │   fs tools · bash tool (registered into the harness)        │
@@ -69,17 +70,44 @@ writes every durable fact (user messages, assistant chunks, tool calls and
 results, turn/step boundaries) to the session log. See [harness.md](harness.md)
 for the exact flow.
 
+Beyond that core, the harness ships one subsystem per directory — each owns one
+concept, and the web host is the composition that wires them together:
+
+| Subsystem | Owns |
+|---|---|
+| `storage/` | The file-first session store: `events.jsonl` is canonical, `summary.json` is a rebuildable index, with durability barriers and torn-tail quarantine |
+| `workspace/` | The workspace registry: workspaces, project binding, ownership checks at the service boundary, per-root writer leases |
+| `modes/` + `context/` | Five bundled + custom file modes; the single mode-driven context builder with budget, trim order, compaction, and a per-request manifest |
+| `skills/` | Workspace skill files and the on-demand, mode-gated `Skill` tool |
+| `memory/` | Workspace/project-scoped Markdown memory and its five tools |
+| `agents/` | Agent definitions, bounded one-level delegation, and the Claude-first/Codex compatibility adapters |
+| `mcp/` | The workspace-scoped MCP client (stdio + Streamable HTTP), config/secrets stores, health/retry/circuit breaker |
+| `hooks/` | The command hook runner behind the tool-gate waterfalls |
+
+Every isolation guarantee in these subsystems is **application-level**:
+workspace ownership, filesystem containment, MCP subprocess watchdogs, and
+writer leases are all enforced inside the app. There is no OS sandbox — shell
+and trusted code run with host privileges — and the docs and UI say so rather
+than claiming otherwise.
+
 ## Layer 2 — capabilities
 
 Capabilities are just tools registered into `ctx.tools`:
 
-- **`fsTools(root)`** — `read`, `write`, `edit`, `glob`, `grep`, confined to a
-  workspace root.
-- **`bashTool(options)`** — one `/bin/bash -lc` command per call, with a timeout
-  and process-group kill.
+- **`fsTools()`** — the canonical `Read`, `Write`, `Edit`, `Glob`, `Grep` tools.
+  Paths resolve against the workspace root granted per execution
+  (`tools.setRootResolver`), with symlink/junction containment and denied roots
+  for application-internal storage. Containment is application-level, not an
+  OS sandbox.
+- **`bashTool(options)`** — one real Bash command per call (Git Bash's
+  `bash.exe` on Windows, `/bin/bash` elsewhere, `MINI_DSH_BASH` to override),
+  with a timeout, stop-cancellation, and process-tree cleanup. Bash means
+  Bash: an unsupported environment disables the tool with an actionable error,
+  and a shell is never path-confined.
 
-Because the root can be a *live accessor* (`() => string`), the web host can
-re-scope the filesystem tools at runtime without re-registering them.
+The grant is resolved per execution through the ambient agent scope, so a
+session's own folder overrides the server default without re-registering
+anything.
 
 ## Layer 3 — web host
 

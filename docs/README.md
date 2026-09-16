@@ -47,14 +47,24 @@ src/
 │   ├── registry.ts     Kernel: mounts plugins, tracks inject dependencies
 │   └── loader.ts       cordis.yml → plugin tree via dynamic import()
 ├── harness/
+│   ├── storage/        File-first session store (events.jsonl canonical, summary.json rebuildable)
 │   ├── session/        Durable session log (event sourcing, fork)
 │   ├── llm/            Provider registry + stream seam (mock + DeepSeek)
 │   ├── agent/          Turn/step driver (inbox, pre-step, turn-stopping)
 │   ├── tools/          Tool registry + guarded pre-execute → run → post-execute
-│   └── approval/       Policy riding tools/pre-execute: allow | ask | deny
+│   ├── approval/       Policy riding tools/pre-execute: allow | ask | deny
+│   ├── workspace/      Workspace registry, project binding, ownership
+│   ├── modes/          Five bundled + custom file modes
+│   ├── context/        Mode-driven builder: budget, compaction, manifest
+│   ├── skills/         Workspace skills + on-demand Skill tool
+│   ├── memory/         Workspace/project Markdown memory + five tools
+│   ├── agents/         Definitions, bounded delegation, compatibility adapters
+│   ├── mcp/            MCP client (stdio + Streamable HTTP), secrets, breaker
+│   ├── hooks/          Command hook runner
+│   └── limits.ts       Centralized bounded-execution defaults
 ├── capabilities/
-│   ├── fs/             read / write / edit / glob / grep, root-confined
-│   └── shell/          bash tool: timeout, process-group kill
+│   ├── fs/             Read / Write / Edit / Glob / Grep, granted-root containment
+│   └── shell/          Bash tool: timeout, process-tree kill
 ├── web/
 │   └── server.ts       HTTP host: REST + SSE + approval bridge
 ├── bins/

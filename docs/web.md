@@ -21,6 +21,28 @@ and answers go back over one POST. This is the "render from `session/event`"
 principle: the log is the single source of truth, and any client can rebuild the
 UI from it at any time.
 
+## Workspace interaction
+
+- An empty workspace offers **New conversation**. Until a session is selected, its connection state is idle, not connecting.
+- Project binding is fixed when creating a session. Project registration is in Workspace settings, reached through New Conversation → Manage projects. Unbound sessions explain that file/shell work needs a project-bound new session.
+- Modes load with the initial workspace metadata and on workspace switches. Navigation generations and request tokens reject obsolete initial loads, mutation completions, lists and model/mode refreshes, including workspace A → B → A transitions.
+- Drafts, pending-send flags and send errors are keyed by workspace/session in memory. A submitted draft clears only after the server accepts the POST and only if its edit revision is unchanged. Failures remain inline with details and provider guidance; automatic resend is deliberately avoided because a lost response does not prove the request was rejected.
+- Approval questions are deduplicated and reconciled against durable request, decision, tool-result and turn-end events on replay, and removed after a successful answer.
+- Model menus offer search for larger lists, provider grouping, keyboard navigation and full wrapping option labels. Popups portal into document.body with viewport-clamped positioning and scroll/resize updates; Escape belongs to the popup before a drawer or modal.
+- Both rails honor their toggles on desktop; the sidebar starts open at widths above 1024px. Narrow-screen rails have scrims, close controls, Escape handling and keyboard focus boundaries that subscribe to media-query changes. Settings tabs use arrow/Home/End navigation, roving tabindex and linked tabpanels. Provider edits survive tab changes; close/provider changes request discard confirmation, including pending model text.
+- Shared 12/13/14/16px typography tokens apply across shell, transcript, primitives and settings. Expanded tools show all arguments and output; transcript identities are explicit.
+
+### Production task workflows
+
+- **New conversation** and Ctrl/Cmd+N open a scope dialog; neither creates a session immediately. Choose an existing project or explicitly choose **Chat only**. Create stays disabled until a valid choice is made, locks during submission, and reports errors without silently falling back to an unbound session. Cancel leaves the existing conversation unchanged.
+- The app bar owns workspace selection. The sidebar groups project filtering, conversation history and search. History filters only affect navigation, never a session's immutable execution project.
+- The inspector starts closed at every viewport size. Context manifests load only while it is open. The main pane shows durable task lifecycle and separately explains event-stream connection loss. Queued/being-submitted inputs show preparing; open turns show running or waiting approval; terminal reasons remain visible. Partial assistant chunks stop appearing live at turn end.
+- Composer context shows the fixed project path or an explicit no-project warning with a new-conversation CTA. “Chat-only” describes absence of a project, not an automatic switch to Chat mode or a promise to disable every tool. Model/mode controls apply to the workspace at the next request/tool gate. Expand scope details to inspect the reported policy; mode and server restrictions still apply.
+- Approval review exposes tool name, target, full escaped JSON arguments, call ID and conversation project. **Allow once** and **Deny** answer only that pending request, not a remembered grant. Buttons lock while submitting; failed submissions remain visible. Durable decisions remain in transcript history, including expiry/invalidation. No UI option widens backend permission scope.
+- Failed, cancelled, limited and interrupted work offers inspection-first recovery guidance. Unknown recovered tool results are explicitly called out. There is no automatic retry or replay control: inspect actual effects, then submit new instructions limited to remaining work.
+- Settings distinguish global provider storage from workspace model activation and workspace services. Agent definitions are workspace-scoped; child listings are current-session-scoped. Saving configuration is not evidence of connectivity; provider connection checks use saved configuration rather than unsaved drafts.
+- Automated workflow regressions cover scope validation, creation markup, durable lifecycle, stopped partial chunks, recovery guidance and approval arguments/decision rendering. Fixture-backed Chromium interactions, mobile layout, keyboard focus and all settings sections pass. Real-backend end-to-end workflows, native zoom and screen-reader acceptance remain separate gates.
+
 ## Starting it
 
 ```sh
@@ -63,7 +85,10 @@ chat-completions compatible endpoint:
 Every endpoint speaks the standard `POST {baseUrl}/chat/completions` SSE wire
 format (tool-call fragment accumulation, `reasoning_content` → thinking
 deltas); DeepSeek is simply one such endpoint. API keys are masked when
-serialized to the client (`keyMasked`), never returned raw.
+serialized to the client (`keyMasked`), never returned raw. When the active
+workspace carries a thinking level, the adapter adds the model's documented
+reasoning control fields to the request body (see the model catalog section
+below) — never a generic field for an undocumented model.
 
 `apiKey` may be empty: local gateways often authenticate by other means, so a
 keyless entry stays selectable and the `Authorization` header is omitted rather
@@ -72,7 +97,47 @@ the picker.
 
 ## REST API
 
-### `GET /api/meta`
+### Workspace-scoped routes (the primary surface)
+
+Since G2, sessions are born into a workspace, and every durable resource is
+addressed under `/api/workspaces/:wid/...`. Unknown workspaces fail closed
+(`404`); ownership is re-checked per request, so a foreign id never leaks
+data, and a workspace switch never changes a running turn's ownership or
+tool root. The families, at a glance:
+
+| Route family | Purpose |
+|---|---|
+| `GET/POST /api/workspaces`, `PATCH/DELETE /api/workspaces/:wid` | workspace list (with running/approval badges), create, rename, archive/restore, delete (empty only) |
+| `…/:wid/sessions`, `…/:wid/sessions/:id` (+ `/events` SSE, `/messages`, `/stop`) | session lifecycle, streaming, queued messages, stop |
+| `…/:wid/sessions/:id/manifest`, `…/compact` | per-request context manifest; manual compaction into an immutable checkpoint |
+| `PUT …/:wid/model`, `PUT …/:wid/thinking`, `PUT …/:wid/policy`, `PUT …/:wid/mode`, `GET …/:wid/meta` | the live controls (model, thinking level, policy, mode) and workspace meta, all workspace-local |
+| `…/:wid/projects` (+ `/projects/:pid`) | project binding: working folder, ownership, overlap rejection |
+| `…/:wid/agents/:name` (GET resolve / DELETE), `POST …/:wid/agents/:name` | agent definitions; POST spawns a bounded child with a task packet |
+| `GET …/:wid/agents/children?root=…`, `GET/DELETE …/:wid/children/:childId` (+ `/cancel`) | child list / wait-result / cancel |
+| `…/:wid/mcp` (+ `/:server`, `/:server/(enable\|disable\|reconnect)`, `/mcp/import`) | MCP server lifecycle and imports with provenance |
+| `…/:wid/hooks`, `…/:wid/secrets(/:key)` | hook bindings; encrypted secret management (masked responses) |
+
+Approval answering stays transport-global at `POST /api/approvals/:id`
+(below) — approval ids are unguessable capabilities, not session-scoped
+sequences.
+
+### `GET /api/fs/dirs`
+
+Directory browser backing the client's folder picker. A browser never
+reveals a chosen folder's absolute path, so the web host lists **directory
+names only** (never file contents) and the picker navigates real folders:
+`?path=` (default: the server user's home) returns the canonical path, its
+parent (`null` at a filesystem root; on Windows a drive root also lists the
+machine's other drives as rows), and the case-insensitively sorted child
+directories — symlinked folders included, broken links skipped.
+Non-directories and unreadable paths answer `400`.
+
+The unscoped routes documented below (`/api/meta`, `/api/model`,
+`/api/folder`, `/api/sessions…`) are **legacy**: they exist only for
+memory-mode hosts without the workspace model and resolve through one
+implicit workspace. New clients use the workspace-scoped families.
+
+### Legacy: `GET /api/meta`
 
 Active provider/model pair, the default workspace, and the safely masked
 provider list for the Settings panel.
@@ -87,7 +152,7 @@ provider list for the Settings panel.
 }
 ```
 
-### `PUT /api/model`
+### Legacy: `PUT /api/model`
 
 Select the active provider and model. The model selector rides the
 **`agent/request` seam**: every step's request is stamped with the selected
@@ -100,7 +165,7 @@ model before the provider sees it.
 
 `400` when the name is not in the provider's offered models.
 
-### `PUT /api/folder`
+### Legacy: `PUT /api/folder`
 
 Re-scope the workspace the filesystem/bash tools are confined to. The tools are
 registered with **live accessors** (`() => state.folder`), so this just flips a
@@ -115,19 +180,23 @@ variable — no re-registration, and the change applies to the next tool call.
 
 ### `GET /api/providers`
 
-List configured providers with masked keys: `[{ id, name, baseUrl, enabled, keyMasked, models }]`.
+List configured providers with masked keys: `[{ id, name, baseUrl, enabled, keyMasked, models, defaultModel?, modelSettings? }]`.
+`modelSettings` carries per-model operator overrides —
+`{ [model]: { contextTokens?, vision?, thinkingLevel? } }` — as edited in the
+Settings provider panel (legacy `contextLimits` files migrate into it on load).
 
 ### `POST /api/providers`
 
-Create a provider. Body: `{ name, baseUrl, apiKey?, models? }`. `name` and
+Create a provider. Body: `{ name, baseUrl, apiKey?, models?, modelSettings? }`. `name` and
 `baseUrl` are required and `baseUrl` must be http(s); `apiKey` is optional
 because local gateways often accept no credential (the `Authorization` header
 is then omitted entirely rather than sent as an empty `Bearer`). `201 { id, … }`.
 
 ### `PATCH /api/providers/:id`
 
-Update fields: `{ name?, baseUrl?, apiKey?, enabled?, models?, defaultModel? }`.
-Omitting `apiKey` keeps the stored secret. `404` on an unknown id.
+Update fields: `{ name?, baseUrl?, apiKey?, enabled?, models?, defaultModel?, modelSettings? }`.
+Omitting `apiKey` keeps the stored secret. A present `modelSettings` **replaces
+the whole map** (an empty object clears every override). `404` on an unknown id.
 
 ### `DELETE /api/providers/:id`
 
@@ -143,24 +212,46 @@ Fire one buffered completion ping. `200 { ok: true }` or `502 { ok: false, error
 `GET {baseUrl}/models` and store the result as the provider's model list
 (accepts OpenAI `{ data: [{ id }] }` and bare arrays). `200 { ok: true, models }`.
 
-### `GET /api/sessions`
+### Model catalog, context budget, and thinking level
+
+The shared catalog (`src/harness/llm/model-catalog.ts`, bundled by the web
+client too) holds verified capabilities for exact model IDs — context window,
+vision, reasoning controls — plus narrowly-scoped family patterns for dated
+variants and gateway namespaces (`openai/gpt-5.6`).
+
+**Context budget** resolves per request: an operator `contextTokens` override
+makes the budget *verified*; otherwise the catalog's documented window
+(exact ID → known family → **256k default**) applies as a labeled estimate.
+`GET …/:wid/meta` never guesses — unknown models fall back to the default.
+
+**Thinking level** is a workspace live control (`PUT …/:wid/thinking`,
+body `{ "level": "off|minimal|low|medium|high|xhigh|max" | null }`; `null`
+returns to the model's configured default; a per-model `thinkingLevel`
+default may be set in `modelSettings`). The level rides the request as
+host-stamped metadata and the completions adapter translates it into the
+model's **documented** fields only (`reasoning_effort`, `thinking:
+{type}`, `enable_thinking`, extended-thinking `budget_tokens` for gateway
+Claude aliases) — unsupported pairs send nothing rather than risk a 400.
+
+
+### Legacy: `GET /api/sessions`
 
 List sessions: `[{ id, title, eventCount, folder }]`. `folder` is the
 session-scoped workspace or `null` when the session inherits the server default.
 
-### `POST /api/sessions`
+### Legacy: `POST /api/sessions`
 
 Create a session and bind an agent to it. Optional `{ folder }` sets a
 session-scoped workspace (must exist and be a directory). `201 { id, folder? }`.
 
-### `PUT /api/sessions/:id/folder`
+### Legacy: `PUT /api/sessions/:id/folder`
 
 Set this session's workspace; `{ path: "" }` resets it to inherit the server
 default. Tools resolve their root through the **ambient agent scope**, so two
 sessions can work in different folders concurrently without cross-talk.
 `200 { folder }` / `{ folder: null }` on reset.
 
-### `POST /api/sessions/:id/messages`
+### Legacy: `POST /api/sessions/:id/messages`
 
 Queue a user message and fire the agent loop.
 
@@ -173,7 +264,7 @@ Returns `202 { queued: true }` immediately — the reply (and any failure, which
 closes the turn durably) reaches the client through the SSE stream. `400` on an
 empty content, `404` on an unknown session.
 
-### `DELETE /api/sessions/:id`
+### Legacy: `DELETE /api/sessions/:id`
 
 Delete a session: it leaves the listing, its SSE streams end themselves with an
 `error` envelope (`session deleted`), and later requests answer `404`.
@@ -183,7 +274,7 @@ Delete a session: it leaves the listing, its SSE streams end themselves with an
 { "deleted": true }
 ```
 
-### `PATCH /api/sessions/:id`
+### Legacy: `PATCH /api/sessions/:id`
 
 Rename a session with a custom title; an empty title resets to the derived one
 (truncated at 80 chars, trimmed).
@@ -200,7 +291,7 @@ Rename a session with a custom title; an empty title resets to the derived one
 
 `400` on a non-string title, `404` on an unknown session.
 
-### `POST /api/sessions/:id/stop`
+### Legacy: `POST /api/sessions/:id/stop`
 
 Ask the in-flight turn to stop. The agent's chunk loop notices the abort between
 stream events and closes the turn durably with `turn/end: { reason: "stopped" }`
@@ -222,7 +313,7 @@ Answer a pending approval question.
 
 ## The SSE stream
 
-### `GET /api/sessions/:id/events`
+### `GET /api/sessions/:id/events` (legacy scope; workspace hosts use `…/:wid/sessions/:id/events`)
 
 Streams `text/event-stream` frames. Each frame is a `data:` line holding one
 `WebEnvelope`:
@@ -254,16 +345,16 @@ reads the **ambient agent scope** (`agentScope`, an `AsyncLocalStorage`) that
 askUser: (call) => new Promise<boolean>((resolve) => {
   const scope = agentScope.getStore()
   if (scope === undefined) { resolve(false); return }   // fail closed
-  const approvalId = `approval-${++approvalCounter}`
-  pending.set(approvalId, { sessionId: scope.sessionId, resolve })
+  const approvalId = `approval-${randomUUID()}`          // unguessable capability
+  pending.set(approvalId, { sessionId: scope.sessionId, call, resolve })
   kernel.ctx.emit('web/approval', { sessionId: scope.sessionId, approvalId, call })
 })
 ```
 
 Each session's SSE stream filters `web/approval` by its own id, so **concurrent
 sessions share one policy listener without cross-talk**. The default policy
-allows `read`/`glob`/`grep` and asks on `write`/`edit`/`bash`; `--yolo` makes the
-default mode `allow`.
+allows `Read`/`Glob`/`Grep` and asks on `Write`/`Edit`/`Bash` (canonical
+identities); `--yolo` makes the default mode `allow`.
 
 ## Static serving
 
@@ -283,36 +374,65 @@ graceful close and a second to an immediate exit.
 
 | Path | Purpose |
 |---|---|
-| `main.tsx` | entry; fonts, toast host, styles |
-| `App.tsx` | workspace shell wiring; owns *no* model state |
-| `components/layout` | TopBar (brand, folder popover, provider chip, toggles), Sidebar, EnvPanel |
-| `components/ui` | primitives: Button, IconButton, Chip, CodeChip, Badge, Panel, Kbd, TextInput, Select — token-driven, reused by every zone |
-| `components/session` | per-session rows (two-line titles, hover rename/delete actions) |
-| `components/chat` | Transcript parts (tool breadcrumb rows, approval cards), thinking panel |
-| `components/composer` | control-center composer with inline model picker |
-| `components/common` | extended line-icon set, copy button, modal confirm, spinner, toasts |
-| `hooks/` | SSE subscription, auto-scroll, hotkeys |
-| `lib/api.ts` | REST calls + `EventSource` subscription |
-| `lib/config.ts` | `SHOW_SLOTS` — dashed future-view placeholders (default off) |
-| `lib/types.ts` | client-side mirror of the wire shapes |
-| `lib/project.ts` | `projectItems()` + `isTurnRunning()` — the UI's own `deriveMessages()` |
-| `lib/format.ts` | time / duration / argument summaries / `pathBasename` / `toolTarget` |
-| `Markdown.tsx` | Markdown rendering + hljs syntax highlighting |
+| `main.tsx` | entry, bundled fonts, providers, and the three production CSS imports |
+| `App.tsx` | routing, server-backed state, durable projections, and shell composition |
+| `components/layout` | `WorkbenchShell`, TopBar, Sidebar, `InspectorPanel`, and `ContextPanel` |
+| `components/artifacts` | pure existing-event artifact projection and read-only Artifacts panel |
+| `components/ui` | Tailwind/CVA primitives with Radix interaction mechanics |
+| `components/session` | project-grouped and unbound conversation navigation |
+| `components/chat` | durable Transcript, status/approval surfaces, and elevated workbench presentation |
+| `components/composer` | fixed center-region composer dock and request controls |
+| `components/settings` | full-height responsive Settings and workspace management panels |
+| `components/common` | icons, copy, confirmation, error, spinner, and toast surfaces |
+| `hooks/` | SSE subscription, drawers, local preferences, and panel resizing |
+| `lib/api.ts` | unchanged REST calls plus `EventSource` subscription |
+| `lib/types.ts` | client mirror of existing wire shapes |
+| `lib/project.ts` | durable `projectItems()` and turn-state derivation |
+| `styles/app.css` | Tailwind Warm Studio theme, root rules, and consolidated component selector authority |
+| `styles/markdown.css` | Markdown and highlight.js selectors |
+| `styles/motion.css` | keyframes, scrollbar styling, and reduced-motion behavior |
 
-`projectItems(events)` projects render items from the session event stream:
-streaming chunks accumulate into the in-flight assistant item (thinking chunks
-fill a collapsible thinking panel), `assistant/message` finalizes it, each
-`tool/result` answers the call its `callId` names (recording a duration), and
-non-`completed` turn ends surface as status lines. `isTurnRunning(events)`
-derives the activity state from the log — the Stop button and streaming spinner
-read it. The app auto-creates a session on load, offers suggested first
-messages, a model picker inside the composer (mirrored in the Environment
-panel), a workspace-folder popover in the top bar, session
-rename/delete/search, a stop button while a turn runs, and allow/deny cards
-for pending approvals. Ctrl/Cmd+N creates a session; Ctrl/Cmd+K opens the
-sidebar and focuses its search field. Below 1100px the sidebar becomes an
-overlay drawer; below 1280px the Environment panel hides and reopens as an
-overlay from its top-bar toggle.
+`projectItems(events)` remains the transcript contract and is computed once per
+event-array revision. The elevated workbench selects an existing projected tool or
+delegation item; it does not create another durable item. `projectArtifacts(events)`
+is a separate pure projection over existing tool calls/results. It shows only exact
+path/resource references, command records, and recorded tool output. It does not
+fetch file details or claim file existence, file content, diffs, MIME type,
+repository ownership, or rerun capability. Delegation file references are absent
+from this MVP because the durable stream does not expose them.
+
+The Warm Studio shell has a 280px left panel (232–420 range) docked at 1024px and
+above, and a 336px right panel (280–520 range) docked at 1280px and above. Below
+those thresholds the panels use focus-managed Radix Dialog drawers. Width,
+collapse, and active inspector tab are browser-local preferences under
+`mini-dsh.workbench.v1`; they are not server settings. The composer is fixed to
+the measured center region and transcript clearance follows its height.
+
+Context manifest loading is lazy and uses the existing endpoint only while the
+right panel is open, Context is selected, a valid conversation exists, and the
+turn is settled. Artifacts causes no request. Reconnect presentation remains
+separate from durable running truth: drafts stay editable, Stop remains available,
+and the client does not automatically resend or replay.
+
+Settings remains a client for the existing provider/workspace APIs. Desktop uses
+grouped tabs and narrow mobile uses a section selector; Providers, Projects,
+Skills, Memory, Agents, MCP, Hooks, and Secrets remain reachable. Dirty provider
+confirmation, blank-key omission, destructive confirmations, whole-document Hooks
+validation/save, and explicit Skills/Memory conflict choices are retained.
+
+Required client verification runs at 320, 375, 768, 1024, 1440, and 1920px:
+
+```sh
+npm test -- --maxWorkers=1 --no-file-parallelism
+npm run typecheck
+npm run build:web
+npm run test:browser
+```
+
+Browser suites use intercepted, fail-closed fixtures and do not mutate real
+settings. Deterministic visual evidence is written to
+`artifacts/product-ui/warm-studio/`; it is not an approved visual baseline.
+
 
 ## Reading further
 
@@ -320,3 +440,16 @@ overlay from its top-bar toggle.
   switching, session lifecycle, rename and delete, stopping a running turn,
   thinking-chunk streaming, snapshot+live streaming, the approval round-trip,
   denial surfacing, duplicate-answer 404s, static fallback).
+
+
+## English workbench UI
+
+The web client now uses an English workbench shell. Switch workspaces in the app bar; filter registered projects and conversation history in navigation. Start **New conversation**, select a project or **Chat only**, and use **Manage projects** to open workspace project registration. Project registration and rename use scoped server APIs. Confirmed removal never deletes the folder and returns HTTP 409 while any conversation is bound; it never detaches conversations.
+
+Model and mode controls live in the composer. The optional Context inspector is read-only and closed by default. Settings is full-height and retains Providers, Agents, MCP, Hooks and Secrets, with explicit global/workspace/current-conversation scope. User text, names, paths, IDs, tool output and imported content are never translated.
+
+Workspace session listings may include optional `createdAt`/`updatedAt` from existing event-backed summaries. Empty conversations omit these fields; clients must not invent dates. No existing request or approval wire format changed.
+
+See [design guidelines](design-guidelines.md) for geometry, ownership and safety rules. Run `npm run test:browser` for fixture-backed Chromium interactions and screenshots. Visual signoff, native 200% zoom, screen-reader review and long-history performance acceptance remain pending; generated screenshots are not approved baselines.
+
+Agent catalog: `GET /api/workspaces/:id/agents` returns bundled and workspace definitions using the existing definition service. Imported definitions can be selected, inspected, spawned and explicitly deleted. Bundled-role deletion remains prohibited. Management panels reset on workspace/root changes and invalidate stale async state feedback. New providers may omit API keys for keyless endpoints.
