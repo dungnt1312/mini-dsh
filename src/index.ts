@@ -47,6 +47,7 @@ export {
   type TurnErrorKind,
 } from './harness/session/events.ts'
 export { Session, type SessionOptions } from './harness/session/session.ts'
+export { deriveTitle, TITLE_MAX_LENGTH } from './harness/session/title.ts'
 export {
   SessionsService,
   fileSessions,

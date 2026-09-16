@@ -9,6 +9,7 @@ import {
 } from '../../util/brand.ts'
 import type { SessionEvent } from './events.ts'
 import { Session } from './session.ts'
+import { deriveTitle } from './title.ts'
 import {
   FileSessionStore,
   type SessionStore,
@@ -168,6 +169,7 @@ export class SessionsService extends Service {
         if (
           summary === undefined ||
           summary.projectId === undefined ||
+          summary.derivedTitle === undefined ||
           (tail !== undefined && summary.lastSeq !== tail)
         ) {
           // Deleting derived state must never hide a canonical session:
@@ -434,6 +436,7 @@ export class SessionsService extends Service {
         eventCount: events.length,
         lastSeq: last?.seq ?? 0,
         title,
+        derivedTitle: deriveTitle(events),
         projectId,
       }
       await store.writeSummary(id, summary)
@@ -537,6 +540,7 @@ export class SessionsService extends Service {
       eventCount: events.length,
       lastSeq: last?.seq ?? 0,
       title,
+      derivedTitle: deriveTitle(events),
       projectId,
     }
   }

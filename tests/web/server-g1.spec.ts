@@ -413,4 +413,41 @@ describe('restart persistence', () => {
       await second?.close()
     }
   })
+
+  it('a derived title survives a restart without any rename', async () => {
+    const home = path.join(root, 'data-derived-title')
+    let first: WebServer | undefined
+    let id = ''
+    try {
+      first = await createWebServer({
+        root,
+        home,
+        configFile: path.join(root, 'providers-derived-title.json'),
+        providers: [{ name: 'scripted', models: ['scripted'], async *stream() { yield { type: 'delta', delta: 'ok' } } }],
+      })
+      const created = (await (await post(first.url, '/api/sessions')).json()) as { id: string }
+      id = created.id
+      await post(first.url, `/api/sessions/${id}/messages`, { content: 'Explain the storage layer' })
+      await new Promise((resolve) => setTimeout(resolve, 200))
+    } finally {
+      await first?.close()
+    }
+
+    let second: WebServer | undefined
+    try {
+      second = await createWebServer({
+        root,
+        home,
+        configFile: path.join(root, 'providers-derived-title.json'),
+        providers: [{ name: 'scripted', models: ['scripted'], async *stream() { yield { type: 'delta', delta: 'ok' } } }],
+      })
+      // The regression: this listing is served from storage with no session
+      // loaded and no rename ever recorded, so a title that only existed in
+      // memory came back as "New conversation".
+      const listing = (await (await fetch(`${second.url}/api/sessions`)).json()) as { id: string; title: string }[]
+      expect(listing.find((item) => item.id === id)?.title).toBe('Explain the storage layer')
+    } finally {
+      await second?.close()
+    }
+  })
 })

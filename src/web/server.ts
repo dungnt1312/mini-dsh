@@ -37,6 +37,7 @@ import type { LlmProvider, ToolCall } from '../harness/llm/types.ts'
 import { fileSessions, SessionsService } from '../harness/session/service.ts'
 import type { Session } from '../harness/session/session.ts'
 import type { SessionEvent } from '../harness/session/events.ts'
+import { deriveTitle } from '../harness/session/title.ts'
 import { newInputId, type ProjectId, type SessionId, type WorkspaceId } from '../util/brand.ts'
 import { canonicalPolicy } from '../harness/tools/names.ts'
 import { ToolsService } from '../harness/tools/service.ts'
@@ -2824,7 +2825,7 @@ async function renameSession(
   // The summary is rebuildable: a failure here degrades the projection,
   // not the canonical fact, so the rename still succeeds.
   await deps.kernel.ctx.sessions.flushSummary(entry.session).catch(() => {})
-  return { ok: true, title: entry.session.customTitle ?? titleOf(entry.session) }
+  return { ok: true, title: entry.session.customTitle ?? deriveTitle(entry.session.events) ?? 'New conversation' }
 }
 
 async function acceptMessage(
@@ -2982,7 +2983,10 @@ function listSessions(workspaceId: WorkspaceId, deps: HandlerDeps): Record<strin
     const entry = deps.sessions.get(summary.id)
     rows.push({
       id: summary.id,
-      title: summary.title ?? (entry !== undefined ? titleOf(entry.session) : 'New conversation'),
+      // Custom title wins; otherwise the derived title the summary projected
+      // from the first user message. Both are durable, so a session listed
+      // straight from storage shows the same title it shows once loaded.
+      title: summary.title ?? summary.derivedTitle ?? (entry !== undefined ? deriveTitle(entry.session.events) : null) ?? 'New conversation',
       // Empty summaries use a current-time fallback, not a durable fact.
       ...(summary.eventCount > 0 ? { createdAt: summary.createdAt, updatedAt: summary.updatedAt } : {}),
       eventCount: summary.eventCount,
@@ -3247,17 +3251,6 @@ export function extractModelIds(parsed: unknown): string[] {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-/** Derive a short listing title from the first user message. */
-function titleOf(session: Session): string {
-  for (const event of session.events) {
-    if (event.type === 'user/message') {
-      const content = event.content.trim().replace(/\s+/g, ' ')
-      return content.length > 48 ? `${content.slice(0, 48)}…` : content
-    }
-  }
-  return 'New conversation'
 }
 
 const MAX_BODY_BYTES = 1_000_000

@@ -30,6 +30,13 @@ export interface SessionSummary {
   readonly lastSeq: number
   /** The last recorded custom title, or null when the title is derived. */
   readonly title: string | null
+  /**
+   * The title derived from the first user message, or null when the log holds
+   * no user message yet. Derived, not authored: rebuilt from `events.jsonl`,
+   * which is why a restart cannot lose it. Absent in summaries written before
+   * derived titles were projected; those rebuild at boot.
+   */
+  readonly derivedTitle?: string | null
   /** The last recorded project binding; null is an explicit unbind. Absent v1 summaries rebuild. */
   readonly projectId?: string | null
 }
@@ -157,6 +164,7 @@ export class FileSessionStore implements SessionStore {
         !Number.isInteger(parsed['eventCount']) ||
         !Number.isInteger(parsed['lastSeq']) ||
         (parsed['title'] !== null && typeof parsed['title'] !== 'string') ||
+        (parsed['derivedTitle'] !== undefined && parsed['derivedTitle'] !== null && typeof parsed['derivedTitle'] !== 'string') ||
         (parsed['projectId'] !== undefined && parsed['projectId'] !== null && typeof parsed['projectId'] !== 'string')
       ) return undefined
       return {
@@ -166,6 +174,11 @@ export class FileSessionStore implements SessionStore {
         eventCount: parsed['eventCount'] as number,
         lastSeq: parsed['lastSeq'] as number,
         title: parsed['title'] as string | null,
+        // Absent means the summary predates derived titles, so boot rebuilds it
+        // from the canonical log rather than reporting a lose-it-on-restart gap.
+        ...(parsed['derivedTitle'] !== undefined
+          ? { derivedTitle: parsed['derivedTitle'] as string | null }
+          : {}),
         // v1 summaries written before project bindings were projected are
         // accepted but marked incomplete so boot rebuilds them from the log.
         ...(parsed['projectId'] !== undefined

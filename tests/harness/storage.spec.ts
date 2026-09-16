@@ -117,10 +117,49 @@ describe('file session store', () => {
     const store = new FileSessionStore({ dir, workspaceId: 'ws-summary' as never })
     const summary = await store.readSummary(session.id)
     expect(summary?.title).toBeNull()
+    // The custom title is null, but the derived one comes from the first user
+    // message — that is what makes a listed session show a real name.
+    expect(summary?.derivedTitle).toBe('hello')
     expect(summary?.eventCount).toBe(2)
     expect(summary?.lastSeq).toBe(2)
     expect((await store.read(session.id)).events).toHaveLength(2)
     void kernel.stop()
+  })
+
+  it('a title derived from the first user message survives a restart without any rename', async () => {
+    const dir = await fs.mkdtemp(path.join(tmpdir(), 'mini-dsh-title-restart-'))
+    let sessionId = ''
+    {
+      const { kernel, sessions } = await service(dir)
+      const session = sessions.create('ws-title' as never)
+      session.append({ type: 'user/message', turnId: 't1' as never, content: 'Explain the storage layer' })
+      await session.durable()
+      await sessions.flushSummary(session)
+      sessionId = session.id
+      await kernel.stop()
+    }
+    // Fresh process over the same home: nothing is loaded in memory, so the
+    // listing can only use what the summary projected from events.jsonl.
+    const { kernel, sessions } = await service(dir)
+    await sessions.boot()
+    const listed = sessions.summaries().find((row) => row.id === sessionId)
+    expect(listed?.title).toBeNull()
+    expect(listed?.derivedTitle).toBe('Explain the storage layer')
+    await kernel.stop()
+  })
+
+  it('derives a truncated title from a long first message and skips blank ones', async () => {
+    const { kernel, sessions } = await service()
+    const session = sessions.create('ws-title' as never)
+    session.append({ type: 'user/message', turnId: 't1' as never, content: '   ' })
+    session.append({ type: 'user/message', turnId: 't1' as never, content: 'x'.repeat(80) })
+    await session.durable()
+    await sessions.flushSummary(session)
+    const summary = sessions.summary(session.id)
+    // Blank messages never title a conversation; the collapsed 80-char message
+    // truncates to 48 characters plus an ellipsis.
+    expect(summary?.derivedTitle).toBe(`${'x'.repeat(48)}…`)
+    await kernel.stop()
   })
 
   it('does not resolve an earlier concurrent durable barrier before its append prefix', async () => {
@@ -355,7 +394,7 @@ describe('sessions service over files', () => {
       },
       replace: async () => {},
       writeSummary: vi.fn(async () => {}),
-      readSummary: async () => ({ id, createdAt: 1, updatedAt: 1, eventCount: 0, lastSeq: 0, title: null, projectId: null }),
+      readSummary: async () => ({ id, createdAt: 1, updatedAt: 1, eventCount: 0, lastSeq: 0, title: null, derivedTitle: null, projectId: null }),
       list: async () => [id],
       remove,
     }
