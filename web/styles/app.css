@@ -830,6 +830,13 @@ summary { cursor: pointer; }
   white-space: nowrap;
   font-size: var(--text-sm);
 }
+/* Only duplicate visible titles receive a stable, inspectable suffix. */
+.session-identity {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
 .session-meta {
   flex-shrink: 0;
   font-size: var(--text-xs);

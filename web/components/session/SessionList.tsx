@@ -9,12 +9,14 @@ interface RowProps {
   readonly active: boolean
   /** The open session's live turn state (fresher than the polled listing). */
   readonly liveRunning: boolean
+  /** Another listed session has the same visible title. */
+  readonly duplicateTitle: boolean
   readonly onSelect: () => void
   readonly onRename: (id: string, title: string) => void
   readonly onDeleteRequest: (session: SessionListing) => void
 }
 
-function SessionRow({ session, active, liveRunning, onSelect, onRename, onDeleteRequest }: RowProps) {
+function SessionRow({ session, active, liveRunning, duplicateTitle, onSelect, onRename, onDeleteRequest }: RowProps) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(session.title)
   // Spec: session row v2 — a reserved 10px status slot so the title never
@@ -58,6 +60,7 @@ function SessionRow({ session, active, liveRunning, onSelect, onRename, onDelete
         <span className={`session-status-dot${isRunning ? ' is-running' : ''}${cancelling ? ' is-cancelling' : ''}`} aria-hidden="true" />
         <span className="session-main">
           <span className="session-title">{session.title || 'New conversation'}</span>
+          {duplicateTitle ? <span className="session-identity" title={`Conversation ID: ${session.id}`}>#{session.id.slice(-4)}</span> : null}
           <span className="session-meta">
             {isRunning
               ? <span className="session-activity">working with {session.activity === 'tool' ? 'tool' : 'model'}</span>
@@ -146,6 +149,7 @@ export function SessionList({
         session={session}
         active={session.id === current}
         liveRunning={liveRunning}
+        duplicateTitle={hasDuplicateTitle(session)}
         onSelect={() => onSelect(session.id)}
         onRename={onRename}
         onDeleteRequest={onDeleteRequest}
@@ -154,6 +158,12 @@ export function SessionList({
   )
 
   const shown = sessions.filter(matches)
+  const titleCounts = new Map<string, number>()
+  for (const session of sessions) {
+    const title = session.title.trim().toLocaleLowerCase()
+    if (title !== '') titleCounts.set(title, (titleCounts.get(title) ?? 0) + 1)
+  }
+  const hasDuplicateTitle = (session: SessionListing): boolean => (titleCounts.get(session.title.trim().toLocaleLowerCase()) ?? 0) > 1
   if (shown.length === 0) {
     return <p className="session-empty">{query === '' ? 'No conversations yet' : 'No matching conversations'}</p>
   }

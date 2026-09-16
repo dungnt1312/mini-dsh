@@ -575,6 +575,16 @@ describe('sidebar sections + live rows + workspace management', () => {
     expect(host.textContent).toContain('working with model')
     expect(host.textContent).toContain('2 queued')
   })
+  it('adds stable suffixes only when visible conversation titles collide', async () => {
+    const duplicateSessions = [
+      { id: 'alpha-9wxy', title: 'Same title', ...base },
+      { id: 'beta-1234', title: 'Same title', ...base },
+      { id: 'unique-5678', title: 'A different title', ...base },
+    ]
+    await mount(<SessionList sessions={duplicateSessions} projects={[]} current={null} filter="" liveRunning={false} onSelect={() => {}} onRename={() => {}} onDeleteRequest={() => {}} />)
+    expect([...host.querySelectorAll('.session-identity')].map((node) => node.textContent)).toEqual(['#9wxy', '#1234'])
+    expect(host.querySelector('.session-identity[title="Conversation ID: unique-5678"]')).toBeNull()
+  })
   it('offers per-project quick-new and filters by title', async () => {
     const onNewInProject = vi.fn()
     await mount(<SessionList sessions={[...sessions]} projects={[project]} current={null} filter="crash" liveRunning={false} onSelect={() => {}} onRename={() => {}} onDeleteRequest={() => {}} onNewInProject={onNewInProject} />)
