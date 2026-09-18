@@ -2,7 +2,7 @@
  * The durable session log: stamped appends, `session/event` broadcast, model
  * history projection, and fork boundaries.
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Kernel, SessionsService } from 'mini-dsh'
 
 /** Boot a kernel with the session service mounted. */
@@ -31,6 +31,44 @@ describe('session log', () => {
     void kernel.stop()
   })
 
+  it('queues canonical persistence before isolating throwing and rejecting live observers', async () => {
+    const kernel = new Kernel()
+    const writes: number[] = []
+    const store = {
+      append: async (_id: string, event: { seq: number }) => { writes.push(event.seq) },
+      flush: async () => {},
+      read: async () => ({ events: [], truncatedTail: false }),
+      replace: async () => {},
+      writeSummary: async () => {},
+      readSummary: async () => undefined,
+      list: async () => [],
+      remove: async () => {},
+    }
+    kernel.ctx.plugin((ctx) => { new SessionsService(ctx, 'sessions', { store: store as never }) })
+    const session = kernel.ctx.sessions.create()
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const removeThrowing = kernel.ctx.on('session/event', () => { throw new Error('throwing observer') })
+
+    expect(() => session.append({ type: 'user/message', turnId: 't1' as never, content: 'saved' })).not.toThrow()
+    await session.durable()
+    await Promise.resolve()
+    expect(writes).toEqual([1])
+    expect(session.events).toHaveLength(1)
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('event observer failed'),
+      expect.objectContaining({ message: 'throwing observer' }),
+    )
+
+    removeThrowing()
+    kernel.ctx.on('session/event', async () => { throw new Error('rejecting observer') })
+    expect(() => session.append({ type: 'turn/end', turnId: 't1' as never, reason: 'completed' })).not.toThrow()
+    await session.durable()
+    await Promise.resolve()
+    expect(writes).toEqual([1, 2])
+    warning.mockRestore()
+    await kernel.stop()
+  })
+
   it('deriveMessages projects user/assistant order and skips chunks and markers', () => {
     const kernel = boot()
     const session = kernel.ctx.sessions.create()
@@ -54,7 +92,7 @@ describe('session log', () => {
     void kernel.stop()
   })
 
-  it('fork copies up to the boundary, rebases seq, and diverges afterwards', () => {
+  it('fork copies up to the boundary, rebases seq, and diverges afterwards', async () => {
     const kernel = boot()
     const parent = kernel.ctx.sessions.create()
 
@@ -64,7 +102,7 @@ describe('session log', () => {
     parent.append({ type: 'turn/end', turnId: 'turn-1' as never, reason: 'completed' })
     parent.append({ type: 'user/message', turnId: 'turn-1' as never, content: 'cut me' })
 
-    const child = kernel.ctx.sessions.fork(parent, 4)
+    const child = await kernel.ctx.sessions.fork(parent, 4)
     expect(child.events).toHaveLength(4)
     expect(child.events.map((event) => event.seq)).toEqual([1, 2, 3, 4])
     expect(child.deriveMessages()).toEqual([
@@ -81,13 +119,13 @@ describe('session log', () => {
     void kernel.stop()
   })
 
-  it('fork without a boundary copies everything', () => {
+  it('fork without a boundary copies everything', async () => {
     const kernel = boot()
     const parent = kernel.ctx.sessions.create()
     parent.append({ type: 'turn/start', turnId: 'turn-1' as never })
     parent.append({ type: 'user/message', turnId: 'turn-1' as never, content: 'all' })
 
-    const child = kernel.ctx.sessions.fork(parent)
+    const child = await kernel.ctx.sessions.fork(parent)
     expect(child.events).toHaveLength(2)
     void kernel.stop()
   })

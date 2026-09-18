@@ -1,0 +1,29 @@
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse-dot { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
+@keyframes shimmer { from { background-position: 150% 0; } to { background-position: -50% 0; } }
+@keyframes fade-up { from { opacity: 0; transform: translateY(4px); } }
+
+.animate-spin-slow { animation: spin 0.8s linear infinite; }
+.animate-dot { animation: pulse-dot 1.2s ease-in-out infinite; }
+.animate-fade-up { animation: fade-up 0.18s ease-out; }
+.text-shimmer {
+  background: linear-gradient(90deg, var(--fg-faint) 35%, var(--fg) 50%, var(--fg-faint) 65%) 0 0 / 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 2s linear infinite;
+}
+
+* { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--line-strong); border: 3px solid transparent; border-radius: 999px; background-clip: content-box; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+  .text-shimmer { color: var(--fg-muted); background: none; }
+}

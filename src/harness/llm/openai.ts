@@ -1,4 +1,6 @@
-import type { LlmProvider, ModelMessage, ModelRequest, StreamEvent } from './types.ts'
+import { applyThinkingOverride } from './model-catalog.ts'
+import { messageText } from './types.ts'
+import type { LlmProvider, ModelMessage, ModelRequest, StreamEvent, StreamOptions } from './types.ts'
 
 interface StreamChoice {
   delta?: {
@@ -21,12 +23,29 @@ interface AccumulatedCall {
   argsString: string
 }
 
+/** The vision content array OpenAI-compatible servers accept on a user message. */
+type WireContent = string | ({ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } })[]
+
 /** One message in the OpenAI-style wire format every completions server accepts. */
 interface WireMessage {
   role: string
-  content: string
+  content: WireContent
   tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[]
   tool_call_id?: string
+}
+
+/**
+ * Messages that carry images serialize as the documented content array, with
+ * each image inlined as a `data:` URL. Text-only messages stay bare strings:
+ * servers that predate vision keep receiving exactly what they always did.
+ */
+function toWireContent(content: ModelMessage['content']): WireContent {
+  if (typeof content === 'string') return content
+  return content.map((part) =>
+    part.type === 'text'
+      ? { type: 'text' as const, text: part.text }
+      : { type: 'image_url' as const, image_url: { url: `data:${part.mediaType};base64,${part.base64}` } },
+  )
 }
 
 /**
@@ -41,7 +60,7 @@ function toWireMessages(messages: readonly ModelMessage[]): WireMessage[] {
     if (message.role === 'assistant' && message.toolCalls !== undefined) {
       return {
         role: 'assistant',
-        content: message.content,
+        content: toWireContent(message.content),
         tool_calls: message.toolCalls.map((call) => ({
           id: call.id,
           type: 'function' as const,
@@ -52,11 +71,12 @@ function toWireMessages(messages: readonly ModelMessage[]): WireMessage[] {
     if (message.role === 'tool') {
       return {
         role: 'tool',
-        content: message.content,
+        // A tool answer is always text; flattening keeps the protocol's shape.
+        content: messageText(message.content),
         tool_call_id: message.toolCallId ?? '',
       }
     }
-    return { role: message.role, content: message.content }
+    return { role: message.role, content: toWireContent(message.content) }
   })
 }
 
@@ -92,24 +112,30 @@ export class OpenAiCompletionsProvider implements LlmProvider {
     this.defaultModel = options.defaultModel ?? options.models?.[0] ?? 'default'
   }
 
-  async *stream(request: ModelRequest): AsyncIterable<StreamEvent> {
+  async *stream(request: ModelRequest, options?: StreamOptions): AsyncIterable<StreamEvent> {
+    // The body is assembled as an object first so the documented per-model
+    // thinking override can patch it; unsupported (model, level) pairs
+    // leave it untouched rather than risking an undocumented field.
+    const model = request.model ?? this.defaultModel
+    const body: Record<string, unknown> = {
+      model,
+      messages: toWireMessages(request.messages),
+      ...(request.tools !== undefined && request.tools.length > 0
+        ? { tools: request.tools.map((tool) => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } })) }
+        : {}),
+      stream: true,
+    }
+    applyThinkingOverride(body, model, request.thinkingLevel)
     const response = await fetch(`${this.options.baseUrl}/chat/completions`, {
       method: 'POST',
+      ...(options?.signal !== undefined ? { signal: options.signal } : {}),
       headers: {
         'content-type': 'application/json',
         // Local gateways often accept no credential at all; sending an empty
         // Bearer makes some of them reject the call outright.
         ...(this.options.apiKey === '' ? {} : { authorization: `Bearer ${this.options.apiKey}` }),
       },
-      body: JSON.stringify({
-        model: request.model ?? this.defaultModel,
-        messages: toWireMessages(request.messages),
-        tools: request.tools?.map((tool) => ({
-          type: 'function',
-          function: { name: tool.name, description: tool.description, parameters: tool.parameters },
-        })),
-        stream: true,
-      }),
+      body: JSON.stringify(body),
     })
     if (!response.ok) {
       throw new Error(`${this.name}: HTTP ${response.status}: ${await response.text()}`)

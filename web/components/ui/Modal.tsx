@@ -1,83 +1,51 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import * as Dialog from '@radix-ui/react-dialog'
+import type { ReactNode } from 'react'
+import { cn } from '../../lib/cn.ts'
+import { useRestoreFocus } from '../../hooks/useRestoreFocus.ts'
 
-/**
- * Dialog shell: backdrop click and Escape dismiss, focus moves inside on open
- * and returns to the opener on close, and Tab cycles within the dialog so the
- * page behind never steals focus. Callers own the body; `header` renders in the
- * sticky title row.
- */
-export function Modal({
-  open,
-  onDismiss,
-  label,
-  width = 'lg',
-  className = '',
-  header,
-  children,
-}: {
+type ModalWidth = 'sm' | 'md' | 'lg' | 'xl'
+
+const WIDTHS: Readonly<Record<ModalWidth, string>> = {
+  sm: 'w-[min(420px,calc(100vw-32px))]',
+  md: 'w-[min(560px,calc(100vw-32px))]',
+  lg: 'w-[min(720px,calc(100vw-32px))]',
+  xl: 'h-[min(760px,calc(100dvh-32px))] w-[min(1040px,calc(100vw-32px))] max-sm:h-dvh max-sm:w-screen max-sm:rounded-none',
+}
+
+const contentClass = 'fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100dvh-32px)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl border border-line bg-surface text-fg shadow-pop outline-none max-sm:max-h-dvh'
+
+/** Controlled centered dialog; Radix owns portal, focus trap, restoration and Escape. */
+export function Modal({ open, onDismiss, label, width = 'lg', className, bodyClassName, header, children }: {
   readonly open: boolean
   readonly onDismiss: () => void
   readonly label: string
-  readonly width?: 'sm' | 'md' | 'lg'
+  readonly width?: ModalWidth
   readonly className?: string
+  readonly bodyClassName?: string
   readonly header?: ReactNode
   readonly children: ReactNode
 }) {
-  const dialogRef = useRef<HTMLDivElement | null>(null)
-  const openerRef = useRef<Element | null>(null)
-
-  useEffect(() => {
-    if (!open) return
-    openerRef.current = document.activeElement
-    const focusables = (): HTMLElement[] =>
-      [...(dialogRef.current?.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
-      ) ?? [])]
-
-    focusables()[0]?.focus()
-
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        event.stopPropagation()
-        onDismiss()
-        return
-      }
-      if (event.key !== 'Tab') return
-      const items = focusables()
-      const first = items[0]
-      const last = items[items.length - 1]
-      if (first === undefined || last === undefined) return
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault()
-        last.focus()
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault()
-        first.focus()
-      }
-    }
-
-    document.addEventListener('keydown', onKeyDown, true)
-    return () => {
-      document.removeEventListener('keydown', onKeyDown, true)
-      ;(openerRef.current as HTMLElement | null)?.focus?.()
-    }
-  }, [open, onDismiss])
-
+  const restoreFocus = useRestoreFocus(open)
   if (!open) return null
-
+  const content = (
+    <>
+      {header !== undefined ? <header className="flex shrink-0 items-center justify-between gap-3 border-b border-line px-5 py-3">{header}</header> : null}
+      <div className={cn('min-h-0 flex-1 overflow-y-auto p-5', bodyClassName)}>{children}</div>
+    </>
+  )
+  // Static rendering (tests) has no portal target.
+  if (typeof document === 'undefined') {
+    return <div role="presentation"><div role="dialog" aria-modal="true" aria-label={label} className={cn(contentClass, WIDTHS[width], className)}>{content}</div></div>
+  }
   return (
-    <div className="ui-modal-backdrop" role="presentation" onMouseDown={onDismiss}>
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label={label}
-        className={`ui-modal ui-modal-${width} ${className}`}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        {header !== undefined ? <header className="ui-modal-head">{header}</header> : null}
-        <div className="ui-modal-body">{children}</div>
-      </div>
-    </div>
+    <Dialog.Root open={open} onOpenChange={(next) => { if (!next) onDismiss() }}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-scrim" />
+        <Dialog.Content aria-label={label} aria-describedby={undefined} onCloseAutoFocus={restoreFocus} className={cn(contentClass, WIDTHS[width], className)}>
+          <Dialog.Title className="sr-only">{label}</Dialog.Title>
+          {content}
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   )
 }

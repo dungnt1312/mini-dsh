@@ -1,4 +1,4 @@
-import type { Meta, ProviderSummary } from './types.ts'
+import type { Meta, ProviderSummary, WorkspaceMeta } from './types.ts'
 
 /** One selector row: value is an unambiguous `provider:model` pair. */
 export interface ModelOption {
@@ -19,7 +19,7 @@ export function decodeModelChoice(value: string): { readonly provider: string; r
 }
 
 /** Flatten enabled provider/model sets for the composer and Environment panel. */
-export function modelOptions(meta: Meta | null): readonly ModelOption[] {
+export function modelOptions(meta: Pick<Meta, 'provider' | 'model' | 'providers' | 'models'> | Pick<WorkspaceMeta, 'provider' | 'model' | 'providers' | 'models'> | null): readonly ModelOption[] {
   if (meta === null) return []
   const options: ModelOption[] = []
   for (const provider of meta.providers) {
@@ -34,7 +34,7 @@ export function modelOptions(meta: Meta | null): readonly ModelOption[] {
     }
   }
   // Injection-only providers (test seams) have no public config row.
-  if (options.length === 0) {
+  if (options.length === 0 && meta.provider !== null && meta.provider !== '') {
     for (const model of meta.models) {
       options.push({
         value: encodeModelChoice(meta.provider, model),
@@ -47,8 +47,8 @@ export function modelOptions(meta: Meta | null): readonly ModelOption[] {
   return options
 }
 
-export function activeModelValue(meta: Meta | null): string | null {
-  if (meta === null || meta.provider === '' || meta.model === '') return null
+export function activeModelValue(meta: Pick<Meta, 'provider' | 'model' | 'providers' | 'models'> | Pick<WorkspaceMeta, 'provider' | 'model' | 'providers' | 'models'> | null): string | null {
+  if (meta === null || meta.provider === '' || meta.provider === null || meta.model === '' || meta.model === null) return null
   return encodeModelChoice(meta.provider, meta.model)
 }
 

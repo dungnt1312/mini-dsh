@@ -1,106 +1,556 @@
-import { useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import Icon from '../common/Icon.tsx'
-import { Button } from '../ui/Button.tsx'
-import { IconButton } from '../ui/IconButton.tsx'
-import { Select } from '../ui/Select.tsx'
-import type { ModelOption } from '../../lib/providers.ts'
+import { Spinner } from '../common/Spinner.tsx'
+import { useToast } from '../common/Toast.tsx'
+import { AttachmentTray } from './AttachmentTray.tsx'
+import { CompletionPopover } from './CompletionPopover.tsx'
+import { AttachMenu, ControlsStatus, ModeMenu } from './ComposerControls.tsx'
+import { ComposerNotices, type ComposerNotice } from './ComposerNotices.tsx'
+import { PolicyPopover } from './PolicyPopover.tsx'
+import { RichInput, type CaretBookmark, type RichInputHandle } from './RichInput.tsx'
+import { ThinkingMenu } from './ThinkingMenu.tsx'
+import { SAFE_MODEL_VISIBLE_BYTES, utf8Bytes } from './paste-classification.ts'
+import { useUploadQueue } from './useUploadQueue.ts'
+import { decodeModelChoice } from '../../lib/providers.ts'
+import {
+  completionAt,
+  moveActive,
+  rankSkills,
+  skillCompletionItem,
+  type CompletionItem,
+  type CompletionRequest,
+} from '../../lib/composer-completion.ts'
+import {
+  appendAttachments,
+  draftIsEmpty,
+  draftText,
+  messageDraft,
+  removeAttachment,
+  type AttachmentRef,
+  type DraftSegment,
+  type RichDraft,
+} from '../../lib/composer-draft.ts'
+import type { ModelSettings } from '../../lib/types.ts'
+
+/** Keystrokes settle before a file search leaves for the server. */
+const SEARCH_DEBOUNCE_MS = 120
+/** Suggestions listed at once, for both menus. */
+const MAX_SUGGESTIONS = 12
+/** How long "Attachment removed · Undo" stays offered. */
+const UNDO_TIMEOUT_MS = 6000
+const UPLOAD_ACCEPT = 'image/png,image/jpeg,image/webp,image/gif,text/*,application/json,application/xml'
+const OVERSIZED_MESSAGE = 'Pasted text exceeds the 60,000-byte limit. Shorten or remove it before sending.'
+/** Fallback when the caret could not be bookmarked: the start of the draft. */
+const DRAFT_START: CaretBookmark = { offset: 0, revision: -1 }
+
+/** One workspace skill offered by the `/` menu. */
+export interface SkillOption {
+  readonly name: string
+  readonly description?: string
+}
+
+/** Pasted text that became an attachment and can still be put back inline. */
+interface Recovery {
+  readonly text: string
+  readonly bookmark: CaretBookmark | null
+}
+
+/** A mid-size paste kept inline, with an offer to move it into an attachment. */
+interface Conversion {
+  readonly text: string
+  readonly bookmark: CaretBookmark | null
+}
+
+interface RemovedAttachment {
+  readonly attachment: AttachmentRef
+  readonly index: number
+}
+
+const signature = (request: CompletionRequest): string => `${request.kind}:${request.start}:${request.query}`
+
+const pastedTextFile = (text: string, date = new Date()): File => {
+  const pad = (value: number): string => value.toString().padStart(2, '0')
+  const stamp = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}`
+  return new File([text], `pasted-text-${stamp}.txt`, { type: 'text/plain' })
+}
 
 /**
- * Control-center composer: autosizing textarea over an action row holding
- * the provider/model picker and stop/send. Enter sends, Shift+Enter breaks a
- * line; while a turn runs the send square becomes Stop.
+ * Message composer: notices, the attachment tray and a rich input over a
+ * control row — attach, mode, thinking and permissions on the left; the
+ * model picker, Stop and Send/Queue on the right. The conversation's folder
+ * lives in the chat header, not here.
+ *
+ * Enter sends and Shift+Enter breaks a line; Ctrl/Cmd+Enter always sends.
+ * While a turn runs, sending queues a follow-up. The input is disabled only by
+ * a missing model — never by a lost connection.
+ *
+ * Typing `@` suggests project files and `/` (at the start of a draft) suggests
+ * workspace skills; both become inline chips. Pasted, dropped or chosen files
+ * upload into the tray. Long pasted text uploads as a text attachment that can
+ * be put back inline; ArrowUp on an empty draft recalls the last message.
  */
 export function Composer({
-  connected,
-  running,
-  draft,
-  onDraft,
-  onSend,
-  onStop,
-  modelValue,
-  modelOptions,
-  onModel,
+  policy, workspaceId = null, onPolicySaved, modelControl, connected, sending = false, running,
+  draft, onDraft, onSend, onStop,
+  modelValue, thinkingValue = null, modelSettings, onThinking, thinkingMenuLabel, thinkingDisabled = false,
+  controlsUnavailable = false, controlsUnavailableMessage, onRetryControls,
+  modes, modeValue, onMode,
+  onSearchFiles, onUploadFiles, skills, onRecallLast, autoFocus = false,
 }: {
+  readonly policy?: Record<string, string> | undefined
+  readonly workspaceId?: string | null
+  readonly onPolicySaved?: () => void
+  /** Model picker, owned by the app; shown beside Send. */
+  readonly modelControl?: ReactNode
+  readonly sending?: boolean
   readonly connected: boolean
   readonly running: boolean
-  readonly draft: string
-  readonly onDraft: (value: string) => void
+  readonly draft: RichDraft
+  readonly onDraft: (draft: RichDraft) => void
   readonly onSend: () => void
   readonly onStop: () => void
   readonly modelValue: string | null
-  readonly modelOptions: readonly ModelOption[]
-  readonly onModel: (value: string) => void
+  /** Workspace thinking override; null = the model's configured default. */
+  readonly thinkingValue?: string | null
+  /** Per-model settings of the ACTIVE provider, for the thinking default. */
+  readonly modelSettings?: Readonly<Record<string, ModelSettings>>
+  readonly onThinking?: (level: string | null) => void
+  readonly thinkingMenuLabel?: string
+  readonly thinkingDisabled?: boolean
+  /** Session controls are loading or failed; sending waits for them. */
+  readonly controlsUnavailable?: boolean
+  readonly controlsUnavailableMessage?: string
+  readonly onRetryControls?: () => void
+  readonly modes: readonly { readonly value: string; readonly label: string }[]
+  readonly modeValue: string | null
+  readonly onMode: (value: string) => void
+  /** Absent without a project: `@` then has no files to offer. */
+  readonly onSearchFiles?: (query: string) => Promise<readonly CompletionItem[]>
+  /**
+   * Store files and return their references. Absent means this conversation
+   * cannot take uploads, and the attach control is not offered.
+   */
+  readonly onUploadFiles?: (files: readonly File[]) => Promise<readonly AttachmentRef[]>
+  /** Workspace skill catalog for the `/` menu. */
+  readonly skills?: readonly SkillOption[]
+  /** Newest own message, for ArrowUp on an empty draft. */
+  readonly onRecallLast?: () => string | null
+  readonly autoFocus?: boolean
 }) {
-  const area = useRef<HTMLTextAreaElement | null>(null)
-  const [focused, setFocused] = useState(false)
+  const editor = useRef<RichInputHandle | null>(null)
+  const fileInput = useRef<HTMLInputElement | null>(null)
+  // Upload and undo callbacks settle after later edits, so they build on the
+  // latest draft rather than the one captured when they started.
+  const draftRef = useRef(draft)
+  const emittedDraft = useRef<RichDraft | null>(null)
+  const uploads = useUploadQueue()
+  const { notify } = useToast()
+  const hintId = useId()
+  const modelHintId = useId()
+  const listId = useId()
 
-  const resize = (element: HTMLTextAreaElement): void => {
-    element.style.height = 'auto'
-    element.style.height = `${Math.min(element.scrollHeight, 160)}px`
+  const [recoveries, setRecoveries] = useState<ReadonlyMap<string, Recovery>>(new Map())
+  const [conversion, setConversion] = useState<Conversion | null>(null)
+  const [removed, setRemoved] = useState<RemovedAttachment | null>(null)
+  // Set when Enter was pressed but sending was blocked; cleared by the next edit.
+  const [blockedAttempt, setBlockedAttempt] = useState(false)
+
+  const [request, setRequest] = useState<CompletionRequest | null>(null)
+  const [items, setItems] = useState<readonly CompletionItem[]>([])
+  const [active, setActive] = useState(0)
+  const [searching, setSearching] = useState(false)
+  // Escape closes the list until the query itself changes.
+  const [dismissed, setDismissed] = useState<string | null>(null)
+
+  const missingModel = modelValue === null
+  const empty = draftIsEmpty(draft)
+  const oversized = useMemo(() => utf8Bytes(draftText(draft)) > SAFE_MODEL_VISIBLE_BYTES, [draft])
+  const uploading = uploads.pending > 0
+  const eligible = !empty && connected && !missingModel && !controlsUnavailable && !uploading && !oversized
+
+  // A draft we did not emit replaced ours (sent, recalled, switched
+  // conversation): in-flight uploads and paste offers belong to the old one.
+  const { reset: resetUploads } = uploads
+  useEffect(() => {
+    if (emittedDraft.current !== draft) {
+      resetUploads()
+      setRecoveries(new Map())
+      setConversion(null)
+      setRemoved(null)
+    }
+    draftRef.current = draft
+    emittedDraft.current = draft
+  }, [draft, resetUploads])
+
+  useEffect(() => {
+    if (removed === null) return
+    const timer = setTimeout(() => setRemoved(null), UNDO_TIMEOUT_MS)
+    return () => clearTimeout(timer)
+  }, [removed])
+
+  const emit = (next: RichDraft): void => {
+    draftRef.current = next
+    emittedDraft.current = next
+    setBlockedAttempt(false)
+    onDraft(next)
   }
 
+  const dropRecovery = (id: string): void => {
+    setRecoveries((current) => {
+      if (!current.has(id)) return current
+      const next = new Map(current)
+      next.delete(id)
+      return next
+    })
+  }
+
+  // ── Completion (`@` files, `/` skills) ─────────────────────────────────
+
+  // A menu with no source stays shut: `@` needs a project, `/` needs skills.
+  const available = request === null ? false : request.kind === 'file' ? onSearchFiles !== undefined : (skills ?? []).length > 0
+  const open = request !== null && available && dismissed !== signature(request)
+  const fileSearch = open && request?.kind === 'file' ? onSearchFiles : undefined
+  const fileQuery = request?.kind === 'file' ? request.query : null
+
+  // Only file suggestions go to the server; a stale response never overwrites
+  // a newer query.
+  useEffect(() => {
+    if (fileSearch === undefined || fileQuery === null) return
+    let live = true
+    setSearching(true)
+    const timer = setTimeout(() => {
+      void fileSearch(fileQuery)
+        .then((found) => { if (live) { setItems(found.slice(0, MAX_SUGGESTIONS)); setActive(0) } })
+        .catch(() => { if (live) setItems([]) })
+        .finally(() => { if (live) setSearching(false) })
+    }, SEARCH_DEBOUNCE_MS)
+    return () => { live = false; clearTimeout(timer) }
+  }, [fileSearch, fileQuery])
+
+  useEffect(() => {
+    if (!open || request?.kind !== 'skill') return
+    setItems(rankSkills(skills ?? [], request.query, MAX_SUGGESTIONS).map(skillCompletionItem))
+    setActive(0)
+    setSearching(false)
+  }, [open, request?.kind, request?.query, skills])
+
+  /**
+   * Re-read the caret and decide which menu, if any, belongs open. Triggers
+   * are matched inside the caret's own text node, so a chip beside the caret
+   * cannot be read as part of the query.
+   */
+  const syncCompletion = (): void => {
+    const caret = editor.current?.caretContext() ?? null
+    const next = caret === null ? null : completionAt(caret.text, caret.offset)
+    setRequest(next)
+    if (next === null) { setItems([]); setSearching(false) }
+  }
+
+  const pick = (item: CompletionItem): void => {
+    if (request === null) return
+    const segment: DraftSegment = item.segment ?? { kind: 'text', text: `${item.insert} ` }
+    editor.current?.replaceAtCaret(request.start, request.end, segment)
+    setRequest(null)
+    setItems([])
+    setSearching(false)
+  }
+
+  const mentionFile = (): void => {
+    editor.current?.focus()
+    editor.current?.insertAtCaret({ kind: 'text', text: '@' })
+    syncCompletion()
+  }
+
+  // ── Attachments ────────────────────────────────────────────────────────
+
+  const uploadFiles = (files: readonly File[]): void => {
+    if (onUploadFiles === undefined || files.length === 0) return
+    uploads.enqueue(onUploadFiles(files), (outcome) => {
+      if (!outcome.ok) notify('Upload failed')
+      else if (outcome.refs.length === 0) notify('Upload returned no attachments')
+      else emit(appendAttachments(draftRef.current, outcome.refs))
+    })
+  }
+
+  /**
+   * Upload pasted text as a file. On success it can be put back inline once;
+   * on failure the text returns to where it was pasted so nothing is lost.
+   */
+  const uploadPastedText = (text: string, bookmark: CaretBookmark | null): void => {
+    if (onUploadFiles === undefined) return
+    uploads.enqueue(onUploadFiles([pastedTextFile(text)]), (outcome) => {
+      const ref = outcome.ok ? outcome.refs[0] : undefined
+      if (ref === undefined) {
+        const restored = editor.current?.insertAtBookmark(bookmark ?? DRAFT_START, { kind: 'text', text }) ?? false
+        notify(restored ? 'Upload failed — pasted text was kept inline' : 'Upload failed and pasted text could not be restored')
+        return
+      }
+      setRecoveries((current) => new Map(current).set(ref.id, { text, bookmark }))
+      emit(appendAttachments(draftRef.current, outcome.ok ? outcome.refs : []))
+    })
+  }
+
+  const convertPaste = (): void => {
+    if (conversion === null || editor.current === null) return
+    const { text, bookmark } = conversion
+    setConversion(null)
+    if (!editor.current.replaceTextAtBookmark(bookmark ?? DRAFT_START, text, '')) {
+      notify('Cannot convert pasted text after the editor changed')
+      return
+    }
+    // The post-removal caret is where the text goes back on failure or on
+    // Insert back.
+    uploadPastedText(text, editor.current.bookmark())
+  }
+
+  const insertBack = (attachment: AttachmentRef): void => {
+    const saved = recoveries.get(attachment.id)
+    if (saved === undefined || editor.current === null) return
+    const segments = editor.current.segmentsWithInsertAtBookmark(saved.bookmark ?? DRAFT_START, { kind: 'text', text: saved.text })
+    dropRecovery(attachment.id)
+    if (segments === null) {
+      notify('Cannot insert pasted text after the editor changed')
+      return
+    }
+    // One draft transition: the text comes back and the attachment leaves.
+    const next = { segments, attachments: draftRef.current.attachments.filter((item) => item.id !== attachment.id) }
+    editor.current.setDraft(next)
+    emit(next)
+  }
+
+  const removeFromTray = (attachment: AttachmentRef): void => {
+    const index = draftRef.current.attachments.findIndex((item) => item.id === attachment.id)
+    if (index < 0) return
+    emit(removeAttachment(draftRef.current, attachment.id))
+    dropRecovery(attachment.id)
+    setRemoved({ attachment, index })
+  }
+
+  const undoRemove = (): void => {
+    if (removed === null) return
+    const attachments = [...draftRef.current.attachments]
+    attachments.splice(removed.index, 0, removed.attachment)
+    emit({ segments: draftRef.current.segments, attachments })
+    setRemoved(null)
+  }
+
+  // ── Sending ────────────────────────────────────────────────────────────
+
+  // Why Send is blocked, when nothing else on screen already says so.
+  const blockedReason = controlsUnavailable
+    ? `Cannot send yet: ${controlsUnavailableMessage ?? 'conversation controls are unavailable.'}`
+    : !connected
+      ? 'Cannot send while reconnecting. Your draft is kept.'
+      : uploading
+        ? 'Cannot send until files finish uploading.'
+        : null
+
   const submit = (): void => {
-    if (running || draft.trim() === '' || !connected || modelValue === null) return
+    if (sending) return
+    if (!eligible) { setBlockedAttempt(true); return }
+    setBlockedAttempt(false)
     onSend()
   }
 
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+    if (event.nativeEvent.isComposing) return
+    // Keys on controls inside the editor (a chip's remove button) are theirs.
+    const target = event.target as HTMLElement
+    if (target.closest('button,input,select,textarea,a,[contenteditable="false"]') !== null) return
+
+    if (open) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault()
+        setActive((index) => moveActive(index, event.key === 'ArrowDown' ? 1 : -1, items.length))
+        return
+      }
+      const item = items[active]
+      if ((event.key === 'Enter' || event.key === 'Tab') && item !== undefined) {
+        event.preventDefault()
+        pick(item)
+        return
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        if (request !== null) setDismissed(signature(request))
+        return
+      }
+    }
+
+    if (event.key === 'ArrowUp' && empty && onRecallLast !== undefined) {
+      const recalled = onRecallLast()
+      if (recalled !== null && recalled !== '') {
+        event.preventDefault()
+        const next = messageDraft(recalled)
+        editor.current?.setDraft(next)
+        emit(next)
+        return
+      }
+    }
+
+    if (event.key === 'Enter' && (!event.shiftKey || event.ctrlKey || event.metaKey)) {
+      event.preventDefault()
+      submit()
+    }
+  }
+
+  // ── Render ─────────────────────────────────────────────────────────────
+
+  const showBlocked = blockedAttempt && blockedReason !== null
+  const notices: ComposerNotice[] = []
+  if (missingModel) notices.push({ key: 'model', id: modelHintId, tone: 'warn', text: 'Configure a provider in Settings to send messages.' })
+  if (oversized) notices.push({ key: 'oversized', tone: 'bad', text: OVERSIZED_MESSAGE })
+  if (blockedAttempt && blockedReason !== null) notices.push({ key: 'blocked', id: hintId, tone: 'warn', text: blockedReason, onDismiss: () => setBlockedAttempt(false) })
+  if (conversion !== null) {
+    notices.push({
+      key: 'conversion',
+      tone: 'info',
+      text: 'Large paste kept inline.',
+      action: { label: 'Convert to attachment', onClick: convertPaste },
+      onDismiss: () => setConversion(null),
+    })
+  }
+  if (removed !== null) {
+    notices.push({
+      key: 'removed',
+      tone: 'info',
+      text: `Removed ${removed.attachment.name}.`,
+      action: { label: 'Undo', onClick: undoRemove },
+      onDismiss: () => setRemoved(null),
+    })
+  }
+  const describedBy = [missingModel ? modelHintId : null, showBlocked ? hintId : null].filter((id) => id !== null).join(' ')
+
+  const placeholder = missingModel
+    ? 'Configure a provider in Settings first…'
+    : running
+      ? 'Queue a follow-up…'
+      : !connected
+        ? 'Reconnecting — your draft is kept…'
+        : 'Ask anything'
+  const modelId = modelValue !== null ? decodeModelChoice(modelValue)?.model ?? null : null
+
   return (
     <form
-      className={`composer ${focused ? 'composer-focused' : ''}`}
-      onSubmit={(event) => {
-        event.preventDefault()
-        submit()
-      }}
+      className="relative flex flex-col rounded-[28px] border border-line bg-composer shadow-composer transition-colors focus-within:border-line-strong dark:border-transparent dark:focus-within:border-line-strong"
+      aria-busy={uploading || undefined}
+      onSubmit={(event) => { event.preventDefault(); submit() }}
     >
-      <textarea
-        ref={area}
-        className="composer-input"
-        value={draft}
-        rows={1}
-        placeholder={connected
-          ? (modelValue === null ? 'Chọn provider trong Settings trước…' : 'Message…  (Enter gửi · Shift+Enter xuống dòng)')
-          : 'connecting…'}
-        disabled={!connected || modelValue === null}
-        onChange={(event) => {
-          onDraft(event.target.value)
-          resize(event.currentTarget)
-        }}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' && !event.shiftKey) {
-            event.preventDefault()
-            submit()
-          }
-        }}
+      {uploading ? (
+        <p className="sr-only" role="status" aria-live="polite">
+          Waiting for {uploads.pending} attachment{uploads.pending === 1 ? '' : 's'} to finish
+        </p>
+      ) : null}
+      <ComposerNotices notices={notices} />
+      {open && request !== null ? (
+        <CompletionPopover
+          id={listId}
+          kind={request.kind}
+          items={items}
+          activeIndex={active}
+          loading={searching}
+          note={items.length > 0 ? null : searching ? 'Searching…' : request.kind === 'file' ? 'No matching file' : 'No matching skill'}
+          onPick={pick}
+          onActivate={setActive}
+        />
+      ) : null}
+      <AttachmentTray
+        attachments={draft.attachments}
+        workspaceId={workspaceId}
+        onRemove={removeFromTray}
+        onInsertText={insertBack}
+        canInsertText={(attachment) => recoveries.has(attachment.id)}
       />
-      <div className="composer-actions">
-        <span className="composer-spacer" />
-        {modelValue !== null && modelOptions.length > 0 ? (
-          <Select
-            value={modelValue}
-            options={modelOptions}
-            onChange={onModel}
-            label="Chọn provider và model"
-            triggerClassName="composer-model"
+      <RichInput
+        ref={editor}
+        draft={draft}
+        autoFocus={autoFocus}
+        placeholder={placeholder}
+        disabled={missingModel}
+        ariaLabel="Message"
+        expanded={open}
+        {...(open ? { listId } : {})}
+        {...(open && items.length > 0 ? { activeOptionId: `${listId}-option-${active}` } : {})}
+        {...(describedBy !== '' ? { ariaDescribedBy: describedBy } : {})}
+        onChange={(next) => { emit(next); syncCompletion() }}
+        onKeyDown={handleKeyDown}
+        onFiles={uploadFiles}
+        onTextAttachment={uploadPastedText}
+        onConvertibleText={(text, bookmark) => setConversion({ text, bookmark })}
+        // An oversized paste stays inline; the draft itself raises the notice.
+        onPasteError={() => {}}
+      />
+      <div className="flex items-center gap-1 px-2.5 pb-2.5">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5">
+          {onUploadFiles !== undefined || onSearchFiles !== undefined ? (
+            <AttachMenu
+              uploading={uploading}
+              disabled={missingModel}
+              onUpload={onUploadFiles !== undefined ? () => fileInput.current?.click() : undefined}
+              onMention={onSearchFiles !== undefined ? mentionFile : undefined}
+            />
+          ) : null}
+          {modeValue !== null && modes.length > 0 ? <ModeMenu modes={modes} value={modeValue} onChange={onMode} /> : null}
+          {controlsUnavailable && controlsUnavailableMessage !== undefined ? (
+            <ControlsStatus message={controlsUnavailableMessage} onRetry={onRetryControls} />
+          ) : null}
+          {modelId !== null && onThinking !== undefined ? (
+            <ThinkingMenu
+              model={modelId}
+              value={thinkingValue}
+              disabled={thinkingDisabled}
+              {...(thinkingMenuLabel !== undefined ? { menuLabel: thinkingMenuLabel } : {})}
+              {...(modelSettings?.[modelId] !== undefined ? { settings: modelSettings[modelId] } : {})}
+              onSelect={onThinking}
+            />
+          ) : null}
+          <PolicyPopover
+            {...(policy !== undefined ? { policy } : {})}
+            workspaceId={workspaceId}
+            {...(onPolicySaved !== undefined ? { onSaved: onPolicySaved } : {})}
           />
-        ) : null}
-        {running ? (
-          <Button type="button" variant="outline-danger" size="sm" title="Dừng agent" onClick={onStop}>
-            <Icon name="square" size={11} />
-            Stop
-          </Button>
-        ) : (
-          <IconButton
-            label="Gửi (Enter)"
-            variant="solid"
-            size="md"
-            type="submit"
-            disabled={draft.trim() === '' || !connected || modelValue === null}
-          >
-            <Icon name="send" size={15} />
-          </IconButton>
-        )}
+        </div>
+        <div className="flex min-w-0 shrink-0 items-center gap-1.5">
+          {modelControl}
+          {onUploadFiles !== undefined ? (
+            <input
+              ref={fileInput}
+              type="file"
+              multiple
+              accept={UPLOAD_ACCEPT}
+              className="hidden"
+              aria-hidden="true"
+              tabIndex={-1}
+              onChange={(event) => {
+                uploadFiles(Array.from(event.target.files ?? []))
+                // Clear, so choosing the same file twice still fires a change.
+                event.target.value = ''
+              }}
+            />
+          ) : null}
+          {running ? (
+            <button
+              type="button"
+              aria-label="Stop work"
+              title="Stop"
+              onClick={onStop}
+              className="flex size-9 items-center justify-center rounded-full border border-line-strong text-fg hover:bg-hover"
+            >
+              <Icon name="square" size={16} />
+            </button>
+          ) : null}
+          {!running || !empty ? (
+            <button
+              type="submit"
+              aria-label={running ? 'Queue message' : 'Send'}
+              title={running ? 'Queue — runs after the current turn (Enter)' : 'Send (Enter) · Shift+Enter for a new line'}
+              disabled={!eligible || sending}
+              className="flex size-9 items-center justify-center rounded-full bg-primary text-primary-fg transition-opacity hover:opacity-85 disabled:opacity-30"
+            >
+              {sending ? <Spinner size={14} className="border-primary-fg/40 border-t-primary-fg" /> : <Icon name="arrowUp" size={18} strokeWidth={2.2} />}
+            </button>
+          ) : null}
+        </div>
       </div>
     </form>
   )

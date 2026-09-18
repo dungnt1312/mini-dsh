@@ -9,6 +9,7 @@ import {
   AgentsService,
   Kernel,
   LlmService,
+  messageText,
   SessionsService,
   type Agent,
   type LlmProvider,
@@ -168,7 +169,7 @@ describe('agent loop', () => {
     llm.register({
       name: 'spy',
       async *stream(request) {
-        for (const message of request.messages) seen.push(message.content)
+        for (const message of request.messages) seen.push(messageText(message.content))
         yield { type: 'delta', delta: 'fine' }
       },
     })
@@ -211,7 +212,7 @@ describe('agent loop', () => {
     llm.register({
       name: 'auditor',
       async *stream(request) {
-        projections.push(request.messages.map((message) => message.content))
+        projections.push(request.messages.map((message) => messageText(message.content)))
         yield { type: 'delta', delta: 'audited' }
       },
     })
@@ -236,7 +237,7 @@ describe('agent loop', () => {
     await agent.run()
 
     const boundary = session.events[session.events.length - 1]?.seq
-    const child = kernel.ctx.sessions.fork(session, boundary)
+    const child = await kernel.ctx.sessions.fork(session, boundary)
 
     const childAgent = kernel.ctx.agents.create(child)
     childAgent.send('from the fork')

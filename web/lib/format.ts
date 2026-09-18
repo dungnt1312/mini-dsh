@@ -2,7 +2,18 @@
 
 export function formatTime(ts?: number): string {
   if (ts === undefined) return ''
-  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  return new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+}
+
+/** Compact sidebar age: now, 5m, 3h, 2d, 1w — coarser buckets only. */
+export function formatAge(ts: number | undefined, now = Date.now()): string {
+  if (ts === undefined) return ''
+  const diff = Math.max(0, now - ts)
+  if (diff < 60_000) return 'now'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h`
+  if (diff < 604_800_000) return `${Math.floor(diff / 86_400_000)}d`
+  return `${Math.floor(diff / 604_800_000)}w`
 }
 
 export function formatDuration(start?: number, end?: number): string {
@@ -44,4 +55,13 @@ export function toolTarget(args: Record<string, unknown>): string {
     if (typeof value === 'string' && value !== '') return value
   }
   return ''
+}
+
+/** Budget fill tone by usage ratio: state color thresholds (≥80 warn, ≥95 bad). */
+export function budgetTone(usedTokens: number, availableTokens: number): 'ok' | 'warn' | 'bad' {
+  if (availableTokens <= 0) return 'bad'
+  const ratio = usedTokens / availableTokens
+  if (ratio >= 0.95) return 'bad'
+  if (ratio >= 0.8) return 'warn'
+  return 'ok'
 }

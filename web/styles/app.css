@@ -1,0 +1,152 @@
+@import "tailwindcss";
+
+/* Theme: `data-theme` on <html> is resolved from the System/Light/Dark preference
+   (see hooks/useTheme.ts and the pre-paint script in index.html). */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-sidebar: var(--sidebar);
+  --color-surface: var(--surface);
+  --color-muted: var(--muted);
+  --color-hover: var(--hover);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-faint: var(--fg-faint);
+  --color-primary: var(--primary);
+  --color-primary-fg: var(--primary-fg);
+  --color-link: var(--link);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-bad: var(--bad);
+  --color-bad-soft: var(--bad-soft);
+  --color-bad-fg: var(--bad-fg);
+  --color-scrim: var(--scrim);
+  --color-composer: var(--composer);
+  --shadow-pop: var(--shadow-pop);
+  --shadow-composer: var(--shadow-composer);
+  --font-sans: "Instrument Sans", ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+:root {
+  color-scheme: light;
+  --bg: #ffffff;
+  --sidebar: #f9f9f9;
+  --surface: #ffffff;
+  --muted: #f4f4f4;
+  --hover: #ececec;
+  --line: #e5e5e5;
+  --line-strong: #d0d0d0;
+  --fg: #0d0d0d;
+  --fg-muted: #565656;
+  --fg-faint: #666666;
+  --primary: #0d0d0d;
+  --primary-fg: #ffffff;
+  --link: #1d63d8;
+  --ok: #047857;
+  --ok-soft: #ecfdf5;
+  --warn: #a15c07;
+  --warn-soft: #fff7e6;
+  --bad: #c9252c;
+  --bad-soft: #fdf0f0;
+  --bad-fg: #ffffff;
+  --scrim: rgb(0 0 0 / 35%);
+  --composer: #ffffff;
+  --shadow-pop: 0 8px 28px rgb(0 0 0 / 12%), 0 0 0 1px rgb(0 0 0 / 5%);
+  --shadow-composer: 0 2px 12px rgb(0 0 0 / 6%);
+  --hl-keyword: #cf222e;
+  --hl-string: #0a3069;
+  --hl-number: #0550ae;
+  --hl-comment: #5c636b;
+  --hl-title: #6f42c1;
+  --hl-builtin: #953800;
+  --hl-attr: #0550ae;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #212121;
+  --sidebar: #181818;
+  --surface: #2b2b2b;
+  --muted: #303030;
+  --hover: #3a3a3a;
+  --line: #3a3a3a;
+  --line-strong: #525252;
+  --fg: #ececec;
+  --fg-muted: #b8b8b8;
+  --fg-faint: #a8a8a8;
+  --primary: #ececec;
+  --primary-fg: #0d0d0d;
+  --link: #7cb4ff;
+  --ok: #4ade9a;
+  --ok-soft: rgb(74 222 154 / 12%);
+  --warn: #f5b84a;
+  --warn-soft: rgb(245 184 74 / 12%);
+  --bad: #ff7b7b;
+  --bad-soft: rgb(255 123 123 / 12%);
+  --bad-fg: #1a1a1a;
+  --scrim: rgb(0 0 0 / 60%);
+  --composer: #303030;
+  --shadow-pop: 0 8px 28px rgb(0 0 0 / 45%), 0 0 0 1px rgb(255 255 255 / 6%);
+  --shadow-composer: none;
+  --hl-keyword: #c678dd;
+  --hl-string: #98c379;
+  --hl-number: #d19a66;
+  --hl-comment: #8b8b8b;
+  --hl-title: #61aeee;
+  --hl-builtin: #e6c07b;
+  --hl-attr: #d19a66;
+}
+
+@layer base {
+  html, body, #root { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  button, input, textarea, select { font: inherit; color: inherit; }
+  button:not(:disabled), summary { cursor: pointer; }
+  :focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+  ::placeholder { color: var(--fg-faint); }
+  code, pre, kbd { font-family: var(--font-mono); }
+  /* Touch targets: at least 44px on coarse pointers. Important so compact
+     desktop utilities (min-h-9 rows, min-w-0 chips) never shrink them on touch. */
+  @media (pointer: coarse) {
+    button, [role="button"], [role="tab"], [role="option"], [role="combobox"], summary { min-height: 44px !important; min-width: 44px !important; }
+  }
+  .icon { display: inline-block; flex-shrink: 0; }
+}
+
+/* Component-level rules that utilities cannot express. */
+@layer components {
+  /* The composer input is a contenteditable, so its placeholder is drawn
+     rather than provided by the platform. `:empty` alone is not enough: an
+     editor the browser has seeded with a <br> still reads as empty to a user.
+     Floated with no size so it takes no inline space: the caret stays at the
+     start of the line instead of after the placeholder text. */
+  .composer-input:empty::before,
+  .composer-input:has(> br:only-child)::before {
+    content: attr(data-placeholder);
+    float: left;
+    width: 0;
+    height: 0;
+    white-space: nowrap;
+    color: var(--fg-faint);
+    pointer-events: none;
+  }
+  .filter-input {
+    min-width: 0; flex: 1; height: 2.25rem; padding: 0 0.75rem; border: 1px solid var(--line);
+    border-radius: 10px; background: var(--surface); outline: none;
+  }
+  .filter-input:focus { border-color: var(--line-strong); }
+}

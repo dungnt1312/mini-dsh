@@ -13,20 +13,51 @@ export type SessionId = Branded<string, 'SessionId'>
 export type TurnId = Branded<string, 'TurnId'>
 /** Identifies one model request inside a turn. */
 export type StepId = Branded<string, 'StepId'>
+/** Identifies one durably accepted user input, stable across restarts. */
+export type InputId = Branded<string, 'InputId'>
+/** Identifies one workspace environment; stable across renames. */
+export type WorkspaceId = Branded<string, 'WorkspaceId'>
+/** Identifies one project bound to a workspace. */
+export type ProjectId = Branded<string, 'ProjectId'>
 
-let nextId = 0
+/**
+ * Mint an id that is unique across process restarts, not just within one
+ * process: durable logs reference these ids, so a fresh process must never
+ * mint one an old log already carries. Time-ordered prefix keeps ids roughly
+ * sortable; the random tail disambiguates same-millisecond mints.
+ */
+function durableId(prefix: string): string {
+  const time = Date.now().toString(36)
+  const rand = Math.random().toString(36).slice(2, 8).padEnd(6, '0')
+  return `${prefix}-${time}${rand}`
+}
 
-/** Mint a fresh session id; unique within this process. */
+/** Mint a fresh session id; unique across restarts. */
 export function newSessionId(): SessionId {
-  return `session-${++nextId}` as SessionId
+  return durableId('session') as SessionId
 }
 
-/** Mint a fresh turn id; unique within this process. */
+/** Mint a fresh turn id; unique across restarts. */
 export function newTurnId(): TurnId {
-  return `turn-${++nextId}` as TurnId
+  return durableId('turn') as TurnId
 }
 
-/** Mint a fresh step id; unique within this process. */
+/** Mint a fresh step id; unique across restarts. */
 export function newStepId(): StepId {
-  return `step-${++nextId}` as StepId
+  return durableId('step') as StepId
+}
+
+/** Mint a fresh pending-input id; unique across restarts. */
+export function newInputId(): InputId {
+  return durableId('input') as InputId
+}
+
+/** Mint a fresh workspace id; unique across restarts. */
+export function newWorkspaceId(): WorkspaceId {
+  return durableId('ws') as WorkspaceId
+}
+
+/** Mint a fresh project id; unique across restarts. */
+export function newProjectId(): ProjectId {
+  return durableId('project') as ProjectId
 }

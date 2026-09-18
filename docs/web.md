@@ -21,6 +21,30 @@ and answers go back over one POST. This is the "render from `session/event`"
 principle: the log is the single source of truth, and any client can rebuild the
 UI from it at any time.
 
+## Workspace interaction
+
+- An empty workspace offers **New conversation**. Until a session is selected, its connection state is idle, not connecting.
+- Project binding is fixed when creating a session. Project registration is in Workspace settings, reached through New Conversation → Manage projects. Unbound sessions explain that file/shell work needs a project-bound new session.
+- Modes load with the initial workspace metadata and on workspace switches. Navigation generations and request tokens reject obsolete initial loads, mutation completions, lists and model/mode refreshes, including workspace A → B → A transitions.
+- Drafts, pending-send flags and send errors are keyed by workspace/session in memory. A submitted draft clears only after the server accepts the POST and only if its edit revision is unchanged. Failures remain inline with details and provider guidance; automatic resend is deliberately avoided because a lost response does not prove the request was rejected.
+- Approval questions are deduplicated and reconciled against durable request, decision, tool-result and turn-end events on replay, and removed after a successful answer.
+- Model menus offer search for larger lists, provider grouping, keyboard navigation and full wrapping option labels. Popups portal into document.body with viewport-clamped positioning and scroll/resize updates; Escape belongs to the popup before a drawer or modal.
+- Model and thinking level are **per-conversation controls**, backed by the session's durable preference (`GET/PUT …/:wid/sessions/:id/model`). The client caches them per workspace+session, serializes partial writes per conversation, and never substitutes defaults while a conversation's controls are loading or failed: the composer blocks sending with a status hint and offers a Retry refetch on failure. With no conversation selected the same pickers edit the **global default** (`/api/model-defaults`) that future sessions snapshot.
+- The sidebar docks at 768px and above (its collapsed state is remembered); below that it is a modal drawer with a scrim, Escape handling, focus containment and focus restoration. Settings tabs use arrow/Home/End navigation, roving tabindex and linked tabpanels. Provider edits survive tab changes; close/provider changes request discard confirmation, including pending model text.
+- Expanded tool rows show all arguments and output; transcript identities are explicit (right-aligned user bubbles, plain assistant prose).
+
+### Production task workflows
+
+- **New conversation** and Ctrl/Cmd+N clear the canvas without creating a session. The composer's scope chip picks an existing project, a newly chosen folder, or **Chat only**; the session is created by the first sent message, and a failed first send keeps the draft.
+- The sidebar footer owns workspace selection; the sidebar also groups project history and search. History filters only affect navigation, never a session's immutable execution project.
+- The Context sheet starts closed at every viewport size. Context manifests load only while it is open. The main pane shows durable task lifecycle and separately explains event-stream connection loss. Queued/being-submitted inputs show preparing; open turns show running or waiting approval; terminal reasons remain visible. Partial assistant chunks stop appearing live at turn end.
+- Composer is a contenteditable with inline chips: `@` lists files from the conversation's project (bounded search that never follows symlinks or walks hidden/`node_modules` trees) and inserts a mention chip rendered where the caret was; `/` at the start inserts a skill invocation phrase as plain text; `+` attaches a project file (reference chip) or an uploaded file (stored blob chip), and pasted/dropped images become attachment chips. Neither completion nor attachment grants a permission, reads a file, or pins a skill by itself. Both menus stay shut without a source, are driven from the contenteditable (a combobox with `aria-activedescendant`), and Escape closes them until the query changes. Removing a chip removes exactly that segment; ArrowUp on an empty composer brings back the newest own message; unsent drafts (text plus chips) survive a reload.
+- Composer context shows the fixed project path or an explicit no-project warning with a new-conversation CTA. “Chat-only” describes absence of a project, not an automatic switch to Chat mode or a promise to disable every tool. Model and thinking controls belong to the conversation and apply at its next request (the no-conversation pickers write the global default for future sessions); mode and policy remain workspace-scoped and apply at the next request/tool gate. Expand scope details to inspect the reported policy; mode and server restrictions still apply.
+- Approval review exposes tool name, target, full escaped JSON arguments, call ID and conversation project. **Allow once** and **Deny** answer only that pending request, not a remembered grant. Buttons lock while submitting; failed submissions remain visible. Durable decisions remain in transcript history, including expiry/invalidation. No UI option widens backend permission scope.
+- Failed, cancelled, limited and interrupted work offers inspection-first recovery guidance. Unknown recovered tool results are explicitly called out. There is no automatic retry or replay control: inspect actual effects, then submit new instructions limited to remaining work.
+- Settings distinguish global provider storage plus the global default model from workspace services. Agent definitions are workspace-scoped; child listings are current-session-scoped. Saving configuration is not evidence of connectivity; provider connection checks use saved configuration rather than unsaved drafts.
+- Automated workflow regressions cover scope validation, creation markup, durable lifecycle, stopped partial chunks, recovery guidance and approval arguments/decision rendering. Fixture-backed Chromium interactions, mobile layout, keyboard focus and all settings sections pass. Real-backend end-to-end workflows, native zoom and screen-reader acceptance remain separate gates.
+
 ## Starting it
 
 ```sh
@@ -45,25 +69,38 @@ one is configured.
 ## Provider configuration
 
 Providers are stored as plain JSON in `~/.mini-dsh/providers.json`
-(override with the `configFile` option). Each entry is one OpenAI
-chat-completions compatible endpoint:
+(override with the `configFile` option). The file is a **versioned
+envelope** holding the global provider list *and* the global default
+model selection:
 
 ```json
-[{
-  "id": "deepseek",
-  "name": "deepseek",
-  "baseUrl": "https://api.deepseek.com",
-  "apiKey": "sk-…",
-  "models": ["deepseek-chat", "deepseek-reasoner"],
-  "defaultModel": "deepseek-chat",
-  "enabled": true
-}]
+{
+  "version": 2,
+  "defaults": { "provider": "deepseek", "model": "deepseek-chat", "thinkingLevel": null },
+  "providers": [{
+    "id": "deepseek",
+    "name": "deepseek",
+    "baseUrl": "https://api.deepseek.com",
+    "apiKey": "sk-…",
+    "models": ["deepseek-chat", "deepseek-reasoner"],
+    "defaultModel": "deepseek-chat",
+    "enabled": true
+  }]
+}
 ```
+
+A legacy bare-array file migrates transparently on load (first enabled
+provider, preferring its `defaultModel`, then its first model); secrets and
+per-model settings are preserved. All provider/default mutations run through
+one serialized, persist-before-publish transaction.
 
 Every endpoint speaks the standard `POST {baseUrl}/chat/completions` SSE wire
 format (tool-call fragment accumulation, `reasoning_content` → thinking
 deltas); DeepSeek is simply one such endpoint. API keys are masked when
-serialized to the client (`keyMasked`), never returned raw.
+serialized to the client (`keyMasked`), never returned raw. When the active
+workspace carries a thinking level, the adapter adds the model's documented
+reasoning control fields to the request body (see the model catalog section
+below) — never a generic field for an undocumented model.
 
 `apiKey` may be empty: local gateways often authenticate by other means, so a
 keyless entry stays selectable and the `Authorization` header is omitted rather
@@ -72,7 +109,52 @@ the picker.
 
 ## REST API
 
-### `GET /api/meta`
+### Workspace-scoped routes (the primary surface)
+
+Since G2, sessions are born into a workspace, and every durable resource is
+addressed under `/api/workspaces/:wid/...`. Unknown workspaces fail closed
+(`404`); ownership is re-checked per request, so a foreign id never leaks
+data, and a workspace switch never changes a running turn's ownership or
+tool root. The families, at a glance:
+
+| Route family | Purpose |
+|---|---|
+| `GET/POST /api/workspaces`, `PATCH/DELETE /api/workspaces/:wid` | workspace list (with running/approval badges), create, rename, archive/restore, delete (empty only) |
+| `…/:wid/sessions`, `…/:wid/sessions/:id` (+ `/events` SSE, `/messages`, `/stop`) | session lifecycle, streaming, queued messages, stop |
+| `GET/PUT …/:wid/sessions/:id/model` | the conversation's own model controls (model, provider, thinking level) — see the per-conversation model section |
+| `…/:wid/sessions/:id/manifest`, `…/compact` | per-request context manifest; manual compaction into an immutable checkpoint |
+| `GET/PUT /api/model-defaults` | the **global** default provider/model/thinking level, shared by every workspace: the pair new sessions snapshot at creation, the draft pickers' target, and the live fallback for legacy conversations without a snapshot |
+| `PUT …/:wid/model`, `PUT …/:wid/thinking` | compatibility proxies: they verify workspace ownership, then mutate the **global** default above; new clients use `/api/model-defaults` |
+| `PUT …/:wid/policy`, `PUT …/:wid/mode`, `GET …/:wid/meta` | the workspace-local live controls (policy, mode) and workspace meta (global defaults, projects, providers) |
+| `…/:wid/projects` (+ `/projects/:pid`) | project binding: working folder, ownership, overlap rejection |
+| `GET …/:wid/projects/:pid/(files\|file\|search)` | read-only project browsing: one directory listing, one file body, and a bounded file-name search for composer mentions |
+| `POST …/:wid/attachments`, `GET …/:wid/attachments/:id` | composer attachments: upload (content-addressed by sha256, verified media type) and serve (immutable, workspace-scoped) |
+| `…/:wid/agents/:name` (GET resolve / DELETE), `POST …/:wid/agents/:name` | agent definitions; POST spawns a bounded child with a task packet |
+| `GET …/:wid/agents/children?root=…`, `GET/DELETE …/:wid/children/:childId` (+ `/cancel`) | child list / wait-result / cancel |
+| `…/:wid/mcp` (+ `/:server` GET/POST/DELETE, `/:server/(enable\|disable\|reconnect)`, `/mcp/import`) | MCP server lifecycle, stored config for editing, deletion, and imports with provenance |
+| `…/:wid/hooks`, `…/:wid/secrets(/:key)` | hook bindings; encrypted secret management (masked responses) |
+
+Approval answering stays transport-global at `POST /api/approvals/:id`
+(below) — approval ids are unguessable capabilities, not session-scoped
+sequences.
+
+### `GET /api/fs/dirs`
+
+Directory browser backing the client's folder picker. A browser never
+reveals a chosen folder's absolute path, so the web host lists **directory
+names only** (never file contents) and the picker navigates real folders:
+`?path=` (default: the server user's home) returns the canonical path, its
+parent (`null` at a filesystem root; on Windows a drive root also lists the
+machine's other drives as rows), and the case-insensitively sorted child
+directories — symlinked folders included, broken links skipped.
+Non-directories and unreadable paths answer `400`.
+
+The unscoped routes documented below (`/api/meta`, `/api/model`,
+`/api/folder`, `/api/sessions…`) are **legacy**: they exist only for
+memory-mode hosts without the workspace model and resolve through one
+implicit workspace. New clients use the workspace-scoped families.
+
+### Legacy: `GET /api/meta`
 
 Active provider/model pair, the default workspace, and the safely masked
 provider list for the Settings panel.
@@ -87,7 +169,7 @@ provider list for the Settings panel.
 }
 ```
 
-### `PUT /api/model`
+### Legacy: `PUT /api/model`
 
 Select the active provider and model. The model selector rides the
 **`agent/request` seam**: every step's request is stamped with the selected
@@ -100,7 +182,7 @@ model before the provider sees it.
 
 `400` when the name is not in the provider's offered models.
 
-### `PUT /api/folder`
+### Legacy: `PUT /api/folder`
 
 Re-scope the workspace the filesystem/bash tools are confined to. The tools are
 registered with **live accessors** (`() => state.folder`), so this just flips a
@@ -115,19 +197,23 @@ variable — no re-registration, and the change applies to the next tool call.
 
 ### `GET /api/providers`
 
-List configured providers with masked keys: `[{ id, name, baseUrl, enabled, keyMasked, models }]`.
+List configured providers with masked keys: `[{ id, name, baseUrl, enabled, keyMasked, models, defaultModel?, modelSettings? }]`.
+`modelSettings` carries per-model operator overrides —
+`{ [model]: { contextTokens?, vision?, thinkingLevel? } }` — as edited in the
+Settings provider panel (legacy `contextLimits` files migrate into it on load).
 
 ### `POST /api/providers`
 
-Create a provider. Body: `{ name, baseUrl, apiKey?, models? }`. `name` and
+Create a provider. Body: `{ name, baseUrl, apiKey?, models?, modelSettings? }`. `name` and
 `baseUrl` are required and `baseUrl` must be http(s); `apiKey` is optional
 because local gateways often accept no credential (the `Authorization` header
 is then omitted entirely rather than sent as an empty `Bearer`). `201 { id, … }`.
 
 ### `PATCH /api/providers/:id`
 
-Update fields: `{ name?, baseUrl?, apiKey?, enabled?, models?, defaultModel? }`.
-Omitting `apiKey` keeps the stored secret. `404` on an unknown id.
+Update fields: `{ name?, baseUrl?, apiKey?, enabled?, models?, defaultModel?, modelSettings? }`.
+Omitting `apiKey` keeps the stored secret. A present `modelSettings` **replaces
+the whole map** (an empty object clears every override). `404` on an unknown id.
 
 ### `DELETE /api/providers/:id`
 
@@ -143,24 +229,120 @@ Fire one buffered completion ping. `200 { ok: true }` or `502 { ok: false, error
 `GET {baseUrl}/models` and store the result as the provider's model list
 (accepts OpenAI `{ data: [{ id }] }` and bare arrays). `200 { ok: true, models }`.
 
-### `GET /api/sessions`
+### Model catalog, context budget, and thinking level
+
+The shared catalog (`src/harness/llm/model-catalog.ts`, bundled by the web
+client too) holds verified capabilities for exact model IDs — context window,
+vision, reasoning controls — plus narrowly-scoped family patterns for dated
+variants and gateway namespaces (`openai/gpt-5.6`).
+
+**Context budget** resolves per request: an operator `contextTokens` override
+makes the budget *verified*; otherwise the catalog's documented window
+(exact ID → known family → **256k default**) applies as a labeled estimate.
+`GET …/:wid/meta` never guesses — unknown models fall back to the default.
+
+**Thinking level** is a global default control (`PUT /api/model-defaults` with
+`thinkingLevel`, or the compatibility `PUT …/:wid/thinking`, body
+`{ "level": "off|minimal|low|medium|high|xhigh|max" | null }`; `null`
+returns to the model's configured default; a per-model `thinkingLevel`
+default may be set in `modelSettings`). A conversation's own preference
+(below) overrides it, and an explicit `null` there deliberately falls
+through to the model's configured default — never back to the global
+override. The level rides the request as
+host-stamped metadata and the completions adapter translates it into the
+model's **documented** fields only (`reasoning_effort`, `thinking:
+{type}`, `enable_thinking`, extended-thinking `budget_tokens` for gateway
+Claude aliases) — unsupported pairs send nothing rather than risk a 400.
+
+### Per-conversation model: `GET/PUT …/:wid/sessions/:id/model`
+
+Each conversation owns its model/provider/thinking-level choice as durable
+`session/model` events in its log, so it survives restarts and replay.
+`POST …/:wid/sessions` **snapshots** the global default at creation;
+afterwards the conversation is independent — later `PUT /api/model-defaults`
+(or the compatibility `PUT …/:wid/model` / `PUT …/:wid/thinking`) changes
+apply only to future sessions (and to legacy conversations created before
+snapshots existed, which keep inheriting the live global defaults; the
+`source` field below distinguishes the two).
+
+`GET` answers the **effective** controls:
+
+```json
+{ "provider": "deepseek", "model": "deepseek-chat", "thinkingLevel": "high", "source": "session" }
+```
+
+`source` is `session` when the conversation owns a preference and
+`global` when it is inheriting. Unconfigured fields are `null`.
+
+`PUT` takes a partial body — `{ "provider"?, "model"?, "thinkingLevel"? }`,
+each `string | null`, at least one required:
+
+- An **omitted field keeps its previous value**; a `null` is an **explicit
+  session-owned value**, never a request to re-inherit global defaults.
+  `provider: null, model: null` deliberately blanks the pair and rejects
+  sends; a one-sided resulting pair is `400`. `thinkingLevel: null` returns
+  to the selected model's configured default (never the workspace thinking
+  override).
+- A resulting non-null provider/model pair is validated against the provider
+  catalog before anything is written; an explicit blank pair is accepted
+  without executable-pair validation. `400` covers an unknown/partial pair
+  or invalid thinking level, `404` an unknown session, and archived
+  workspaces refuse writes.
+- The event append is a durability barrier. If persistence fails, the
+  session is **fenced**: subsequent model reads and messages answer `503`
+  until a host restart reloads canonical history — uncommitted state is
+  never served or executed.
+
+### Global defaults: `GET/PUT /api/model-defaults`
+
+One selected provider/model/thinking level shared by **every** workspace —
+provider configuration is global, and so is the default selection. The pair
+is persisted in the versioned provider store (v2 envelope: `defaults` +
+`providers`) and survives restarts; there is no per-workspace model state to
+reconfigure after creating a workspace or rebooting the host.
+
+```json
+// GET
+{ "provider": "deepseek", "model": "deepseek-chat", "thinkingLevel": null }
+```
+
+`PUT` accepts the same shape (`null` provider/model is an explicit blank
+that blocks sends; a partial pair is `400`). Every write runs inside the
+serialized provider-store transaction and is published only after the disk
+commit succeeds, so a failed write leaves providers, defaults, and runtime
+registrations untouched. Provider create/patch/delete/sync repair the
+default in the same transaction: a deleted/disabled provider or a removed
+model falls back to the next enabled provider's `defaultModel`, then its
+first model; with no usable provider the default is explicitly blank.
+
+`GET …/:wid/meta` returns the same global pair to every workspace, so the
+client's no-conversation pickers target `/api/model-defaults` directly.
+
+Resolution happens per model request through `agent/request`: a change lands
+on the **next request of a running turn** without interrupting the in-flight
+stream, and the context budget is recomputed for the new model on that same
+request. Each `assistant/message` records the pair that actually served it
+in its `controls`, so the log answers "what did this reply come from".
+
+
+### Legacy: `GET /api/sessions`
 
 List sessions: `[{ id, title, eventCount, folder }]`. `folder` is the
 session-scoped workspace or `null` when the session inherits the server default.
 
-### `POST /api/sessions`
+### Legacy: `POST /api/sessions`
 
 Create a session and bind an agent to it. Optional `{ folder }` sets a
 session-scoped workspace (must exist and be a directory). `201 { id, folder? }`.
 
-### `PUT /api/sessions/:id/folder`
+### Legacy: `PUT /api/sessions/:id/folder`
 
 Set this session's workspace; `{ path: "" }` resets it to inherit the server
 default. Tools resolve their root through the **ambient agent scope**, so two
 sessions can work in different folders concurrently without cross-talk.
 `200 { folder }` / `{ folder: null }` on reset.
 
-### `POST /api/sessions/:id/messages`
+### Legacy: `POST /api/sessions/:id/messages`
 
 Queue a user message and fire the agent loop.
 
@@ -173,7 +355,7 @@ Returns `202 { queued: true }` immediately — the reply (and any failure, which
 closes the turn durably) reaches the client through the SSE stream. `400` on an
 empty content, `404` on an unknown session.
 
-### `DELETE /api/sessions/:id`
+### Legacy: `DELETE /api/sessions/:id`
 
 Delete a session: it leaves the listing, its SSE streams end themselves with an
 `error` envelope (`session deleted`), and later requests answer `404`.
@@ -183,7 +365,7 @@ Delete a session: it leaves the listing, its SSE streams end themselves with an
 { "deleted": true }
 ```
 
-### `PATCH /api/sessions/:id`
+### Legacy: `PATCH /api/sessions/:id`
 
 Rename a session with a custom title; an empty title resets to the derived one
 (truncated at 80 chars, trimmed).
@@ -200,7 +382,7 @@ Rename a session with a custom title; an empty title resets to the derived one
 
 `400` on a non-string title, `404` on an unknown session.
 
-### `POST /api/sessions/:id/stop`
+### Legacy: `POST /api/sessions/:id/stop`
 
 Ask the in-flight turn to stop. The agent's chunk loop notices the abort between
 stream events and closes the turn durably with `turn/end: { reason: "stopped" }`
@@ -222,7 +404,7 @@ Answer a pending approval question.
 
 ## The SSE stream
 
-### `GET /api/sessions/:id/events`
+### `GET /api/sessions/:id/events` (legacy scope; workspace hosts use `…/:wid/sessions/:id/events`)
 
 Streams `text/event-stream` frames. Each frame is a `data:` line holding one
 `WebEnvelope`:
@@ -254,16 +436,16 @@ reads the **ambient agent scope** (`agentScope`, an `AsyncLocalStorage`) that
 askUser: (call) => new Promise<boolean>((resolve) => {
   const scope = agentScope.getStore()
   if (scope === undefined) { resolve(false); return }   // fail closed
-  const approvalId = `approval-${++approvalCounter}`
-  pending.set(approvalId, { sessionId: scope.sessionId, resolve })
+  const approvalId = `approval-${randomUUID()}`          // unguessable capability
+  pending.set(approvalId, { sessionId: scope.sessionId, call, resolve })
   kernel.ctx.emit('web/approval', { sessionId: scope.sessionId, approvalId, call })
 })
 ```
 
 Each session's SSE stream filters `web/approval` by its own id, so **concurrent
 sessions share one policy listener without cross-talk**. The default policy
-allows `read`/`glob`/`grep` and asks on `write`/`edit`/`bash`; `--yolo` makes the
-default mode `allow`.
+allows `Read`/`Glob`/`Grep` and asks on `Write`/`Edit`/`Bash` (canonical
+identities); `--yolo` makes the default mode `allow`.
 
 ## Static serving
 
@@ -271,6 +453,20 @@ default mode `allow`.
 `web-dist/`). Unknown non-API paths fall back to `index.html` so client-side
 state stands up; if the client is not built, a `404` suggests
 `npm run build:web`. Path traversal outside `staticDir` is rejected.
+`index.html`, the shell fallback, and `sw.js` are sent with `cache-control: no-cache`.
+
+### Installable client (PWA)
+
+The built client is an installable PWA: `web/public/manifest.webmanifest` plus
+icons in `web/public/icons/`. `web/pwa/pwa-plugin.ts` emits `web-dist/sw.js` at
+build time from `web/pwa/service-worker.js`, stamped with a content hash and the
+shell file list, so each rebuild replaces the worker and drops old caches. The
+worker never handles `/api/` (REST and SSE stay live); navigations are
+network-first with the cached shell as offline fallback; `/assets/` and
+`/icons/` are cache-first. Registration runs only in production builds
+(`web/pwa/register-service-worker.ts`). Install from the browser address bar
+on `http://127.0.0.1:<port>` — localhost counts as a secure context; any other
+host needs HTTPS.
 
 ## Shutdown
 
@@ -283,36 +479,68 @@ graceful close and a second to an immediate exit.
 
 | Path | Purpose |
 |---|---|
-| `main.tsx` | entry; fonts, toast host, styles |
-| `App.tsx` | workspace shell wiring; owns *no* model state |
-| `components/layout` | TopBar (brand, folder popover, provider chip, toggles), Sidebar, EnvPanel |
-| `components/ui` | primitives: Button, IconButton, Chip, CodeChip, Badge, Panel, Kbd, TextInput, Select — token-driven, reused by every zone |
-| `components/session` | per-session rows (two-line titles, hover rename/delete actions) |
-| `components/chat` | Transcript parts (tool breadcrumb rows, approval cards), thinking panel |
-| `components/composer` | control-center composer with inline model picker |
-| `components/common` | extended line-icon set, copy button, modal confirm, spinner, toasts |
-| `hooks/` | SSE subscription, auto-scroll, hotkeys |
-| `lib/api.ts` | REST calls + `EventSource` subscription |
-| `lib/config.ts` | `SHOW_SLOTS` — dashed future-view placeholders (default off) |
-| `lib/types.ts` | client-side mirror of the wire shapes |
-| `lib/project.ts` | `projectItems()` + `isTurnRunning()` — the UI's own `deriveMessages()` |
-| `lib/format.ts` | time / duration / argument summaries / `pathBasename` / `toolTarget` |
-| `Markdown.tsx` | Markdown rendering + hljs syntax highlighting |
+| `main.tsx` | entry, bundled mono font, providers, and the three production CSS imports |
+| `App.tsx` | routing, server-backed state, send/stop/approval logic, and layout composition |
+| `components/layout` | `Sidebar`, `WorkspacePopover`, `ChatHeader` (with the folder `ScopeControl`), `ContextSheet`, `ContextPanel` |
+| `components/session` | project-grouped and time-bucketed conversation list |
+| `components/chat` | `Transcript`, message/tool/delegation rows, thinking, work status, approvals |
+| `components/composer` | `Composer` with attach/mode/thinking/permission chips, `ModelMenu` beside Send, `@`/`/` completion popover, attachment tray, folder picker |
+| `components/artifacts` | pure existing-event artifact projection and read-only Artifacts panel |
+| `components/settings` | Settings dialog and provider editor; one module per workspace panel (Projects, Skills, Memory, Agents, MCP, Hooks, Secrets) built on the shared `settings-kit` |
+| `components/ui` | Tailwind/CVA primitives with Radix interaction mechanics |
+| `components/common` | icons, copy, confirmation, error, spinner, and toast surfaces |
+| `hooks/` | SSE subscription, theme, media queries, transcript follow, focus restore, preferences |
+| `lib/api.ts` | REST calls plus `EventSource` subscription |
+| `lib/types.ts` | client mirror of existing wire shapes |
+| `lib/project.ts` | durable `projectItems()` and turn-state derivation |
+| `styles/app.css` | light/dark tokens, Tailwind theme mapping, base rules, management-panel hooks |
+| `styles/markdown.css` | Markdown and highlight.js selectors |
+| `styles/motion.css` | keyframes, scrollbar styling, and reduced-motion behavior |
 
-`projectItems(events)` projects render items from the session event stream:
-streaming chunks accumulate into the in-flight assistant item (thinking chunks
-fill a collapsible thinking panel), `assistant/message` finalizes it, each
-`tool/result` answers the call its `callId` names (recording a duration), and
-non-`completed` turn ends surface as status lines. `isTurnRunning(events)`
-derives the activity state from the log — the Stop button and streaming spinner
-read it. The app auto-creates a session on load, offers suggested first
-messages, a model picker inside the composer (mirrored in the Environment
-panel), a workspace-folder popover in the top bar, session
-rename/delete/search, a stop button while a turn runs, and allow/deny cards
-for pending approvals. Ctrl/Cmd+N creates a session; Ctrl/Cmd+K opens the
-sidebar and focuses its search field. Below 1100px the sidebar becomes an
-overlay drawer; below 1280px the Environment panel hides and reopens as an
-overlay from its top-bar toggle.
+`projectItems(events)` remains the transcript contract and is computed once per
+event-array revision. `projectArtifacts(events)` is a separate pure projection over
+existing tool calls/results. It shows only exact path/resource references, command
+records, and recorded tool output; it never fetches file details or claims file
+existence, content, diffs, MIME type, repository ownership, or rerun capability.
+
+The layout follows a ChatGPT-style shell: a resizable 280px-default sidebar
+(232–420px) docked at 768px and above (a modal drawer below), one centered chat
+column whose transcript scroller follows the tail only while the reader is at the
+bottom, a composer section in normal flow below it, and a read-only Workbench with
+Files, Context and Artifacts. The Workbench docks at 1280px and becomes a modal
+sheet below that. Sidebar/workbench collapse, dock widths and the selected fixed
+Workbench view are browser-local preferences under `mini-dsh.workbench.v1`;
+appearance (System/Light/Dark) is stored under
+`mini-dsh.theme`; unsent composer drafts are kept per workspace+session under
+`mini-dsh.drafts.v1` (text only — never `sending` or an error, which describe a
+request that no longer exists). None of these are server settings. See
+[design guidelines](design-guidelines.md) and [design system](design-system.md).
+
+Context manifest loading is lazy and uses the existing endpoint only while the
+sheet is open, Context is selected, a valid conversation exists, and the turn is
+settled. Artifacts causes no request. Reconnect presentation remains separate from
+durable running truth: drafts stay editable, Stop remains available, and the client
+does not automatically resend or replay.
+
+Settings remains a client for the existing provider/workspace APIs. Desktop uses
+grouped tabs and narrow mobile uses a section selector; Providers, Projects,
+Skills, Memory, Agents, MCP, Hooks, and Secrets remain reachable. Dirty provider
+confirmation, blank-key omission, destructive confirmations, whole-document Hooks
+validation/save, and explicit Skills/Memory conflict choices are retained.
+
+Required client verification runs at 320, 375, 768, 1024, 1440, and 1920px in both
+themes:
+
+```sh
+npm test
+npm run typecheck
+npm run build:web
+npm run test:browser
+```
+
+Browser suites (`tests/browser/chat-shell.e2e.ts`, `tests/browser/chat-workflows.e2e.ts`)
+use intercepted fixtures and never mutate real settings. Screenshot evidence is
+written to `artifacts/product-ui/chat/`; it is not an approved visual baseline.
 
 ## Reading further
 
@@ -320,3 +548,14 @@ overlay from its top-bar toggle.
   switching, session lifecycle, rename and delete, stopping a running turn,
   thinking-chunk streaming, snapshot+live streaming, the approval round-trip,
   denial surfacing, duplicate-answer 404s, static fallback).
+- Per-conversation model tests: `tests/web/server-session-model.spec.ts`
+  (creation snapshot, session isolation, legacy fallback, restart replay,
+  mid-turn switch, durability fencing); durable vocabulary:
+  `tests/harness/session-model.spec.ts`.
+
+
+## Listing and agent catalog notes
+
+Workspace session listings may include optional `createdAt`/`updatedAt` from existing event-backed summaries. Empty conversations omit these fields; clients must not invent dates. No existing request or approval wire format changed.
+
+Agent catalog: `GET /api/workspaces/:id/agents` returns bundled and workspace definitions using the existing definition service. Imported definitions can be selected, inspected, spawned and explicitly deleted. Bundled-role deletion remains prohibited. Management panels reset on workspace/root changes and invalidate stale async state feedback. New providers may omit API keys for keyless endpoints.

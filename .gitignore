@@ -7,3 +7,14 @@ web-dist/
 
 # brainstorming visual companion mockups
 .superpowers/
+
+# generated test/browser evidence (regenerable; not approved visual baselines)
+/artifacts/
+/web/styles/artifacts/
+
+# local tool state
+.zcode/
+
+# editor/agent backup leftovers (superseded by the .tsx/.css originals)
+*.tsxn
+*.cssn

@@ -4,7 +4,7 @@
  * session through the ambient agent scope.
  */
 import { promises as fs } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
@@ -19,6 +19,7 @@ import { FakeOpenAiServer, FakeScriptedLlm } from './fake-llm.ts'
 let root = ''
 let server: WebServer
 let baseUrl = ''
+let startCount = 0
 
 beforeAll(async () => {
   root = await fs.mkdtemp(path.join(tmpdir(), 'mini-dsh-web-'))
@@ -35,7 +36,7 @@ async function start(
   provider?: LlmProvider,
   extra?: Partial<Parameters<typeof createWebServer>[0]>,
 ): Promise<void> {
-  server = await createWebServer({ root, providers: [provider ?? new FakeScriptedLlm(steps)], ...extra })
+  server = await createWebServer({ root, providers: [provider ?? new FakeScriptedLlm(steps)], configFile: path.join(root, `providers-${startCount++}.json`), ...extra })
   baseUrl = server.url
 }
 
@@ -204,7 +205,8 @@ describe('web server', () => {
 
     const listed = (await (await fetch(`${baseUrl}/api/sessions`)).json()) as Array<{ id: string; title: string }>
     expect(listed.map((s) => s.id)).toContain(id)
-    expect(listed.find((s) => s.id === id)?.title).toBe('new session')
+    expect(listed.find((s) => s.id === id)?.title).toBe('New conversation')
+
 
     await post(`/api/sessions/${id}/messages`, { content: 'first question' })
     await new Promise((resolve) => setTimeout(resolve, 100))
@@ -228,6 +230,7 @@ describe('web server', () => {
       .filter((e) => e.kind === 'session' && e.event.type !== 'assistant/chunk')
       .map((e) => (e.kind === 'session' ? e.event.type : ''))
     expect(kinds).toEqual([
+      'input/queued',
       'turn/start',
       'step/start',
       'user/message',
@@ -250,7 +253,7 @@ describe('web server', () => {
     void post(`/api/sessions/${id}/messages`, { content: 'write the file' })
     const approvalFrame = await sse.until((envelope) => envelope.kind === 'approval')
     const question = approvalFrame.find((e) => e.kind === 'approval')
-    expect(question?.kind === 'approval' && question.call.name).toBe('write')
+    expect(question?.kind === 'approval' && question.call.name).toBe('Write')
 
     const allow = await post(`/api/approvals/${question?.kind === 'approval' ? question.approvalId : ''}`, { allow: true })
     expect(allow.status).toBe(200)
@@ -280,7 +283,7 @@ describe('web server', () => {
     const toolResult = rest.find((e) => e.kind === 'session' && e.event.type === 'tool/result')
     expect(toolResult?.kind === 'session' && toolResult.event.type === 'tool/result' && toolResult.event.ok).toBe(false)
     expect(toolResult?.kind === 'session' && toolResult.event.type === 'tool/result' && toolResult.event.output).toMatch(
-      /the user denied 'write'/,
+      /the user denied 'Write'/,
     )
     await expect(fs.readFile(path.join(root, 'blocked.txt'), 'utf8')).rejects.toThrow(/ENOENT/)
   })
@@ -297,6 +300,28 @@ describe('web server', () => {
 
     expect((await post(`/api/approvals/${approvalId}`, { allow: true })).status).toBe(200)
     expect((await post(`/api/approvals/${approvalId}`, { allow: true })).status).toBe(404)
+  })
+
+  it('the streamed approval id is the durable log id: the client can answer by it', async () => {
+    await start([{ toolCalls: [{ name: 'write', args: { path: 'one-id.txt', content: 'x' } }] }, 'done'])
+    const { id } = (await (await post('/api/sessions')).json()) as { id: string }
+
+    const sse = new SseReader(await fetch(`${baseUrl}/api/sessions/${id}/events`))
+    void post(`/api/sessions/${id}/messages`, { content: 'write the file' })
+    // The approval/request session frame precedes the approval frame, so one
+    // until() captures both halves of the id contract.
+    const envelopes = await sse.until((envelope) => envelope.kind === 'approval')
+    const frame = envelopes.find((e) => e.kind === 'approval')
+    const request = envelopes.find((e) => e.kind === 'session' && e.event.type === 'approval/request')
+    // Regression: the bridge used to mint its own id, so every approval card
+    // rebuilt from the log posted a 404.
+    const logId = frame?.kind === 'approval'
+      ? (request?.kind === 'session' && request.event.type === 'approval/request' ? request.event.approvalId : '')
+      : ''
+    expect(frame?.kind === 'approval').toBe(true)
+    expect(logId).not.toBe('')
+    expect(frame?.kind === 'approval' && frame.approvalId === logId).toBe(true)
+    expect((await post(`/api/approvals/${logId}`, { allow: true })).status).toBe(200)
   })
 
   it('a fresh SSE connection replays the full log as a snapshot', async () => {
@@ -358,7 +383,7 @@ describe('web server', () => {
     expect(error?.kind === 'error' && error.message).toBe('session deleted')
   })
 
-  it('stopping a running turn closes it durably with reason stopped', async () => {
+  it('stopping a running turn closes it durably with reason cancelled', async () => {
     await start(['unused'], slowProvider())
     const { id } = (await (await post('/api/sessions')).json()) as { id: string }
 
@@ -371,7 +396,7 @@ describe('web server', () => {
 
     const rest = await sse.until((envelope) => envelope.kind === 'session' && envelope.event.type === 'turn/end')
     const end = rest.find((e) => e.kind === 'session' && e.event.type === 'turn/end')
-    expect(end?.kind === 'session' && end.event.type === 'turn/end' && end.event.reason).toBe('stopped')
+    expect(end?.kind === 'session' && end.event.type === 'turn/end' && end.event.reason).toBe('cancelled')
   })
 
   it('thinking deltas stream as marked chunks and never reach model history', async () => {
@@ -452,8 +477,8 @@ describe('provider registry', () => {
       expect(synced.status).toBe(200)
       const syncBody = (await synced.json()) as { ok: boolean; models: string[] }
       expect(syncBody.models).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra'])
-      const persisted = JSON.parse(await fs.readFile(config, 'utf8')) as { models: string[] }[]
-      expect(persisted[0]?.models).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra'])
+      const persisted = JSON.parse(await fs.readFile(config, 'utf8')) as { providers?: { models: string[] }[] }
+      expect(persisted.providers?.[0]?.models).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra'])
 
       // Test connection issues a buffered completion ping against the fake.
       const tested = await fetch(`${base}/api/providers/clip-proxy-one/test`, { method: 'POST' })
@@ -703,8 +728,8 @@ describe('provider registry', () => {
       const list = (await (await fetch(`${s.url}/api/providers`)).json()) as { id: string; keyMasked: string }[]
       expect(list[0]?.id).toBe('deepseek')
       expect(list[0]?.keyMasked).toBe('••••-key')
-      const persisted = JSON.parse(await fs.readFile(config, 'utf8')) as { id: string }[]
-      expect(persisted[0]?.id).toBe('deepseek')
+      const persisted = JSON.parse(await fs.readFile(config, 'utf8')) as { providers?: { id: string }[] }
+      expect(persisted.providers?.[0]?.id).toBe('deepseek')
     } finally {
       if (previous === undefined) delete process.env['DEEPSEEK_API_KEY']
       else process.env['DEEPSEEK_API_KEY'] = previous
@@ -773,5 +798,77 @@ describe('per-session folders', () => {
       body: JSON.stringify({ path: '' }),
     })
     expect(reset.status).toBe(200)
+  })
+})
+
+describe('folder picker directory browsing', () => {
+  it('lists only child directories, sorted, with the parent; files and missing paths fail closed', async () => {
+    await start([])
+    const outer = await fs.mkdtemp(path.join(tmpdir(), 'mini-dsh-dirs-'))
+    try {
+      await fs.mkdir(path.join(outer, 'beta'))
+      await fs.mkdir(path.join(outer, 'Alpha'))
+      await fs.writeFile(path.join(outer, 'file.txt'), 'x')
+      await fs.mkdir(path.join(outer, 'Alpha', 'inner'))
+
+      const res = await fetch(`${baseUrl}/api/fs/dirs?path=${encodeURIComponent(outer)}`)
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { path: string; parent: string | null; dirs: { name: string; path: string }[] }
+      expect(body.path).toBe(outer)
+      expect(body.parent).toBe(path.dirname(outer))
+      expect(body.dirs.map((dir) => dir.name)).toEqual(['Alpha', 'beta'])
+
+      const inner = await fetch(`${baseUrl}/api/fs/dirs?path=${encodeURIComponent(body.dirs[0]!.path)}`)
+      expect(inner.status).toBe(200)
+      const innerBody = (await inner.json()) as { dirs: { name: string }[] }
+      expect(innerBody.dirs.map((dir) => dir.name)).toEqual(['inner'])
+
+      const file = await fetch(`${baseUrl}/api/fs/dirs?path=${encodeURIComponent(path.join(outer, 'file.txt'))}`)
+      expect(file.status).toBe(400)
+      const missing = await fetch(`${baseUrl}/api/fs/dirs?path=${encodeURIComponent(path.join(outer, 'nope'))}`)
+      expect(missing.status).toBe(400)
+    } finally {
+      await fs.rm(outer, { recursive: true, force: true })
+    }
+  })
+
+  it('defaults to the home directory when no path is given', async () => {
+    await start([])
+    const res = await fetch(`${baseUrl}/api/fs/dirs`)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { path: string; parent: string | null; dirs: unknown[] }
+    expect(body.path).toBe(path.resolve(homedir()))
+    expect(Array.isArray(body.dirs)).toBe(true)
+  })
+})
+
+describe('static PWA files', () => {
+  it('serves the manifest, icons, and a revalidating service worker and shell', async () => {
+    const staticDir = await fs.mkdtemp(path.join(tmpdir(), 'mini-dsh-static-'))
+    try {
+      await fs.mkdir(path.join(staticDir, 'icons'))
+      await fs.writeFile(path.join(staticDir, 'index.html'), '<!doctype html>')
+      await fs.writeFile(path.join(staticDir, 'sw.js'), 'self.addEventListener("fetch", () => {})')
+      await fs.writeFile(path.join(staticDir, 'manifest.webmanifest'), '{"name":"mini-dsh"}')
+      await fs.writeFile(path.join(staticDir, 'icons', 'icon-192.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+      await start([], undefined, { staticDir })
+
+      const manifest = await fetch(`${baseUrl}/manifest.webmanifest`)
+      expect(manifest.headers.get('content-type')).toContain('application/manifest+json')
+      expect(await manifest.json()).toEqual({ name: 'mini-dsh' })
+
+      const icon = await fetch(`${baseUrl}/icons/icon-192.png`)
+      expect(icon.headers.get('content-type')).toBe('image/png')
+
+      const worker = await fetch(`${baseUrl}/sw.js`)
+      expect(worker.headers.get('content-type')).toContain('text/javascript')
+      expect(worker.headers.get('cache-control')).toBe('no-cache')
+
+      const shell = await fetch(`${baseUrl}/some/client/route`)
+      expect(shell.headers.get('content-type')).toContain('text/html')
+      expect(shell.headers.get('cache-control')).toBe('no-cache')
+    } finally {
+      await fs.rm(staticDir, { recursive: true, force: true })
+    }
   })
 })

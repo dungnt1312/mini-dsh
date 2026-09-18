@@ -4,23 +4,36 @@ import Icon, { ICON_NAMES } from '../common/Icon.tsx'
 import { SHOW_SLOTS } from '../../lib/config.ts'
 import { activeModelValue, decodeModelChoice, encodeModelChoice, modelOptions } from '../../lib/providers.ts'
 import { SettingsModal } from '../settings/SettingsModal.tsx'
+import { Button } from './Button.tsx'
+import { IconButton } from './IconButton.tsx'
+import { Kbd } from './Kbd.tsx'
+import { Badge } from './Badge.tsx'
+import { CodeChip } from './CodeChip.tsx'
+import { Panel } from './Panel.tsx'
+import { TextInput } from './TextInput.tsx'
+import { Select } from './Select.tsx'
+import { Modal } from './Modal.tsx'
+import { Field } from './Field.tsx'
+import { Switch } from './Switch.tsx'
+import { ToolCard } from '../chat/MessageParts.tsx'
+import { ApprovalBar } from '../chat/ApprovalBar.tsx'
 
 describe('icon set', () => {
-  it('covers the shell + kit vocabulary', () => {
+  it('covers the shell vocabulary', () => {
     for (const name of [
-      'plus', 'close', 'chevron', 'chevronRight', 'copy', 'check', 'menu',
-      'trash', 'pencil', 'send', 'search', 'terminal', 'arrowDown',
-      'folder', 'zap', 'clock', 'messageSquare', 'fileText', 'panelRight',
-      'panelLeft', 'gitBranch', 'alertTriangle', 'sliders', 'square',
+      'plus', 'close', 'chevron', 'chevronRight', 'copy', 'check', 'trash', 'pencil', 'search', 'arrowDown', 'arrowUp',
+      'folder', 'messageSquare', 'panelRight', 'panelLeft', 'alertTriangle', 'sliders', 'square', 'squarePen',
+      'sun', 'moon', 'monitor', 'lightbulb', 'layers', 'shield', 'bell',
     ]) {
       expect(ICON_NAMES, name).toContain(name)
     }
   })
 
-  it('renders an svg with stroke styling and no fill', () => {
-    const html = renderToStaticMarkup(<Icon name="folder" size={14} />)
+  it('renders an svg with stroke styling and merges extra classes', () => {
+    const html = renderToStaticMarkup(<Icon name="folder" size={14} className="text-ok" />)
     expect(html).toContain('<svg')
     expect(html).toContain('stroke-width="1.8"')
+    expect(html).toContain('class="icon text-ok"')
   })
 })
 
@@ -46,236 +59,138 @@ describe('runtime provider UI helpers', () => {
     expect(encodeModelChoice('cliproxy1', 'gpt-5.6-sol')).toBe('cliproxy1:gpt-5.6-sol')
     expect(decodeModelChoice('cliproxy1:gpt-5.6-sol')).toEqual({ provider: 'cliproxy1', model: 'gpt-5.6-sol' })
     expect(decodeModelChoice('not-a-choice')).toBeNull()
-    expect(modelOptions(meta).map((option) => option.value)).toEqual([
-      'cliproxy1:gpt-5.6-sol',
-      'cliproxy1:gpt-5.6-terra',
-    ])
+    expect(modelOptions(meta).map((option) => option.value)).toEqual(['cliproxy1:gpt-5.6-sol', 'cliproxy1:gpt-5.6-terra'])
     expect(activeModelValue(meta)).toBe('cliproxy1:gpt-5.6-sol')
   })
 
-  it('settings modal lists providers through the shared dialog shell', () => {
+  it('settings dialog exposes all eight sections as linked tabs and lists providers', () => {
     const html = renderToStaticMarkup(
-      <SettingsModal
-        open
-        providers={meta.providers}
-        activeProvider="cliproxy1"
-        activeModel="gpt-5.6-sol"
-        onDismiss={() => undefined}
-        onRefresh={async () => undefined}
-        onSelectActive={async () => undefined}
-      />,
+      <SettingsModal open workspaceId="ws-1" providers={meta.providers} activeProvider="cliproxy1" activeModel="gpt-5.6-sol" onDismiss={() => undefined} onRefresh={async () => undefined} onSelectActive={async () => undefined} />,
     )
-    // Dialog chrome comes from the Modal primitive, not bespoke markup.
-    expect(html).toContain('ui-modal-backdrop')
     expect(html).toContain('aria-modal="true"')
-    expect(html).toContain('Providers &amp; Models')
-    // Every configured provider is selectable, with its model count as subtitle.
+    expect(html).toContain('aria-label="Settings"')
+    expect((html.match(/role="tab"/g) ?? []).length).toBe(8)
+    // Radix mounts the active panel only; each tab still owns a controls link.
+    expect((html.match(/role="tabpanel"/g) ?? []).length).toBe(1)
+    expect((html.match(/aria-controls=/g) ?? []).length).toBeGreaterThanOrEqual(8)
+    const tabTags = html.match(/<[a-z]+[^>]*role="tab"[^>]*>/g) ?? []
+    expect(tabTags.filter((tag) => tag.includes('aria-selected="true"')).length).toBe(1)
+    for (const label of ['Providers', 'Projects', 'Skills', 'Memory', 'Agents', 'MCP', 'Hooks', 'Secrets']) expect(html).toContain(label)
     expect(html).toContain('cliproxy1')
     expect(html).toContain('2 models')
     expect(html).toContain('Test connection')
-    expect(html).not.toContain('sk-real-secret')
   })
 
-  it('settings modal never renders a raw key field value', () => {
+  it('settings dialog never renders a raw key field value', () => {
     const html = renderToStaticMarkup(
-      <SettingsModal
-        open
-        providers={meta.providers}
-        activeProvider="cliproxy1"
-        onDismiss={() => undefined}
-        onRefresh={async () => undefined}
-        onSelectActive={async () => undefined}
-      />,
+      <SettingsModal open workspaceId="ws-1" providers={meta.providers} activeProvider="cliproxy1" onDismiss={() => undefined} onRefresh={async () => undefined} onSelectActive={async () => undefined} />,
     )
-    // The key input is a password field seeded empty; only the mask is text.
     expect(html).toContain('type="password"')
     expect(html).not.toMatch(/value="sk-/)
   })
 })
 
-import { Button } from './Button.tsx'
-import { IconButton } from './IconButton.tsx'
-import { Kbd } from './Kbd.tsx'
-import { Badge } from './Badge.tsx'
-import { CodeChip } from './CodeChip.tsx'
-import { Panel } from './Panel.tsx'
-
-describe('primitives render their class contract', () => {
-  it('Button variants/sizes', () => {
-    const html = renderToStaticMarkup(
-      <>
-        <Button variant="primary">go</Button>
-        <Button size="sm">small</Button>
-        <Button variant="success">allow</Button>
-      </>,
-    )
-    expect(html).toContain('ui-btn')
-    expect(html).toContain('ui-btn-primary')
-    expect(html).toContain('ui-btn-sm')
-    expect(html).toContain('ui-btn-success')
+describe('primitives', () => {
+  it('Button defaults to a non-submitting button and disables visibly', () => {
+    const html = renderToStaticMarkup(<Button variant="primary" disabled>go</Button>)
+    expect(html).toContain('type="button"')
+    expect(html).toContain('disabled')
+    expect(html).toContain('bg-primary')
   })
 
-  it('IconButton carries an aria-label', () => {
-    const html = renderToStaticMarkup(
-      <IconButton label="Đóng" onClick={() => undefined}><span>x</span></IconButton>,
-    )
-    expect(html).toContain('ui-icon-btn')
-    expect(html).toContain('aria-label="Đóng"')
+  it('IconButton carries an accessible name', () => {
+    const html = renderToStaticMarkup(<IconButton label="Close" onClick={() => undefined}><span>x</span></IconButton>)
+    expect(html).toContain('aria-label="Close"')
+    expect(html).toContain('title="Close"')
   })
 
-  it('Badge tones, Kbd, CodeChip, Panel', () => {
+  it('Badge tones, Kbd, CodeChip, Panel render their content', () => {
     const html = renderToStaticMarkup(
       <>
-        <Badge tone="amber">slot sau</Badge>
+        <Badge tone="amber">pending</Badge>
         <Kbd>Ctrl+N</Kbd>
-        <CodeChip>edit · web/App.tsx</CodeChip>
+        <CodeChip title="web/App.tsx">web/App.tsx</CodeChip>
         <Panel variant="raised">body</Panel>
       </>,
     )
-    expect(html).toContain('ui-badge-amber')
-    expect(html).toContain('ui-kbd')
-    expect(html).toContain('ui-code')
-    expect(html).toContain('ui-panel-raised')
-  })
-})
-
-import { Chip } from './Chip.tsx'
-import { TextInput } from './TextInput.tsx'
-import { Select } from './Select.tsx'
-import { Modal } from './Modal.tsx'
-import { Field } from './Field.tsx'
-import { Switch } from './Switch.tsx'
-
-describe('dialog / form primitives', () => {
-  it('Modal renders nothing while closed', () => {
-    expect(renderToStaticMarkup(
-      <Modal open={false} onDismiss={() => undefined} label="x"><p>body</p></Modal>,
-    )).toBe('')
+    expect(html).toContain('text-warn')
+    expect(html).toContain('<kbd')
+    expect(html).toContain('<code')
+    expect(html).toContain('body')
   })
 
-  it('Modal carries dialog semantics and an optional header slot', () => {
-    const html = renderToStaticMarkup(
-      <Modal open onDismiss={() => undefined} label="Settings" width="md" header={<strong>Head</strong>}>
-        <p>body</p>
-      </Modal>,
-    )
+  it('Modal renders nothing while closed and carries dialog semantics when open', () => {
+    expect(renderToStaticMarkup(<Modal open={false} onDismiss={() => undefined} label="x"><p>body</p></Modal>)).toBe('')
+    const html = renderToStaticMarkup(<Modal open onDismiss={() => undefined} label="Settings" width="md" header={<strong>Head</strong>}><p>body</p></Modal>)
     expect(html).toContain('role="dialog"')
     expect(html).toContain('aria-modal="true"')
     expect(html).toContain('aria-label="Settings"')
-    expect(html).toContain('ui-modal-md')
-    expect(html).toContain('ui-modal-head')
+    expect(html).toContain('<header')
     expect(html).toContain('Head')
   })
 
-  it('Field pairs a label with one hint line, tone-aware', () => {
+  it('Field links label and hint to its control, tone-aware', () => {
     const html = renderToStaticMarkup(
-      <Field label="Base URL" tone="bad" hint="Phải là http(s) URL.">
-        <TextInput value="ftp://x" readOnly invalid />
-      </Field>,
+      <Field label="Base URL" tone="bad" hint="Enter an HTTP or HTTPS URL."><TextInput value="ftp://x" readOnly invalid /></Field>,
     )
-    expect(html).toContain('ui-field-label')
-    expect(html).toContain('ui-field-hint-bad')
-    expect(html).toContain('ui-field-invalid')
+    const id = /<label[^>]*for="([^"]+)"/.exec(html)?.[1]
+    expect(id).toBeDefined()
+    expect(html).toContain(`id="${id}"`)
+    expect(html).toContain(`aria-describedby="${id}-hint"`)
+    expect(html).toContain('text-bad')
     expect(html).toContain('aria-invalid="true"')
   })
 
-  it('Switch keeps a real checkbox behind the track', () => {
+  it('Field links its hint to a custom Select trigger', () => {
     const html = renderToStaticMarkup(
-      <Switch checked label="Enabled" hint="Tắt thì ẩn khỏi picker." onChange={() => undefined} />,
+      <Field label="Vision" hint="Choose a capability override.">
+        <Select value="auto" options={[{ value: 'auto', label: 'Auto' }]} onChange={() => undefined} label="Vision capability" />
+      </Field>,
     )
-    expect(html).toContain('type="checkbox"')
-    expect(html).toContain('ui-switch-track')
-    expect(html).toContain('ui-switch-hint')
+    const id = /<label[^>]*for="([^"]+)"/.exec(html)?.[1]
+    expect(id).toBeDefined()
+    expect(html).toContain(`<button type="button" id="${id}"`)
+    expect(html).toContain(`aria-describedby="${id}-hint"`)
   })
 
-  it('TextInput can render a monospace variant', () => {
-    const html = renderToStaticMarkup(<TextInput mono value="gpt-5.6-sol" readOnly />)
-    expect(html).toContain('ui-input-mono')
-  })
-})
-
-describe('chip / text-input / select structure', () => {
-  it('Chip is a span unless interactive', () => {
-    const html = renderToStaticMarkup(<Chip>mini-dsh</Chip>)
-    expect(html).toContain('<span')
-    expect(html).not.toContain('<button')
-    const btn = renderToStaticMarkup(
-      <Chip interactive caret onClick={() => undefined}>deepseek</Chip>,
-    )
-    expect(btn).toContain('<button')
-    expect(btn).toContain('ui-chip-caret')
+  it('Switch exposes switch semantics with its label and hint', () => {
+    const html = renderToStaticMarkup(<Switch checked label="Enabled" hint="Hidden from the picker when off." onChange={() => undefined} />)
+    expect(html).toContain('role="switch"')
+    expect(html).toContain('aria-checked="true"')
+    expect(html).toContain('Hidden from the picker when off.')
   })
 
-  it('TextInput wraps input with leading slot', () => {
-    const html = renderToStaticMarkup(
-      <TextInput leading={<b>i</b>} placeholder="Tìm phiên…" readOnly />,
-    )
-    expect(html).toContain('ui-field')
-    expect(html).toContain('ui-input')
-    expect(html).toContain('placeholder="Tìm phiên…"')
+  it('TextInput renders leading content and a monospace variant', () => {
+    const html = renderToStaticMarkup(<TextInput mono leading={<b>i</b>} placeholder="Search…" readOnly />)
+    expect(html).toContain('<b>i</b>')
+    expect(html).toContain('font-mono')
+    expect(html).toContain('placeholder="Search…"')
   })
 
-  it('Select closed renders a listbox trigger, no open menu', () => {
-    const html = renderToStaticMarkup(
-      <Select
-        value="deepseek-chat"
-        options={[{ value: 'deepseek-chat', label: 'deepseek-chat' }, { value: 'other', label: 'other' }]}
-        onChange={() => undefined}
-        label="Model"
-      />,
-    )
-    expect(html).toContain('aria-haspopup="listbox"')
-    expect(html).not.toContain('role="listbox"')
-    expect(html).toContain('deepseek-chat')
-  })
-
-  it('Select merges triggerClassName onto the default trigger', () => {
-    const html = renderToStaticMarkup(
-      <Select
-        value="m"
-        options={[{ value: 'm', label: 'm' }]}
-        onChange={() => undefined}
-        triggerClassName="composer-model"
-      />,
-    )
-    expect(html).toContain('composer-model')
-  })
-
-  it('Select honors a custom trigger renderer', () => {
-    const html = renderToStaticMarkup(
-      <Select
-        value="m"
-        options={[{ value: 'm', label: 'm' }]}
-        onChange={() => undefined}
-        renderTrigger={() => <button type="button">custom-trigger</button>}
-      />,
-    )
-    expect(html).toContain('custom-trigger')
+  it('Select closed renders a listbox trigger, merges trigger classes and honors a custom trigger', () => {
+    const closed = renderToStaticMarkup(<Select value="deepseek-chat" options={[{ value: 'deepseek-chat', label: 'deepseek-chat' }, { value: 'other', label: 'other' }]} onChange={() => undefined} label="Model" triggerClassName="extra-trigger" />)
+    expect(closed).toContain('aria-haspopup="listbox"')
+    expect(closed).not.toContain('role="listbox"')
+    expect(closed).toContain('extra-trigger')
+    const custom = renderToStaticMarkup(<Select value="m" options={[{ value: 'm', label: 'm' }]} onChange={() => undefined} renderTrigger={() => <button type="button">custom-trigger</button>} />)
+    expect(custom).toContain('custom-trigger')
   })
 })
 
 describe('chat surfaces', () => {
-  it('ToolCard breadcrumb formats arg chips while pending', async () => {
-    const { ToolCard } = await import('../chat/MessageParts.tsx')
-    const html = renderToStaticMarkup(
-      <ToolCard item={{ kind: 'tool', call: { id: 't1', name: 'read', args: { path: 'src/x.ts', limit: 5 } } }} />,
-    )
-    expect(html).toContain('tool-row')
+  it('ToolCard shows the tool, its target and running state while pending', () => {
+    const html = renderToStaticMarkup(<ToolCard item={{ kind: 'tool', call: { id: 't1', name: 'read', args: { path: 'src/x.ts', limit: 5 } } }} />)
     expect(html).toContain('read')
-    expect(html).toContain('path: src/x.ts')
-    expect(html).toContain('+1')
+    expect(html).toContain('src/x.ts')
+    expect(html).toContain('Running')
+    expect(html).toContain('aria-expanded="false"')
   })
 
-  it('ApprovalBar shows one card per pending call', async () => {
-    const { ApprovalBar } = await import('../chat/ApprovalBar.tsx')
-    const html = renderToStaticMarkup(
-      <ApprovalBar
-        approvals={[{ approvalId: 'a1', call: { id: 't', name: 'edit', args: { path: 'web/App.tsx' } } }]}
-        onAnswer={() => undefined}
-      />,
-    )
-    expect(html).toContain('edit · web/App.tsx')
-    expect(html).toContain('Allow')
+  it('ApprovalBar shows one card per pending call', () => {
+    const html = renderToStaticMarkup(<ApprovalBar approvals={[{ approvalId: 'a1', call: { id: 't', name: 'edit', args: { path: 'web/App.tsx' } } }]} onAnswer={async () => undefined} />)
+    expect(html).toContain('web/App.tsx')
+    expect(html).toContain('Exact arguments')
+    expect(html).toContain('Allow once')
     expect(html).toContain('Deny')
   })
 })

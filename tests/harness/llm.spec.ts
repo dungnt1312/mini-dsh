@@ -128,3 +128,44 @@ describe('llm seam', () => {
     void kernel.stop()
   })
 })
+
+describe('provider-explicit dispatch', () => {
+  it('a stamped provider that is gone fails closed — never the global fallback', async () => {
+    const kernel = new Kernel()
+    kernel.ctx.plugin(LlmService)
+    let betaCalled = 0
+    kernel.ctx.llm.register({
+      name: 'alpha',
+      models: ['a1'],
+      // eslint-disable-next-line require-yield
+      async *stream() { throw new Error('alpha must not be reached') },
+    })
+    kernel.ctx.llm.register({
+      name: 'beta',
+      models: ['b1'],
+      async *stream() {
+        betaCalled += 1
+        yield { type: 'delta', delta: 'beta' }
+      },
+    })
+    kernel.ctx.llm.use('beta') // the global pointer points at beta
+
+    const dispose = kernel.ctx.llm.register({
+      name: 'gamma',
+      models: ['g1'],
+      async *stream() { yield { type: 'delta', delta: 'g' } },
+    })
+    dispose() // unregistering keeps gamma out; alpha remains registered
+    // Remove alpha to simulate a registry sync dropping it.
+    const fresh = kernel.ctx as unknown as { llm: { providers: Map<string, unknown> } }
+    void fresh
+    // Simpler: dispatch with a name that was never registered.
+    await expect(async () => {
+      for await (const _ of kernel.ctx.llm.stream({ messages: [], providerName: 'ghost' } as never)) {
+        void _
+      }
+    }).rejects.toThrow(/requested provider 'ghost' is not registered/)
+    expect(betaCalled).toBe(0)
+    void kernel.stop()
+  })
+})

@@ -1,53 +1,66 @@
 /**
  * The one-shot/REPL headless runner: composes the harness plugins on the
- * kernel — sessions, llm, tools, approval — mounts the filesystem and bash
- * capability tools, binds one agent to one durable session, and streams
- * replies and tool traffic to stdout.
+ * kernel — durable sessions, llm, tools, approval — mounts the filesystem
+ * and bash capability tools, binds one agent to one durable session, and
+ * streams replies and tool traffic to stdout.
  *
- * This runner has no Settings UI, therefore it requires `DEEPSEEK_API_KEY`.
- * Approval: `--yolo` allows every call; otherwise reads/globs are allowed and
- * write/edit/bash prompt on stderr before running.
+ * History persists under `--data-dir` (default `<cwd>/.mini-dsh/data`),
+ * so a later run with the same data dir can resume where this one left
+ * off. This runner has no Settings UI, therefore it requires
+ * `DEEPSEEK_API_KEY`. Approval: `--yolo` allows every call; otherwise
+ * reads/globs are allowed and write/edit/bash prompt on stderr before
+ * running. Approval questions and decisions are recorded in the session
+ * log like any other durable fact.
  *
  * Usage:
  *   tsx src/bins/headless.ts --message "hello"
  *   tsx src/bins/headless.ts            # interactive REPL, 'exit' quits
  */
 import { createInterface } from 'node:readline/promises'
+import path from 'node:path'
 import { loadRepoEnv, readApiKey } from './env.ts'
 import {
   AgentsService,
   DeepSeekProvider,
   Kernel,
   LlmService,
-  SessionsService,
   ToolsService,
   attachApproval,
   bashTool,
+  fileSessions,
   fsTools,
+  newInputId,
+  WorkspaceService,
   type ApprovalOptions,
+  type Agent,
   type Session,
   type SessionEvent,
+  type SessionsService,
 } from '../index.ts'
+import { DEFAULT_LIMITS } from '../harness/limits.ts'
 
 loadRepoEnv()
 
 interface CliOptions {
   readonly yolo: boolean
   readonly root: string
+  readonly dataDir: string
   readonly message: string | undefined
 }
 
 function parseArgs(argv: readonly string[]): CliOptions {
   let yolo = false
   let root = process.cwd()
+  let dataDir = path.join(process.cwd(), '.mini-dsh', 'data')
   let message: string | undefined
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     if (arg === '--yolo') yolo = true
     else if (arg === '--root') root = argv[i + 1] ?? root
+    else if (arg === '--data-dir') dataDir = argv[i + 1] ?? dataDir
     else if (arg === '--message') message = argv[i + 1]
   }
-  return { yolo, root, message }
+  return { yolo, root, dataDir, message }
 }
 
 /** Render one session's durable stream to stdout as events arrive. */
@@ -63,13 +76,22 @@ function render(event: SessionEvent): void {
       process.stdout.write(`\n[tool] ${event.call.name}(${JSON.stringify(event.call.args)})\n`)
       break
     case 'tool/result': {
+      if (event.recovery === true) {
+        process.stdout.write(`[tool?] ${event.output}\n`)
+        break
+      }
       const output = event.output.length > 400 ? `${event.output.slice(0, 400)}\n… [truncated]` : event.output
       process.stdout.write(`[${event.ok ? 'tool→' : 'tool✗'}] ${output}\n`)
       break
     }
+    case 'turn/error':
+      process.stdout.write(`[turn ${event.kind}] ${event.message}\n`)
+      break
     case 'turn/end':
       if (event.reason === 'rejected') process.stdout.write('[turn rejected]\n')
       if (event.reason === 'empty') process.stdout.write('[turn closed empty]\n')
+      if (event.reason === 'interrupted') process.stdout.write('[turn interrupted by restart]\n')
+      if (event.reason === 'limit') process.stdout.write('[turn hit a limit]\n')
       break
     default:
       break
@@ -88,7 +110,7 @@ async function askUser(call: { name: string; args: Record<string, unknown> }): P
 }
 
 async function main(): Promise<void> {
-  const { yolo, root, message } = parseArgs(process.argv.slice(2))
+  const { yolo, root, dataDir, message } = parseArgs(process.argv.slice(2))
   const apiKey = readApiKey()
   if (apiKey === undefined) {
     process.stderr.write('headless requires DEEPSEEK_API_KEY; use the web UI Settings panel to configure custom OpenAI-completions providers.\n')
@@ -97,35 +119,54 @@ async function main(): Promise<void> {
   }
 
   const kernel = new Kernel()
-  kernel.ctx.plugin(SessionsService)
+  kernel.ctx.plugin(fileSessions(dataDir))
+  kernel.ctx.provide('limits', DEFAULT_LIMITS)
   kernel.ctx.plugin(LlmService)
   kernel.ctx.plugin(ToolsService)
   kernel.ctx.plugin(AgentsService)
+  // One data home, workspace-scoped sessions: the CLI works inside the
+  // home's Default workspace (stable id, idempotently migrated).
+  const workspaces = new WorkspaceService(dataDir)
+  await workspaces.boot()
+  kernel.ctx.provide('workspaces', workspaces)
+  await kernel.ctx.sessions.boot()
   const options: ApprovalOptions = yolo
     ? { defaultMode: 'allow', askUser }
     : {
         defaultMode: 'ask',
         askUser,
-        policy: { read: 'allow', glob: 'allow', grep: 'allow', write: 'ask', edit: 'ask', bash: 'ask' },
+        policy: { Read: 'allow', Glob: 'allow', Grep: 'allow', Write: 'ask', Edit: 'ask', Bash: 'ask' },
       }
   attachApproval(kernel.ctx, options)
-  for (const tool of fsTools(root)) {
+  for (const tool of fsTools()) {
     kernel.ctx.tools.register(tool)
   }
-  kernel.ctx.tools.register(bashTool())
+  kernel.ctx.tools.register(bashTool({ timeoutMs: DEFAULT_LIMITS.toolTimeoutMs }))
+  kernel.ctx.tools.setRootResolver(() => ({ root, deniedRoots: [dataDir] }))
   kernel.ctx.llm.register(new DeepSeekProvider(apiKey, process.env['DEEPSEEK_BASE_URL'] ?? 'https://api.deepseek.com'))
 
-  const session: Session = kernel.ctx.sessions.create()
+  const session: Session = kernel.ctx.sessions.create(workspaces.defaultWorkspace)
   kernel.ctx.on('session/event', (emitter, event) => {
     if (emitter === session) render(event)
   })
 
-  const agent = kernel.ctx.agents.create(session)
+  const agent = kernel.ctx.agents.create(session, { workspaceId: workspaces.defaultWorkspace })
+
+  /** Durably accept one input, adopt anything still pending, then run. */
+  const acceptAndRun = async (text: string): Promise<void> => {
+    const inputId = newInputId()
+    session.append({ type: 'input/queued', inputId, content: text })
+    await session.durable()
+    const sessions: SessionsService = kernel.ctx.sessions
+    for (const item of sessions.pendingInputs(session)) {
+      agent.enqueueAccepted(item)
+    }
+    await (agent as Agent).run()
+  }
 
   try {
     if (message !== undefined) {
-      agent.send(message)
-      await agent.run()
+      await acceptAndRun(message)
     } else {
       const rl = createInterface({ input: process.stdin, output: process.stdout })
       while (true) {
@@ -133,8 +174,7 @@ async function main(): Promise<void> {
         const text = line.trim()
         if (text === 'exit' || text === 'quit') break
         if (text === '') continue
-        agent.send(text)
-        await agent.run()
+        await acceptAndRun(text)
       }
       rl.close()
     }
