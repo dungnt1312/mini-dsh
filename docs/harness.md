@@ -34,7 +34,7 @@ switch over it ends in `assertNever`:
 
 ```
 turn/start          opens a turn
-user/message        a user input the model will see
+user/message        a user input the model will see (optional `attachments: AttachmentRef[]`)
 step/start          opens one model request
 assistant/chunk     a streamed delta (UI fidelity only — never model history)
 assistant/message   the assembled assistant reply (+ optional toolCalls)
@@ -58,10 +58,17 @@ hook/run            one hook execution (event, matcher, exit code, decision)
 
 Every event is stamped with `seq` (monotonic, 1-based) and `timestamp`.
 
-**`deriveMessages(events)`** projects model history from the log: `user/message`
-→ user, `assistant/message` → assistant (with its tool calls), `tool/result` →
-a tool message keyed by `callId`. Structural events and raw `assistant/chunk`
-events are skipped. This function is the *only* way model context is built.
+**`deriveMessages(events, attachments?)`** projects model history from the log:
+`user/message` → user (with `attachments` resolved through an optional
+`AttachmentLookup`), `assistant/message` → assistant (with its tool calls),
+`tool/result` → a tool message keyed by `callId`. Structural events and raw
+`assistant/chunk` events are skipped. An attachment the host could not load
+projects as `[attachment "name" (type) is not available]` so the model never
+silently loses what the user sent. `userMessageContent(text, refs, loaded)`
+is the pure helper: image refs become `ContentPart` image parts, text refs are
+inlined as fenced blocks (truncated at the host's `attachmentTextLimit`), and
+a text-only message stays a plain `string` so existing `toWireMessages` shapes
+are unchanged. This function is the *only* way model context is built.
 
 ### `Session` (`session.ts`)
 
@@ -113,13 +120,19 @@ monotonic `seq` and a schema version on every record.
 
 ### Vocabulary (`types.ts`)
 
-- `ModelMessage` — `system | user | assistant | tool`; assistant messages may
-  carry `toolCalls`, tool messages carry `toolCallId`.
+- `ModelMessage` — `system | user | assistant | tool`; `content` is a plain
+  `string` or ordered `ContentPart[]` (`{type:'text',text}` | `{type:'image',
+  mediaType, base64, name?}`) when the turn carries images. `messageText()`
+  is the honest text projection (images become `[image: name]` placeholders).
+  Assistant messages may carry `toolCalls`, tool messages carry `toolCallId`.
 - `ToolCall` — `{ id, name, args }`; `args` is a JSON object validated at the
   model-JSON boundary.
 - `ToolSchema` — the model-facing shape of one tool.
 - `ModelRequest` — `{ model?, messages, tools? }`, projected from the log.
 - `StreamEvent` — `{ type: 'delta', delta }` or `{ type: 'toolCalls', calls }`.
+- `ContentPart` — the multimodal vocabulary: text stays a bare string so
+  callers that never carry images change nothing; image parts are built only
+  at the boundary from verified attachment bytes.
 
 ### The provider contract
 
@@ -309,8 +322,11 @@ close before claiming the next one.
 Bounded execution is centralized in `limits.ts`: `maxSteps` (a turn over
 budget closes as `limit`), `turnDeadlineMs`, `streamInactivityMs`,
 `toolTimeoutMs`, `approvalExpiryMs`, `toolOutputLimit`, `maxPendingInputs`,
-and `automaticCompactionChars` (auto-compaction trigger at a completed
-boundary; 0 disables).
+`automaticCompactionChars` (auto-compaction trigger at a completed
+boundary; 0 disables), plus composer-attachment limits `maxAttachmentBytes`,
+`maxAttachmentsPerMessage`, and `attachmentTextLimit` (model-visible cap for
+inlined text attachments; images travel as `ContentPart` image parts with a
+flat `IMAGE_TOKEN_ESTIMATE` so multi-image turns do not silently under-count).
 
 ## Mode-driven context assembly
 

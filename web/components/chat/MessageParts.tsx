@@ -7,17 +7,27 @@ import { IconButton } from '../ui/IconButton.tsx'
 import { Markdown } from '../../Markdown.tsx'
 import { ThinkingPanel } from './ThinkingPanel.tsx'
 import { formatTime, toolTarget } from '../../lib/format.ts'
-import { waitChild } from '../../lib/api.ts'
+import { attachmentUrl, waitChild } from '../../lib/api.ts'
 import { cn } from '../../lib/cn.ts'
+import { formatBytes, type AttachmentRef } from '../../lib/composer-draft.ts'
 import type { ChildRow } from '../../lib/types.ts'
 import type { ViewItem } from '../../lib/project.ts'
 import type { OpenPathResolver } from '../artifacts/ArtifactsPanel.tsx'
 
+/** Images render inline; anything else is named rather than previewed. */
+const isImageAttachment = (ref: AttachmentRef): boolean => ref.mediaType.startsWith('image/')
+
 /** Hover-revealed on fine pointers, always visible on touch and keyboard focus. */
 const revealActions = 'opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 [@media(pointer:coarse)]:opacity-100'
 
-export function UserBubble({ item, onReuse }: { readonly item: Extract<ViewItem, { kind: 'user' }>; readonly onReuse?: (text: string) => void }) {
+export function UserBubble({ item, workspaceId, onReuse }: {
+  readonly item: Extract<ViewItem, { kind: 'user' }>
+  /** Needed to fetch attachment bytes; without it they show as file chips. */
+  readonly workspaceId?: string | null
+  readonly onReuse?: (text: string) => void
+}) {
   const queued = item.queued === true
+  const attachments = item.attachments ?? []
   return (
     <div className="group flex flex-col items-end gap-0.5" title={item.ts !== undefined ? formatTime(item.ts) : undefined}>
       <div
@@ -27,7 +37,28 @@ export function UserBubble({ item, onReuse }: { readonly item: Extract<ViewItem,
         )}
       >
         {queued ? <span className="mb-0.5 block text-[11px] font-medium uppercase tracking-wide text-fg-faint">Queued</span> : null}
-        <p className="m-0 whitespace-pre-wrap break-words">{item.content}</p>
+        {attachments.length > 0 ? (
+          <ul className="m-0 mb-1.5 flex list-none flex-wrap gap-1.5 p-0">
+            {attachments.map((ref) => (
+              <li key={ref.id}>
+                {isImageAttachment(ref) && workspaceId != null ? (
+                  <img
+                    src={attachmentUrl(workspaceId, ref.id)}
+                    alt={ref.name}
+                    className="max-h-40 rounded-xl border border-line object-cover"
+                  />
+                ) : (
+                  <span className="flex items-center gap-1.5 rounded-lg border border-line px-2 py-1 text-[13px]">
+                    <Icon name="fileText" size={14} className="text-fg-muted" />
+                    <span className="truncate">{ref.name}</span>
+                    <span className="text-fg-faint">{formatBytes(ref.bytes)}</span>
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {item.content !== '' ? <p className="m-0 whitespace-pre-wrap break-words">{item.content}</p> : null}
       </div>
       {!queued && onReuse !== undefined ? (
         <div className={cn('flex items-center gap-0.5', revealActions)}>

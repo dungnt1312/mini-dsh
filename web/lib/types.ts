@@ -1,4 +1,7 @@
 /** Client-side mirror of the wire shapes the server sends. */
+import type { AttachmentRef } from './composer-draft.ts'
+
+export type { AttachmentRef }
 
 export interface ToolCall {
   readonly id: string
@@ -28,6 +31,8 @@ export interface SseEvent {
   /** Durable input acceptance. */
   readonly inputId?: string
   readonly clientRequestId?: string
+  /** Files the user attached to this input (references, never bytes). */
+  readonly attachments?: readonly AttachmentRef[]
   /** Approval traffic. */
   readonly approvalId?: string
   readonly decision?: string

@@ -1,6 +1,7 @@
 import type { Context } from '../../kernel/index.ts'
 import { newStepId, newTurnId, type InputId, type StepId, type TurnId } from '../../util/brand.ts'
 import { resolveLimits, type HarnessLimits } from '../limits.ts'
+import type { AttachmentRef } from '../attachments/store.ts'
 import type { ModelRequest, ToolCall, ToolSchema } from '../llm/types.ts'
 import { canonicalCall } from '../tools/names.ts'
 import type { Session } from '../session/session.ts'
@@ -93,9 +94,14 @@ export class Agent {
    * call this on acceptance and after restarts to restore pending inputs —
    * restored inputs wait for the next user-triggered run, never auto-run.
    */
-  enqueueAccepted(item: { content: string; inputId: InputId }): void {
+  enqueueAccepted(item: { content: string; inputId: InputId; attachments?: readonly AttachmentRef[] }): void {
     if (this.inbox.some((existing) => existing.kind === 'user' && existing.inputId === item.inputId)) return
-    this.inbox.push({ kind: 'user', content: item.content, inputId: item.inputId })
+    this.inbox.push({
+      kind: 'user',
+      content: item.content,
+      inputId: item.inputId,
+      ...(item.attachments !== undefined && item.attachments.length > 0 ? { attachments: item.attachments } : {}),
+    })
   }
 
   /** User inputs waiting in the inbox (queue-depth reads for status UIs). */
@@ -331,6 +337,7 @@ export class Agent {
         turnId,
         content: contents[i] ?? '',
         ...(item?.inputId !== undefined ? { inputId: item.inputId } : {}),
+        ...(item?.attachments !== undefined && item.attachments.length > 0 ? { attachments: item.attachments } : {}),
       })
     }
     // Durable input: acknowledged before anything asks the model for more.

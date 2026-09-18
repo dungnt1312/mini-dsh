@@ -12,14 +12,44 @@ export interface ToolCall {
   readonly args: Record<string, unknown>
 }
 
+/**
+ * One piece of a multimodal message. Text-only messages keep using a bare
+ * string, so nothing that never carries an image has to change.
+ */
+export type ContentPart =
+  | { readonly type: 'text'; readonly text: string }
+  | {
+      readonly type: 'image'
+      /** `image/png`, `image/jpeg`, `image/webp` or `image/gif`. */
+      readonly mediaType: string
+      /** Base64 image bytes; providers build their own wire encoding from it. */
+      readonly base64: string
+      /** Original file name, used when a message must be flattened to text. */
+      readonly name?: string
+    }
+
 /** One message in model history. */
 export interface ModelMessage {
   readonly role: 'system' | 'user' | 'assistant' | 'tool'
-  readonly content: string
+  /** Plain text, or ordered parts when the message carries images. */
+  readonly content: string | readonly ContentPart[]
   /** Tool calls the assistant requested; assistant messages only. */
   readonly toolCalls?: readonly ToolCall[]
   /** Which call this result answers; tool messages only. */
   readonly toolCallId?: string
+}
+
+/**
+ * The readable text of any message content. Images become a short placeholder
+ * so summaries, titles, logs and budgets stay honest about what was there
+ * instead of silently dropping it.
+ */
+export function messageText(content: string | readonly ContentPart[]): string {
+  if (typeof content === 'string') return content
+  return content
+    .map((part) => (part.type === 'text' ? part.text : `[image: ${part.name ?? part.mediaType}]`))
+    .filter((text) => text !== '')
+    .join('\n')
 }
 
 /** A tool's model-facing schema, joined into request assembly. */

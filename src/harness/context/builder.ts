@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto'
 import type { ModelMessage, ToolSchema } from '../llm/types.ts'
-import type { SessionEvent } from '../session/events.ts'
+import type { AttachmentLookup } from '../attachments/store.ts'
+import { userMessageContent, type SessionEvent } from '../session/events.ts'
 import type { Session } from '../session/session.ts'
 import type { ResolvedMode } from '../modes/types.ts'
-import { estimateTokens, schemaCost, budgetFor, ContextBudgetError, type BudgetConfig } from './budget.ts'
+import { estimateTokens, estimateContentTokens, schemaCost, budgetFor, ContextBudgetError, type BudgetConfig } from './budget.ts'
 
 export { ContextBudgetError }
 export type { BudgetConfig }
@@ -43,6 +44,11 @@ export interface BuildContextInput {
   readonly budget: ResolvedBudget
   /** Latest compaction checkpoint, when the history setting is `compact`. */
   readonly compaction?: { readonly summary: string; readonly coversSeq: number }
+  /**
+   * Attachment bytes the host already read, by id. Whatever is missing is
+   * reported to the model as unavailable rather than dropped.
+   */
+  readonly attachments?: AttachmentLookup
 }
 
 /** The truthful record of what one request actually contained. */
@@ -158,7 +164,7 @@ export function buildContext(input: BuildContextInput): AssembledContext {
 
   // ── history window per setting ─────────────────────────────
   const window = historyWindow(input.events, mode.definition.sources.history)
-  const dated = deriveDatedMessages(input.events, window.startSeq)
+  const dated = deriveDatedMessages(input.events, window.startSeq, input.attachments)
   const totalTurns = countTurns(input.events)
 
   // ── optional sources (droppable) ───────────────────────────
@@ -196,14 +202,16 @@ export function buildContext(input: BuildContextInput): AssembledContext {
   const fixedCost = (): number => {
     let total = estimateTokens(systemText) + schemaCost(schemas)
     for (const message of [...skillMessages, ...memoryMessages, ...lowerTrustMessages]) {
-      total += estimateTokens(message.content)
+      total += estimateContentTokens(message.content)
     }
     return total
   }
   const historyCost = (from: number): number => {
     let total = 0
     for (const dated_message of dated.slice(from)) {
-      total += estimateTokens(dated_message.message.content)
+      // History is the only place images appear, so it is the only cost that
+      // cannot be measured as a plain string.
+      total += estimateContentTokens(dated_message.message.content)
       if (dated_message.message.toolCalls !== undefined) total += estimateTokens(JSON.stringify(dated_message.message.toolCalls))
     }
     return total
@@ -379,13 +387,15 @@ function completedTurnBoundaries(events: readonly SessionEvent[], openTurnStart:
 }
 
 /** Project model messages from the log starting at `startSeq` (inclusive). */
-function deriveDatedMessages(events: readonly SessionEvent[], startSeq: number): DatedMessage[] {
+function deriveDatedMessages(events: readonly SessionEvent[], startSeq: number, attachments?: AttachmentLookup): DatedMessage[] {
   const messages: DatedMessage[] = []
   for (const event of events) {
     if (event.seq < startSeq) continue
     switch (event.type) {
       case 'user/message':
-        messages.push({ message: { role: 'user', content: event.content }, seq: event.seq })
+        // Same projection `deriveMessages` uses, so a windowed request and a
+        // full one describe an attachment identically.
+        messages.push({ message: { role: 'user', content: userMessageContent(event.content, event.attachments, attachments) }, seq: event.seq })
         break
       case 'assistant/message':
         messages.push({

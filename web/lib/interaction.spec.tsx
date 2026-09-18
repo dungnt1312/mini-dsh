@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Generation, composerKey, emptyComposer, acceptedDraft, popupPosition, tabDestination } from './interaction.ts'
+import { emptyDraft, textDraft } from './composer-draft.ts'
 
 describe('navigation completion guards', () => {
   it('rejects a delayed create/delete after A → B → A', async () => {
@@ -23,15 +24,15 @@ describe('navigation completion guards', () => {
 describe('scoped send state', () => {
   it('acceptance cannot clear identical text in another workspace/session', () => {
     const a = composerKey('a', 's'), b = composerKey('b', 's'), c = composerKey('a', 'other')
-    const state = { ...emptyComposer, draft: 'same', revision: 1 }
+    const state = { ...emptyComposer, draft: textDraft('same'), revision: 1 }
     const drafts = { [a]: state, [b]: state, [c]: state }
     drafts[a] = acceptedDraft(drafts[a]!, 1)
-    expect(drafts[a]?.draft).toBe('')
-    expect(drafts[b]?.draft).toBe('same')
-    expect(drafts[c]?.draft).toBe('same')
+    expect(drafts[a]?.draft).toEqual(emptyDraft)
+    expect(drafts[b]?.draft).toEqual(textDraft('same'))
+    expect(drafts[c]?.draft).toEqual(textDraft('same'))
   })
   it('retains a changed draft even if text returns to the submitted value', () => {
-    expect(acceptedDraft({ ...emptyComposer, draft: 'same', revision: 3 }, 1).draft).toBe('same')
+    expect(acceptedDraft({ ...emptyComposer, draft: textDraft('same'), revision: 3 }, 1).draft).toEqual(textDraft('same'))
   })
   it('keys cannot collide on delimiter-containing IDs', () => {
     expect(composerKey('a:b', 'c')).not.toBe(composerKey('a', 'b:c'))

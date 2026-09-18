@@ -1,4 +1,5 @@
 import { applyThinkingOverride } from './model-catalog.ts'
+import { messageText } from './types.ts'
 import type { LlmProvider, ModelMessage, ModelRequest, StreamEvent, StreamOptions } from './types.ts'
 
 interface StreamChoice {
@@ -22,12 +23,29 @@ interface AccumulatedCall {
   argsString: string
 }
 
+/** The vision content array OpenAI-compatible servers accept on a user message. */
+type WireContent = string | ({ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } })[]
+
 /** One message in the OpenAI-style wire format every completions server accepts. */
 interface WireMessage {
   role: string
-  content: string
+  content: WireContent
   tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[]
   tool_call_id?: string
+}
+
+/**
+ * Messages that carry images serialize as the documented content array, with
+ * each image inlined as a `data:` URL. Text-only messages stay bare strings:
+ * servers that predate vision keep receiving exactly what they always did.
+ */
+function toWireContent(content: ModelMessage['content']): WireContent {
+  if (typeof content === 'string') return content
+  return content.map((part) =>
+    part.type === 'text'
+      ? { type: 'text' as const, text: part.text }
+      : { type: 'image_url' as const, image_url: { url: `data:${part.mediaType};base64,${part.base64}` } },
+  )
 }
 
 /**
@@ -42,7 +60,7 @@ function toWireMessages(messages: readonly ModelMessage[]): WireMessage[] {
     if (message.role === 'assistant' && message.toolCalls !== undefined) {
       return {
         role: 'assistant',
-        content: message.content,
+        content: toWireContent(message.content),
         tool_calls: message.toolCalls.map((call) => ({
           id: call.id,
           type: 'function' as const,
@@ -53,11 +71,12 @@ function toWireMessages(messages: readonly ModelMessage[]): WireMessage[] {
     if (message.role === 'tool') {
       return {
         role: 'tool',
-        content: message.content,
+        // A tool answer is always text; flattening keeps the protocol's shape.
+        content: messageText(message.content),
         tool_call_id: message.toolCallId ?? '',
       }
     }
-    return { role: message.role, content: message.content }
+    return { role: message.role, content: toWireContent(message.content) }
   })
 }
 

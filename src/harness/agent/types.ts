@@ -1,9 +1,12 @@
 import type { InputId, StepId, TurnId } from '../../util/brand.ts'
+import type { AttachmentRef } from '../attachments/store.ts'
 
 /** One queued input: user messages wake the driver, injected context waits. */
 export interface InboxItem {
   readonly kind: 'user' | 'injected'
   readonly content: string
+  /** References accepted with the input; the log records them on the turn. */
+  readonly attachments?: readonly AttachmentRef[]
   /** Set when the input was durably accepted (`input/queued`) before claiming. */
   readonly inputId?: InputId
 }

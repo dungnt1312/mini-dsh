@@ -1,19 +1,23 @@
 // @vitest-environment jsdom
 /**
- * Composer keyboard behaviour: the `@` and `/` menus, and ArrowUp recall.
- * Sending, chips and permissions are covered by the product-copy specs.
+ * Composer behaviour around the rich input: the `@` and `/` menus, mention and
+ * attachment chips, pasted files, and ArrowUp recall. Sending, chips in the
+ * control row and permissions are covered by the product-copy specs.
  */
-import { act } from 'react'
+import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Composer } from './Composer.tsx'
 import { ToastHost } from '../common/Toast.tsx'
+import { emptyDraft, type AttachmentRef, type RichDraft } from '../../lib/composer-draft.ts'
 import type { CompletionItem } from '../../lib/composer-completion.ts'
 
 const files: readonly CompletionItem[] = [
-  { id: 'web/composer.ts', insert: 'web/composer.ts', label: 'composer.ts', detail: 'web' },
-  { id: 'web/components/composer-chip.ts', insert: 'web/components/composer-chip.ts', label: 'composer-chip.ts', detail: 'web/components' },
+  { id: 'web/composer.ts', insert: 'web/composer.ts', segment: { kind: 'mention', path: 'web/composer.ts' }, label: 'composer.ts', detail: 'web' },
+  { id: 'web/api.ts', insert: 'web/api.ts', segment: { kind: 'mention', path: 'web/api.ts' }, label: 'api.ts', detail: 'web' },
 ]
+
+const PNG_REF: AttachmentRef = { id: 'a'.repeat(64), name: 'shot.png', mediaType: 'image/png', bytes: 2048 }
 
 const baseProps = {
   connected: true,
@@ -28,21 +32,40 @@ const baseProps = {
 
 let host: HTMLDivElement
 let root: Root
+/** The draft the harness currently holds, as the app would. */
+let current: RichDraft = emptyDraft
 
-function render(props: Partial<React.ComponentProps<typeof Composer>> & { draft: string; onDraft: (value: string) => void }): void {
-  // The permission chip reads the toast context the real app provides.
-  act(() => root.render(<ToastHost><Composer {...baseProps} {...props} /></ToastHost>))
+/** Mirror the app: the parent owns the draft and echoes back what it is given. */
+function Harness(props: Partial<React.ComponentProps<typeof Composer>>): React.ReactNode {
+  const [draft, setDraft] = useState<RichDraft>(emptyDraft)
+  current = draft
+  return (
+    <ToastHost>
+      <Composer {...baseProps} {...props} draft={draft} onDraft={(next) => { current = next; setDraft(next) }} />
+    </ToastHost>
+  )
 }
 
-const input = (): HTMLTextAreaElement => host.querySelector('[data-composer-input]') as HTMLTextAreaElement
+function render(props: Partial<React.ComponentProps<typeof Composer>> = {}): void {
+  act(() => root.render(<Harness {...props} />))
+}
 
-/** Type into the textarea the way a user does: value, caret, then events. */
-function type(value: string, caret = value.length): void {
+const input = (): HTMLElement => host.querySelector('[data-composer-input]') as HTMLElement
+const options = (): HTMLElement[] => Array.from(host.querySelectorAll('[role="option"]'))
+const chips = (): HTMLElement[] => Array.from(input().querySelectorAll('[data-chip-segment]'))
+
+/** Type text and leave the caret at its end, the way a browser would. */
+function type(text: string): void {
   const element = input()
   act(() => {
-    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
-    setter?.call(element, value)
-    element.setSelectionRange(caret, caret)
+    element.textContent = text
+    const node = element.firstChild as Text
+    const range = document.createRange()
+    range.setStart(node, text.length)
+    range.collapse(true)
+    const selection = document.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
     element.dispatchEvent(new Event('input', { bubbles: true }))
   })
 }
@@ -51,13 +74,14 @@ function key(value: string): void {
   act(() => { input().dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: value })) })
 }
 
-const options = (): HTMLElement[] => Array.from(host.querySelectorAll('[role="option"]'))
+const settle = async (): Promise<void> => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 200)) }) }
 
 beforeEach(() => {
   ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
+  current = emptyDraft
 })
 
 afterEach(() => {
@@ -67,36 +91,44 @@ afterEach(() => {
 })
 
 describe('file mentions', () => {
-  it('searches after the caret settles and inserts the picked path', async () => {
-    const onDraft = vi.fn()
+  it('searches after the caret settles and inserts the choice as a chip', async () => {
     const onSearchFiles = vi.fn(async () => files)
-    render({ draft: '', onDraft, onSearchFiles })
+    render({ onSearchFiles })
 
-    type('@comp')
-    render({ draft: '@comp', onDraft, onSearchFiles })
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 200)) })
+    type('look at @comp')
+    await settle()
 
     expect(onSearchFiles).toHaveBeenCalledWith('comp')
-    expect(options().map((option) => option.textContent)).toEqual(['composer.tsweb', 'composer-chip.tsweb/components'])
-    expect(input().getAttribute('aria-expanded')).toBe('true')
+    expect(options().map((option) => option.textContent)).toEqual(['composer.tsweb', 'api.tsweb'])
 
+    key('Enter')
+    expect(chips()).toHaveLength(1)
+    expect(chips()[0]?.getAttribute('aria-label')).toBe('File mention web/composer.ts')
+    expect(current.segments).toEqual([
+      { kind: 'text', text: 'look at ' },
+      { kind: 'mention', path: 'web/composer.ts' },
+      { kind: 'text', text: ' ' },
+    ])
+  })
+
+  it('moves the active option with the arrow keys', async () => {
+    render({ onSearchFiles: async () => files })
+    type('@comp')
+    await settle()
     key('ArrowDown')
     key('Enter')
-    expect(onDraft).toHaveBeenLastCalledWith('web/components/composer-chip.ts ')
+    expect(current.segments).toContainEqual({ kind: 'mention', path: 'web/api.ts' })
   })
 
   it('stays shut without a project and closes on Escape', async () => {
-    const onDraft = vi.fn()
-    render({ draft: '', onDraft })
+    render({})
     type('@comp')
-    render({ draft: '@comp', onDraft })
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 200)) })
+    await settle()
     expect(options()).toHaveLength(0)
 
-    const onSearchFiles = vi.fn(async () => files)
-    render({ draft: '@comp', onDraft, onSearchFiles })
+    render({ onSearchFiles: async () => files })
     type('@comp')
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 200)) })
+    await settle()
     expect(options()).toHaveLength(2)
     key('Escape')
     expect(options()).toHaveLength(0)
@@ -107,43 +139,85 @@ describe('file mentions', () => {
 describe('skill commands', () => {
   const skills = [{ name: 'review', description: 'Check a diff' }, { name: 'test', description: 'Run the suite' }]
 
-  it('opens on a leading slash and inserts the skill invocation', () => {
-    const onDraft = vi.fn()
-    render({ draft: '', onDraft, skills })
+  it('opens on a leading slash and inserts plain, editable text', () => {
+    render({ skills })
     type('/rev')
-    render({ draft: '/rev', onDraft, skills })
     expect(options().map((option) => option.textContent)).toEqual(['reviewCheck a diff'])
     key('Enter')
-    expect(onDraft).toHaveBeenLastCalledWith('Use the review skill: ')
+    expect(chips()).toHaveLength(0)
+    expect(current.segments).toEqual([{ kind: 'text', text: 'Use the review skill: ' }])
   })
 
   it('ignores a slash that is not the start of the draft', () => {
-    const onDraft = vi.fn()
-    render({ draft: '', onDraft, skills })
+    render({ skills })
     type('run /rev')
-    render({ draft: 'run /rev', onDraft, skills })
     expect(options()).toHaveLength(0)
+  })
+})
+
+describe('attachments', () => {
+  it('uploads pasted files and drops a chip in for each one', async () => {
+    const onUploadFiles = vi.fn(async () => [PNG_REF])
+    render({ onUploadFiles })
+
+    const file = new File([new Uint8Array([1, 2])], 'shot.png', { type: 'image/png' })
+    await act(async () => {
+      const event = new Event('paste', { bubbles: true, cancelable: true }) as Event & { clipboardData: unknown }
+      Object.defineProperty(event, 'clipboardData', { value: { files: [file], getData: () => '' } })
+      input().dispatchEvent(event)
+      await Promise.resolve()
+    })
+    await settle()
+
+    expect(onUploadFiles).toHaveBeenCalledTimes(1)
+    expect(chips()[0]?.getAttribute('aria-label')).toBe('Attachment shot.png')
+    expect(current.segments).toContainEqual({ kind: 'attachment', ref: PNG_REF })
+  })
+
+  it('removes exactly the chip whose button was pressed', async () => {
+    render({ onUploadFiles: async () => [PNG_REF] })
+    type('before ')
+    const element = input()
+    await act(async () => {
+      const event = new Event('paste', { bubbles: true, cancelable: true }) as Event & { clipboardData: unknown }
+      Object.defineProperty(event, 'clipboardData', { value: { files: [new File([new Uint8Array([1])], 'shot.png', { type: 'image/png' })], getData: () => '' } })
+      element.dispatchEvent(event)
+      await Promise.resolve()
+    })
+    await settle()
+    expect(chips()).toHaveLength(1)
+
+    act(() => { (chips()[0]?.querySelector('[data-chip-remove]') as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+    expect(chips()).toHaveLength(0)
+    expect(current.segments.some((segment) => segment.kind === 'attachment')).toBe(false)
+    // The chip's own trailing space stays behind, exactly as deleting a word would.
+    expect(current.segments).toEqual([{ kind: 'text', text: 'before  ' }])
+  })
+
+  it('offers no attach control when the conversation cannot take files', () => {
+    render({})
+    expect(host.querySelector('[aria-label="Attach a file"]')).toBeNull()
+    render({ onUploadFiles: async () => [] })
+    expect(host.querySelector('[aria-label="Attach a file"]')).not.toBeNull()
   })
 })
 
 describe('recall', () => {
   it('loads the last message only when the draft is empty', () => {
-    const onDraft = vi.fn()
     const onRecallLast = vi.fn(() => 'previous question')
-    render({ draft: '', onDraft, onRecallLast })
+    render({ onRecallLast })
     key('ArrowUp')
-    expect(onDraft).toHaveBeenCalledWith('previous question')
+    expect(current.segments).toEqual([{ kind: 'text', text: 'previous question' }])
 
-    onDraft.mockClear()
-    render({ draft: 'typing', onDraft, onRecallLast })
+    onRecallLast.mockClear()
+    type('typing')
     key('ArrowUp')
-    expect(onDraft).not.toHaveBeenCalled()
+    expect(onRecallLast).not.toHaveBeenCalled()
   })
 
   it('does nothing when there is no earlier message', () => {
-    const onDraft = vi.fn()
-    render({ draft: '', onDraft, onRecallLast: () => null })
+    render({ onRecallLast: () => null })
     key('ArrowUp')
-    expect(onDraft).not.toHaveBeenCalled()
+    expect(current.segments).toEqual([])
   })
 })

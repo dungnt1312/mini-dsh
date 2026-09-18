@@ -1,6 +1,7 @@
-import { modeLabel } from './lib/copy.ts'
+import { errorSummary, modeLabel } from './lib/copy.ts'
 import { Generation, composerKey, emptyComposer, acceptedDraft, validConversationScope, type ComposerState } from './lib/interaction.ts'
 import { persistDrafts, readDrafts } from './lib/composer-drafts.ts'
+import { draftAttachments, draftIsEmpty, draftText, textDraft, type AttachmentRef, type RichDraft } from './lib/composer-draft.ts'
 import { parseRoute, routePath, sessionRoute, workspaceRoute, type AppRoute } from './lib/route.ts'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -18,6 +19,7 @@ import {
   renameSessionIn,
   searchProjectFiles,
   sendMessageIn,
+  uploadAttachment,
   stopSessionIn,
   setMode,
   listModes,
@@ -137,7 +139,7 @@ export function App() {
   // Unsent drafts survive a reload; `sending`/`error` describe a request that
   // is gone, so only the text comes back.
   const [composers, setComposersState] = useState<Record<string, ComposerState>>(() =>
-    Object.fromEntries(Object.entries(readDrafts()).map(([scope, draft]) => [scope, { ...emptyComposer, draft }])))
+    Object.fromEntries(Object.entries(readDrafts()).map(([scope, stored]) => [scope, { ...emptyComposer, draft: stored }])))
   const composersRef = useRef(composers)
   composersRef.current = composers
   const setComposers = useCallback((update: (all: Record<string, ComposerState>) => Record<string, ComposerState>) => {
@@ -150,7 +152,7 @@ export function App() {
   const composer = composers[key] ?? emptyComposer
   const { draft, sending, error: sendError } = composer
   const updateComposer = (scope: string, update: (state: ComposerState) => ComposerState) => setComposers((all) => ({ ...all, [scope]: update(all[scope] ?? emptyComposer) }))
-  const setDraft = (draft: string) => updateComposer(key, (state) => ({ ...state, draft, revision: state.revision + 1 }))
+  const setDraft = (draft: RichDraft) => updateComposer(key, (state) => ({ ...state, draft, revision: state.revision + 1 }))
   const [meta, setMeta] = useState<WorkspaceMeta | null>(null)
   // Skill catalog for the composer's `/` menu. A failure just leaves the menu
   // empty — it never interrupts a conversation.
@@ -508,7 +510,7 @@ export function App() {
   }, [activeWs, navigate, sidebarDocked])
 
   const send = useCallback(async () => {
-    if (sendingRef.current.has(key) || draft.trim() === '' || modelValue === null || activeWs === null) return
+    if (sendingRef.current.has(key) || draftIsEmpty(draft) || modelValue === null || activeWs === null) return
     if (!validConversationScope(effectiveDraftProject, projects.map((project) => project.id))) return
     const workspaceId = activeWs
     const sourceKey = key
@@ -516,7 +518,8 @@ export function App() {
     updateComposer(sourceKey, (state) => ({ ...state, sending: true, error: null }))
     const revision = composer.revision
     const nav = navigation.current.current()
-    const content = draft
+    const content = draftText(draft)
+    const attachments = draftAttachments(draft)
     let targetKey = sourceKey
     try {
       let sessionId = current
@@ -532,7 +535,7 @@ export function App() {
         // overtake migration, and edits made after submission retain their newer
         // revision when acceptedDraft runs on the target.
         setComposers((all) => {
-          const source = all[sourceKey] ?? { ...composer, draft: content }
+          const source = all[sourceKey] ?? { ...composer, draft }
           const next = { ...all, [targetKey]: { ...source, sending: true } }
           delete next[sourceKey]
           return next
@@ -545,7 +548,7 @@ export function App() {
       }
       try {
         // Clear only the submitted draft after durable acceptance.
-        await sendMessageIn(workspaceId, sessionId, content, globalThis.crypto.randomUUID())
+        await sendMessageIn(workspaceId, sessionId, content, globalThis.crypto.randomUUID(), attachments)
         updateComposer(targetKey, (state) => acceptedDraft(state, revision))
       } catch (cause) {
         updateComposer(targetKey, (state) => ({ ...state, error: String(cause) }))
@@ -780,9 +783,33 @@ export function App() {
     const found = await searchProjectFiles(activeWs, workbenchProject.id, query, 12)
     return found.matches.map((match) => {
       const folder = match.path.slice(0, Math.max(0, match.path.length - match.name.length - 1))
-      return { id: match.path, insert: match.path, label: match.name, ...(folder !== '' ? { detail: folder } : {}) }
+      return {
+        id: match.path,
+        insert: match.path,
+        // A mention is a chip: the path stays one object the user can remove.
+        segment: { kind: 'mention', path: match.path },
+        label: match.name,
+        ...(folder !== '' ? { detail: folder } : {}),
+      }
     })
   }, [activeWs, workbenchProject])
+
+  /**
+   * Store dropped/pasted/chosen files. A refusal (type, size) is reported per
+   * file and the rest still attach, so one bad file never loses the others.
+   */
+  const uploadFiles = useCallback(async (files: readonly File[]): Promise<readonly AttachmentRef[]> => {
+    if (activeWs === null) return []
+    const stored: AttachmentRef[] = []
+    for (const file of files) {
+      try {
+        stored.push(await uploadAttachment(activeWs, file))
+      } catch (cause) {
+        toast.notify(`${file.name} was not attached: ${errorSummary(String(cause))}`)
+      }
+    }
+    return stored
+  }, [activeWs, toast])
 
   /** ArrowUp on an empty composer edits the newest own message again. */
   const recallLast = useCallback((): string | null => {
@@ -812,6 +839,7 @@ export function App() {
       modeValue={modeSelection.selected}
       onMode={(value) => void selectMode(value)}
       {...(workbenchProject !== null ? { onSearchFiles: searchFiles } : {})}
+      {...(activeWs !== null ? { onUploadFiles: uploadFiles } : {})}
       skills={skills}
       onRecallLast={recallLast}
       autoFocus={current === null}
@@ -884,7 +912,7 @@ export function App() {
                 <div className="flex flex-wrap justify-center gap-2">
                   {modelValue === null ? <Button variant="primary" size="sm" onClick={() => openSettings()}>Configure provider</Button> : null}
                   {suggestions.map((suggestion) => (
-                    <Button key={suggestion} variant="outline" size="sm" className="text-fg-muted" disabled={modelValue === null} onClick={() => { setDraft(suggestion); focusComposer() }}>
+                    <Button key={suggestion} variant="outline" size="sm" className="text-fg-muted" disabled={modelValue === null} onClick={() => { setDraft(textDraft(suggestion)); focusComposer() }}>
                       {suggestion}
                     </Button>
                   ))}
@@ -904,7 +932,7 @@ export function App() {
                   items={projectedItems}
                   {...(modelValue !== null && meta?.model !== undefined && meta.model !== '' ? { modelLabel: meta.model } : {})}
                   workspaceId={activeWs}
-                  onReuse={(text) => { setDraft(text); focusComposer() }}
+                  onReuse={(text) => { setDraft(textDraft(text)); focusComposer() }}
                   onOpenChild={openSession}
                   onRetry={() => void retryLast()}
                   onOpenSettings={() => openSettings()}

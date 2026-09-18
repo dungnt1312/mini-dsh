@@ -54,7 +54,7 @@ export function Transcript({ items, conversationId, modelLabel, workspaceId, onR
   const render = ({ item, index }: Indexed): ReactNode => {
     switch (item.kind) {
       case 'user':
-        return <UserBubble key={`user-${index}`} item={item} {...(onReuse !== undefined ? { onReuse } : {})} />
+        return <UserBubble key={`user-${index}`} item={item} workspaceId={workspaceId ?? null} {...(onReuse !== undefined ? { onReuse } : {})} />
       case 'assistant':
         return <AssistantMessage key={`assistant-${item.ts ?? index}`} item={item} {...(modelLabel !== undefined ? { modelLabel } : {})} />
       case 'tool':

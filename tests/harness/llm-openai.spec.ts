@@ -88,4 +88,35 @@ describe('openai completions adapter: thinking + wire shape', () => {
     expect(messages[2]?.tool_call_id).toBe('c1')
     expect(Array.isArray(captured[0]?.body['tools'])).toBe(true)
   })
+
+  it('sends image parts as data URLs and keeps text-only messages bare strings', async () => {
+    const captured = stubFetch()
+    await run({
+      messages: [
+        { role: 'system', content: 'be helpful' },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'what is this?' },
+            { type: 'image', mediaType: 'image/png', base64: 'QUJD', name: 'shot.png' },
+          ],
+        },
+      ],
+    })
+    const messages = captured[0]?.body['messages'] as { role: string; content: unknown }[]
+    expect(messages[0]?.content).toBe('be helpful')
+    expect(messages[1]?.content).toEqual([
+      { type: 'text', text: 'what is this?' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,QUJD' } },
+    ])
+  })
+
+  it('flattens a tool answer that arrives as parts, since the protocol wants text', async () => {
+    const captured = stubFetch()
+    await run({
+      messages: [{ role: 'tool', content: [{ type: 'text', text: 'done' }], toolCallId: 'c1' }],
+    })
+    const messages = captured[0]?.body['messages'] as { content: unknown }[]
+    expect(messages[0]?.content).toBe('done')
+  })
 })

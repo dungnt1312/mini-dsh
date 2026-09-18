@@ -1,9 +1,17 @@
-import type { SseEvent, ToolCall } from './types.ts'
+import type { AttachmentRef, SseEvent, ToolCall } from './types.ts'
 import { toolTarget } from './format.ts'
 
 /** View items projected from the durable log — the UI's deriveMessages(). */
 export type ViewItem =
-  | { readonly kind: 'user'; readonly content: string; readonly ts?: number; /** Queued input awaiting its consuming turn — flipped in place by the user/message sharing its inputId. */ queued?: boolean }
+  | {
+      readonly kind: 'user'
+      readonly content: string
+      readonly ts?: number
+      /** Files sent with the message; the transcript shows them as chips. */
+      readonly attachments?: readonly AttachmentRef[]
+      /** Queued input awaiting its consuming turn — flipped in place by the user/message sharing its inputId. */
+      queued?: boolean
+    }
   | {
       readonly kind: 'assistant'
       readonly content: string
@@ -83,7 +91,12 @@ export function projectItems(events: readonly SseEvent[]): ViewItem[] {
           queuedUsers.delete(event.inputId)
           break
         }
-        items.push({ kind: 'user', content: event.content, ...(event.timestamp !== undefined ? { ts: event.timestamp } : {}) })
+        items.push({
+          kind: 'user',
+          content: event.content,
+          ...(event.timestamp !== undefined ? { ts: event.timestamp } : {}),
+          ...(event.attachments !== undefined && event.attachments.length > 0 ? { attachments: event.attachments } : {}),
+        })
         break
       }
       case 'input/queued': {
@@ -92,6 +105,7 @@ export function projectItems(events: readonly SseEvent[]): ViewItem[] {
           kind: 'user',
           content: event.content,
           ...(event.timestamp !== undefined ? { ts: event.timestamp } : {}),
+          ...(event.attachments !== undefined && event.attachments.length > 0 ? { attachments: event.attachments } : {}),
           queued: true,
         }
         queuedUsers.set(event.inputId, item)

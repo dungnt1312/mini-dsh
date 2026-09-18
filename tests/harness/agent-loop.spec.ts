@@ -9,6 +9,7 @@ import {
   AgentsService,
   Kernel,
   LlmService,
+  messageText,
   SessionsService,
   type Agent,
   type LlmProvider,
@@ -168,7 +169,7 @@ describe('agent loop', () => {
     llm.register({
       name: 'spy',
       async *stream(request) {
-        for (const message of request.messages) seen.push(message.content)
+        for (const message of request.messages) seen.push(messageText(message.content))
         yield { type: 'delta', delta: 'fine' }
       },
     })
@@ -211,7 +212,7 @@ describe('agent loop', () => {
     llm.register({
       name: 'auditor',
       async *stream(request) {
-        projections.push(request.messages.map((message) => message.content))
+        projections.push(request.messages.map((message) => messageText(message.content)))
         yield { type: 'delta', delta: 'audited' }
       },
     })

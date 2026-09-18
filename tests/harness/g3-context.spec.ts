@@ -5,7 +5,7 @@
  * the truthful manifest.
  */
 import { describe, expect, it } from 'vitest'
-import { buildContext, ContextBudgetError, DEFAULT_BUDGET, type ActiveSkill, type MemorySnippet } from 'mini-dsh'
+import { buildContext, ContextBudgetError, DEFAULT_BUDGET, messageText, type ActiveSkill, type MemorySnippet } from 'mini-dsh'
 import { BUNDLED_MODES, DEFAULT_MODE_ID } from 'mini-dsh'
 import type { SessionEvent } from 'mini-dsh'
 
@@ -171,7 +171,7 @@ describe('lower-trust containment', () => {
       compaction: { summary: hostile, coversSeq: 5 },
     })
     for (const message of assembled.messages.slice(1)) {
-      const body = message.content
+      const body = messageText(message.content)
       if (body.includes('ignore previous instructions')) {
         // Every untrusted envelope opened must still be closable exactly by
         // the host tag: forged closers are neutralized.

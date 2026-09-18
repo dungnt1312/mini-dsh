@@ -1,3 +1,5 @@
+import { emptyDraft, type RichDraft } from './composer-draft.ts'
+
 /** Monotonic tokens reject stale completions, including A → B → A navigation. */
 export class Generation {
   private value = 0
@@ -7,10 +9,10 @@ export class Generation {
 }
 
 export const composerKey = (workspace: string | null, session: string | null) => JSON.stringify([workspace, session])
-export interface ComposerState { draft: string; revision: number; sending: boolean; error: string | null }
-export const emptyComposer: ComposerState = { draft: '', revision: 0, sending: false, error: null }
+export interface ComposerState { draft: RichDraft; revision: number; sending: boolean; error: string | null }
+export const emptyComposer: ComposerState = { draft: emptyDraft, revision: 0, sending: false, error: null }
 export function acceptedDraft(state: ComposerState, revision: number): ComposerState {
-  return { ...state, draft: state.revision === revision ? '' : state.draft, sending: false }
+  return { ...state, draft: state.revision === revision ? emptyDraft : state.draft, sending: false }
 }
 
 /** A draft scope is valid when it is chat-only (null) or a registered project. */

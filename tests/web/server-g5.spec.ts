@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, describe, expect, it } from 'vitest'
-import { createWebServer, type LlmProvider, type WebServer } from 'mini-dsh'
+import { createWebServer, messageText, type LlmProvider, type WebServer } from 'mini-dsh'
 
 const mcpFixture = fileURLToPath(new URL('../fixtures/mcp-stdio-server.mjs', import.meta.url))
 const hookFixture = fileURLToPath(new URL('../fixtures/hook-command.mjs', import.meta.url))
@@ -335,7 +335,7 @@ describe('G5 web MCP + hooks', () => {
     const provider: LlmProvider = {
       name: 'scripted', models: ['scripted'],
       async *stream(request) {
-        seen.push(request.messages.map((message) => message.content))
+        seen.push(request.messages.map((message) => messageText(message.content)))
         yield { type: 'toolCalls', calls: [{ id: 'b1', name: 'Bash', args: { command: 'echo should-not-run' } }] }
       },
     }

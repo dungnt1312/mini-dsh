@@ -3,7 +3,7 @@
  * item does to the draft, and how the two menus rank their items.
  */
 import { describe, expect, it } from 'vitest'
-import { applyCompletion, completionAt, moveActive, rankSkills } from './composer-completion.ts'
+import { completionAt, moveActive, rankSkills } from './composer-completion.ts'
 
 describe('completionAt', () => {
   it('detects a file mention at a word boundary and after whitespace', () => {
@@ -35,19 +35,6 @@ describe('completionAt', () => {
     expect(completionAt('@rea', 4, 5)).toBeNull()
     expect(completionAt('@rea', 9)).toBeNull()
     expect(completionAt('@rea', -1)).toBeNull()
-  })
-})
-
-describe('applyCompletion', () => {
-  it('replaces the trigger span and leaves the caret after a trailing space', () => {
-    const request = completionAt('look at @src/i', 14)!
-    expect(applyCompletion('look at @src/i', request, 'src/index.ts')).toEqual({ draft: 'look at src/index.ts ', caret: 21 })
-  })
-
-  it('keeps the text that follows the caret', () => {
-    const draft = '@rea and more'
-    const request = completionAt(draft, 4)!
-    expect(applyCompletion(draft, request, 'README.md')).toEqual({ draft: 'README.md  and more', caret: 10 })
   })
 })
 

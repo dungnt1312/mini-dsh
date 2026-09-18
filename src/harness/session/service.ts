@@ -7,6 +7,7 @@ import {
   type SessionId,
   type WorkspaceId,
 } from '../../util/brand.ts'
+import type { AttachmentRef } from '../attachments/store.ts'
 import type { SessionEvent } from './events.ts'
 import { Session } from './session.ts'
 import { deriveTitle } from './title.ts'
@@ -21,6 +22,14 @@ declare module 'mini-dsh' {
   interface Context {
     sessions: SessionsService
   }
+}
+
+/** One durably accepted input still waiting for the driver. */
+export interface PendingInput {
+  readonly inputId: InputId
+  readonly clientRequestId?: string
+  readonly content: string
+  readonly attachments?: readonly AttachmentRef[]
 }
 
 /** Options for the sessions service. */
@@ -329,16 +338,19 @@ export class SessionsService extends Service {
    * Durably accepted but not yet consumed inputs, oldest first. An input is
    * consumed once a `user/message` carrying its id lands in the log; after
    * a restart these stay pending and are never executed on their own.
+   * Attachments ride along: a re-adopted input must reach the model with the
+   * same files the user attached to it.
    */
-  pendingInputs(session: Session): { inputId: InputId; clientRequestId?: string; content: string }[] {
+  pendingInputs(session: Session): PendingInput[] {
     const consumed = new Set<string>()
-    const queued: { inputId: InputId; clientRequestId?: string; content: string }[] = []
+    const queued: PendingInput[] = []
     for (const event of session.events) {
       if (event.type === 'input/queued') {
         queued.push({
           inputId: event.inputId as InputId,
           ...(event.clientRequestId !== undefined ? { clientRequestId: event.clientRequestId } : {}),
           content: event.content,
+          ...(event.attachments !== undefined ? { attachments: event.attachments } : {}),
         })
       } else if (event.type === 'user/message' && event.inputId !== undefined) {
         consumed.add(event.inputId)

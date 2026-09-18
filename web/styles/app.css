@@ -127,6 +127,15 @@
 /* Workspace management panels keep semantic hooks; their visuals live here so the
    panel modules stay free of repeated utility strings. */
 @layer components {
+  /* The composer input is a contenteditable, so its placeholder is drawn
+     rather than provided by the platform. `:empty` alone is not enough: an
+     editor the browser has seeded with a <br> still reads as empty to a user. */
+  .composer-input:empty::before,
+  .composer-input:has(> br:only-child)::before {
+    content: attr(data-placeholder);
+    color: var(--fg-faint);
+    pointer-events: none;
+  }
   .manage-panel { display: flex; min-width: 0; flex-direction: column; gap: 1.5rem; }
   .manage-section { display: flex; min-width: 0; flex-direction: column; gap: 0.75rem; }
   .manage-section + .manage-section { border-top: 1px solid var(--line); padding-top: 1.5rem; }

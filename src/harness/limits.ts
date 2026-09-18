@@ -20,6 +20,12 @@ export interface HarnessLimits {
   readonly maxPendingInputs: number
   /** Projected log size (chars) that triggers automatic compaction at a completed boundary; 0 disables. */
   readonly automaticCompactionChars: number
+  /** Largest single composer attachment accepted for storage. */
+  readonly maxAttachmentBytes: number
+  /** Attachments one message may carry. */
+  readonly maxAttachmentsPerMessage: number
+  /** Model-visible cap for one inlined text attachment. */
+  readonly attachmentTextLimit: number
 }
 
 export const DEFAULT_LIMITS: HarnessLimits = {
@@ -31,6 +37,9 @@ export const DEFAULT_LIMITS: HarnessLimits = {
   toolOutputLimit: 60_000,
   maxPendingInputs: 100,
   automaticCompactionChars: 0,
+  maxAttachmentBytes: 10 * 1024 * 1024,
+  maxAttachmentsPerMessage: 10,
+  attachmentTextLimit: 60_000,
 }
 
 /** Merge a partial override over the defaults; non-positive values are ignored. */

@@ -69,6 +69,7 @@ export {
 
 // ── Harness: LLM seam ────────────────────────────────────────────────────
 export type {
+  ContentPart,
   LlmProvider,
   ModelMessage,
   ModelRequest,
@@ -77,6 +78,19 @@ export type {
   ToolCall,
   ToolSchema,
 } from './harness/llm/types.ts'
+export { messageText } from './harness/llm/types.ts'
+export {
+  AttachmentError,
+  AttachmentStore,
+  isImageMediaType,
+  isSupportedMediaType,
+  isTextMediaType,
+  normalizeMediaType,
+  sniffImageMediaType,
+  type AttachmentLookup,
+  type AttachmentRef,
+  type LoadedAttachment,
+} from './harness/attachments/store.ts'
 export { LlmService } from './harness/llm/service.ts'
 export { DeepSeekProvider } from './harness/llm/deepseek.ts'
 export { OpenAiCompletionsProvider, type OpenAiCompletionsOptions } from './harness/llm/openai.ts'

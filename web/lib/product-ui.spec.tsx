@@ -10,6 +10,7 @@ import { ToastHost, useToast } from '../components/common/Toast.tsx'
 import { ToolCard, AssistantMessage, DelegationCard, AuditLine, UserBubble } from '../components/chat/MessageParts.tsx'
 import { groupBlocks } from '../components/chat/Transcript.tsx'
 import { modeLabel, errorSummary } from './copy.ts'
+import { emptyDraft, textDraft } from './composer-draft.ts'
 import { budgetTone, formatTime } from './format.ts'
 import { projectItems } from './project.ts'
 import { setPolicy, compactSession, fetchHooks, saveHooks, renameWorkspace, listProjectFiles, readProjectFile } from './api.ts'
@@ -94,37 +95,37 @@ describe('mounted production controls', () => {
   })
   it('IME and Shift+Enter do not send; Enter sends only an eligible draft', async () => {
     const send = vi.fn()
-    await mount(<ToastHost><Composer {...composerBase} connected running={false} draft="Dữ liệu giữ nguyên" onSend={send} /></ToastHost>)
-    const input = host.querySelector('textarea')!
+    await mount(<ToastHost><Composer {...composerBase} connected running={false} draft={textDraft('Dữ liệu giữ nguyên')} onSend={send} /></ToastHost>)
+    const input = host.querySelector<HTMLElement>('[data-composer-input]')!
     await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true })); input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true })) })
     expect(send).not.toHaveBeenCalled()
     await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
     expect(send).toHaveBeenCalledTimes(1)
-    expect(input.value).toBe('Dữ liệu giữ nguyên')
+    expect(input.textContent).toBe('Dữ liệu giữ nguyên')
   })
   it('while running with a draft the send becomes Queue next to Stop and Enter still submits', async () => {
     const send = vi.fn()
-    await mount(<ToastHost><Composer {...composerBase} connected running draft="follow-up" onSend={send} /></ToastHost>)
+    await mount(<ToastHost><Composer {...composerBase} connected running draft={textDraft('follow-up')} onSend={send} /></ToastHost>)
     const queue = host.querySelector<HTMLButtonElement>('button[aria-label="Queue message"]')
     expect(queue?.disabled).toBe(false)
     expect(host.querySelector('button[aria-label="Stop work"]')).not.toBeNull()
-    const input = host.querySelector('textarea')!
-    expect(input.placeholder).toBe('Queue a follow-up…')
+    const input = host.querySelector<HTMLElement>('[data-composer-input]')!
+    expect(input.dataset['placeholder']).toBe('Queue a follow-up…')
     await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
     expect(send).toHaveBeenCalledTimes(1)
     expect(host.querySelector('button[aria-label="Send"]')).toBeNull()
   })
   it('while running with an empty draft only Stop is offered', async () => {
-    await mount(<ToastHost><Composer {...composerBase} connected running draft="" /></ToastHost>)
+    await mount(<ToastHost><Composer {...composerBase} connected running draft={emptyDraft} /></ToastHost>)
     expect(host.querySelector('button[aria-label="Stop work"]')).not.toBeNull()
     expect(host.querySelector('button[aria-label="Queue message"]')).toBeNull()
   })
   it('keeps reconnecting drafts editable and does not imply stopped work', async () => {
     const draft = 'draft survives reconnect'
-    await mount(<ToastHost><Composer {...composerBase} connected={false} running draft={draft} /></ToastHost>)
-    const input = host.querySelector<HTMLTextAreaElement>('textarea')!
-    expect(input.disabled).toBe(false)
-    expect(input.value).toBe(draft)
+    await mount(<ToastHost><Composer {...composerBase} connected={false} running draft={textDraft(draft)} /></ToastHost>)
+    const input = host.querySelector<HTMLElement>('[data-composer-input]')!
+    expect(input.getAttribute('contenteditable')).toBe('true')
+    expect(input.textContent).toBe(draft)
     expect(host.querySelector('button[aria-label="Stop work"]')).not.toBeNull()
     expect(host.querySelector<HTMLButtonElement>('button[aria-label="Queue message"]')?.disabled).toBe(true)
   })
@@ -640,13 +641,13 @@ describe('no-modal new-chat flow (composer scope picker)', () => {
   ]
   const scopeTrigger = () => host.querySelector<HTMLButtonElement>('button[aria-label^="Conversation scope"]')
   it('renders the picker trigger with the selected label in draft mode', async () => {
-    await mount(<ToastHost><Composer {...composerBase} connected running={false} draft="" scopePicker={{ value: 'p1', options, onChange: () => {}, onPickFolder: () => {} }} /></ToastHost>)
+    await mount(<ToastHost><Composer {...composerBase} connected running={false} draft={emptyDraft} scopePicker={{ value: 'p1', options, onChange: () => {}, onPickFolder: () => {} }} /></ToastHost>)
     expect(scopeTrigger()?.textContent).toContain('Acme')
     expect(scopeTrigger()?.getAttribute('aria-haspopup')).toBe('menu')
   })
   it('lists projects with paths and reports the changed scope', async () => {
     const onChange = vi.fn()
-    await mount(<ToastHost><Composer {...composerBase} connected running={false} draft="" scopePicker={{ value: null, options, onChange, onPickFolder: () => {} }} /></ToastHost>)
+    await mount(<ToastHost><Composer {...composerBase} connected running={false} draft={emptyDraft} scopePicker={{ value: null, options, onChange, onPickFolder: () => {} }} /></ToastHost>)
     await act(async () => scopeTrigger()!.click())
     const rows = [...document.body.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')]
     expect(rows).toHaveLength(2)
@@ -657,7 +658,7 @@ describe('no-modal new-chat flow (composer scope picker)', () => {
   it('switches to Chat only with null and opens the folder picker from the footer', async () => {
     const onChange = vi.fn()
     const onPickFolder = vi.fn()
-    await mount(<ToastHost><Composer {...composerBase} connected running={false} draft="" scopePicker={{ value: 'p1', options, onChange, onPickFolder }} /></ToastHost>)
+    await mount(<ToastHost><Composer {...composerBase} connected running={false} draft={emptyDraft} scopePicker={{ value: 'p1', options, onChange, onPickFolder }} /></ToastHost>)
     await act(async () => scopeTrigger()!.click())
     const chatOnly = [...document.body.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find(b => b.textContent?.includes('Chat only'))!
     await act(async () => chatOnly.click())
@@ -668,7 +669,7 @@ describe('no-modal new-chat flow (composer scope picker)', () => {
     expect(onPickFolder).toHaveBeenCalledTimes(1)
   })
   it('falls back to the read-only scope display once a conversation is open', async () => {
-    await mount(<ToastHost><Composer {...composerBase} scope="C:/acme" connected running={false} draft="" /></ToastHost>)
+    await mount(<ToastHost><Composer {...composerBase} scope="C:/acme" connected running={false} draft={emptyDraft} /></ToastHost>)
     expect(scopeTrigger()).toBeNull()
     expect(host.querySelector('[title="C:/acme"]')?.textContent).toContain('acme')
   })

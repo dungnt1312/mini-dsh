@@ -1,3 +1,4 @@
+import type { AttachmentRef } from './composer-draft.ts'
 import type { AgentDefinitionRow, ChildRow, Envelope, HooksConfigRow, McpServerRow, MemoryEntryRow, Meta, ProjectRow, ProviderInput, ProviderSummary, SecretRow, SessionListing, SkillRow, WorkspaceMeta, WorkspaceRow } from './types.ts'
 
 async function json<T>(response: Response): Promise<T> {
@@ -344,11 +345,32 @@ export function stopSessionIn(workspaceId: string, sessionId: string): Promise<{
   }).then((r) => json<{ stopped: boolean }>(r))
 }
 
-export function sendMessageIn(workspaceId: string, sessionId: string, content: string, clientRequestId?: string): Promise<{ inputId: string; queued: boolean }> {
+/** Store one composer attachment; the reply is what a message carries. */
+export function uploadAttachment(workspaceId: string, file: File): Promise<AttachmentRef> {
+  return fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/attachments`, {
+    method: 'POST',
+    headers: {
+      'content-type': file.type !== '' ? file.type : 'application/octet-stream',
+      'x-file-name': encodeURIComponent(file.name),
+    },
+    body: file,
+  }).then((r) => json<AttachmentRef>(r))
+}
+
+/** The URL that serves a stored attachment's bytes (previews, transcript). */
+export function attachmentUrl(workspaceId: string, id: string): string {
+  return `/api/workspaces/${encodeURIComponent(workspaceId)}/attachments/${encodeURIComponent(id)}`
+}
+
+export function sendMessageIn(workspaceId: string, sessionId: string, content: string, clientRequestId?: string, attachments?: readonly AttachmentRef[]): Promise<{ inputId: string; queued: boolean }> {
   return fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}/messages`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ content, ...(clientRequestId !== undefined ? { clientRequestId } : {}) }),
+    body: JSON.stringify({
+      content,
+      ...(clientRequestId !== undefined ? { clientRequestId } : {}),
+      ...(attachments !== undefined && attachments.length > 0 ? { attachments } : {}),
+    }),
   }).then((r) => json<{ inputId: string; queued: boolean }>(r))
 }
 

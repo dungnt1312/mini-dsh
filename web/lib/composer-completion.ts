@@ -8,6 +8,8 @@
  * pasted mid-sentence never opens the menu.
  */
 
+import type { DraftSegment } from './composer-draft.ts'
+
 export type CompletionKind = 'file' | 'skill'
 
 export interface CompletionRequest {
@@ -25,6 +27,11 @@ export interface CompletionItem {
   readonly id: string
   /** Text inserted in place of the trigger and its query. */
   readonly insert: string
+  /**
+   * What the editor actually inserts. A file mention becomes a chip; a skill
+   * command is plain text, so it stays editable like anything else typed.
+   */
+  readonly segment?: DraftSegment
   readonly label: string
   readonly detail?: string
 }
@@ -49,15 +56,6 @@ export function completionAt(draft: string, caret: number, selectionEnd = caret)
   if (file === null) return null
   const query = file[2] ?? ''
   return { kind: 'file', query, start: caret - query.length - 1, end: caret }
-}
-
-/** Replace the trigger span with `insert` plus one trailing space. */
-export function applyCompletion(draft: string, request: CompletionRequest, insert: string): { readonly draft: string; readonly caret: number } {
-  const text = `${insert} `
-  return {
-    draft: `${draft.slice(0, request.start)}${text}${draft.slice(request.end)}`,
-    caret: request.start + text.length,
-  }
 }
 
 /** Move an active-item index, wrapping at both ends; -1 for an empty list. */

@@ -4,6 +4,8 @@
  * budget is the context window minus the output reserve and a safety
  * margin; tool schemas are part of the cost.
  */
+import type { ContentPart } from '../llm/types.ts'
+
 export interface BudgetConfig {
   /** The model's context window (an estimate unless verified). */
   readonly contextLimitTokens: number
@@ -29,6 +31,24 @@ export const DEFAULT_BUDGET: ResolvedBudget = {
 /** Estimate one string's token cost (chars/4, rounded up). */
 export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4)
+}
+
+/**
+ * Flat per-image estimate. Real image cost depends on the model's tiling of
+ * the decoded dimensions, which this layer deliberately does not decode; the
+ * whole budget is already a labeled estimate, and a fixed figure in the range
+ * vision models charge for a full-detail image keeps it from being wildly
+ * optimistic when several screenshots are attached.
+ */
+export const IMAGE_TOKEN_ESTIMATE = 1_200
+
+/** Estimate a message body that may carry images alongside its text. */
+export function estimateContentTokens(content: string | readonly ContentPart[]): number {
+  if (typeof content === 'string') return estimateTokens(content)
+  return content.reduce(
+    (total, part) => total + (part.type === 'text' ? estimateTokens(part.text) : IMAGE_TOKEN_ESTIMATE),
+    0,
+  )
 }
 
 /** The tokens available for assembled content after reserve and margin. */

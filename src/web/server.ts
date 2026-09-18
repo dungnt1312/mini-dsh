@@ -44,6 +44,15 @@ import { ToolsService } from '../harness/tools/service.ts'
 import { bashTool } from '../capabilities/shell/bash.ts'
 import { fsTools } from '../capabilities/fs/tools.ts'
 import { listProjectEntries, readProjectFile, searchProjectFiles, ProjectFileError } from './project-files.ts'
+import {
+  AttachmentError,
+  AttachmentStore,
+  isImageMediaType,
+  isSupportedMediaType,
+  normalizeMediaType,
+  sniffImageMediaType,
+  type AttachmentRef,
+} from '../harness/attachments/store.ts'
 import { Kernel } from '../kernel/registry.ts'
 import {
   loadProviders,
@@ -282,6 +291,9 @@ export async function createWebServer(options: WebServerOptions): Promise<WebSer
   kernel.ctx.provide('modes', modes)
   kernel.ctx.provide('skills', skills)
   kernel.ctx.provide('memory', memory)
+  // Composer attachments: content-addressed blobs beside the workspace's other
+  // resources, so a memory-mode host gets a hermetic temp home like the rest.
+  const attachments = new AttachmentStore(resourceHome, { maxBytes: limits.maxAttachmentBytes })
   const agentDefinitions = new AgentDefinitionService(resourceHome)
   const childExecutor = new ChildExecutor(kernel.ctx)
   kernel.ctx.provide('agent-definitions', agentDefinitions)
@@ -1157,8 +1169,16 @@ ${decision.injected}`, ...contents]
       if (checkpoint !== undefined) compaction = { summary: checkpoint.summary, coversSeq: checkpoint.coversSeq }
     }
 
+    const events = depsRef.current?.sessions.get(scope?.sessionId ?? ('' as SessionId))?.session.events ?? []
+    // Attachment bytes are read once per request and cached by the store: the
+    // log holds references, and the model needs the content itself.
+    const referenced = events.flatMap((event) => (event.type === 'user/message' ? [...(event.attachments ?? [])] : []))
+    const loadedAttachments = referenced.length > 0
+      ? await attachments.load(workspaceId, referenced, { textLimit: limits.attachmentTextLimit })
+      : undefined
+
     const assembled = buildContext({
-      events: depsRef.current?.sessions.get(scope?.sessionId ?? ('' as SessionId))?.session.events ?? [],
+      events,
       mode,
       modeRevision: state.modeRevision,
       model: state.model,
@@ -1169,6 +1189,7 @@ ${decision.injected}`, ...contents]
       pinnedMemory,
       budget,
       ...(compaction !== undefined ? { compaction } : {}),
+      ...(loadedAttachments !== undefined ? { attachments: loadedAttachments } : {}),
     })
     if (scope !== undefined) lastManifests.set(scope.sessionId, assembled.manifest)
     // Replace wholesale: when the mode exposes nothing, tools must LEAVE the
@@ -1309,6 +1330,7 @@ ${decision.injected}`, ...contents]
     modes,
     skills,
     memory,
+    attachments,
     checkpoints,
     lastManifests,
     adoptMode,
@@ -1410,6 +1432,7 @@ interface HandlerDeps {
   readonly modes: ModesService
   readonly skills: SkillsService
   readonly memory: MemoryService
+  readonly attachments: AttachmentStore
   readonly checkpoints: CheckpointStore
   readonly lastManifests: Map<SessionId, ContextManifest>
   readonly adoptMode: (workspaceId: WorkspaceId, modeId: string) => Promise<ResolvedMode>
@@ -2567,6 +2590,48 @@ async function handleApi(
       return
     }
 
+    // ── composer attachments ──────────────────────────────────
+    // Upload takes raw bytes with the name in a header: the store validates
+    // the type against the bytes and answers with the reference a message
+    // carries. Reading back serves the stored bytes for previews; the type is
+    // sniffed rather than trusted from a caller.
+    const wsAttachmentsMatch = /^\/api\/workspaces\/([^/]+)\/attachments(?:\/([^/]+))?$/.exec(pathname)
+    if (wsAttachmentsMatch !== null) {
+      const wsId = decodeURIComponent(wsAttachmentsMatch[1] ?? '') as WorkspaceId
+      requireWorkspace(deps, wsId, false)
+      const id = wsAttachmentsMatch[2]
+      try {
+        if (id === undefined && req.method === 'POST') {
+          requireWorkspace(deps, wsId, true) // archived: no new content
+          const name = decodeURIComponent(String(req.headers['x-file-name'] ?? '')).trim()
+          const bytes = await readBytes(req, deps.limits.maxAttachmentBytes)
+          const stored = await deps.attachments.put(wsId, {
+            name: name === '' ? 'attachment' : name,
+            mediaType: String(req.headers['content-type'] ?? ''),
+            bytes,
+          })
+          send(201, stored)
+          return
+        }
+        if (id !== undefined && req.method === 'GET') {
+          const bytes = await deps.attachments.read(wsId, decodeURIComponent(id))
+          res.writeHead(200, {
+            'content-type': sniffImageMediaType(bytes) ?? 'text/plain; charset=utf-8',
+            'content-length': bytes.length,
+            // Content-addressed: the bytes behind an id can never change.
+            'cache-control': 'private, max-age=31536000, immutable',
+          })
+          res.end(bytes)
+          return
+        }
+        send(405, { error: 'method not allowed' })
+      } catch (error) {
+        if (!(error instanceof AttachmentError)) throw error
+        send(400, { error: error.message })
+      }
+      return
+    }
+
     // ── read-only project browsing (workbench Files) ───────────
     const wsProjectFilesMatch = /^\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\/(files|file|search)$/.exec(pathname)
     if (wsProjectFilesMatch !== null) {
@@ -2869,6 +2934,43 @@ async function renameSession(
   return { ok: true, title: entry.session.customTitle ?? deriveTitle(entry.session.events) ?? 'New conversation' }
 }
 
+/** Validate the attachment references a submitted message claims to carry. */
+function parseAttachments(
+  raw: unknown,
+  maxPerMessage: number,
+): { ok: false; status: number; error: string } | { ok: true; refs: readonly AttachmentRef[] } {
+  if (raw === undefined) return { ok: true, refs: [] }
+  if (!Array.isArray(raw)) return { ok: false, status: 400, error: 'attachments must be an array' }
+  if (raw.length > maxPerMessage) {
+    return { ok: false, status: 400, error: `a message may carry at most ${maxPerMessage} attachments` }
+  }
+  const refs: AttachmentRef[] = []
+  for (const item of raw as unknown[]) {
+    if (item === null || typeof item !== 'object') {
+      return { ok: false, status: 400, error: 'each attachment must be an object' }
+    }
+    const row = item as Record<string, unknown>
+    const id = row['id']
+    const name = row['name']
+    const mediaType = row['mediaType']
+    const bytes = row['bytes']
+    if (typeof id !== 'string' || !/^[0-9a-f]{64}$/.test(id)) {
+      return { ok: false, status: 400, error: 'each attachment needs the id returned by the upload' }
+    }
+    if (typeof name !== 'string' || name.trim() === '' || typeof mediaType !== 'string') {
+      return { ok: false, status: 400, error: 'each attachment needs a name and mediaType' }
+    }
+    if (typeof bytes !== 'number' || !Number.isInteger(bytes) || bytes <= 0) {
+      return { ok: false, status: 400, error: 'each attachment needs its stored size in bytes' }
+    }
+    if (!isSupportedMediaType(mediaType)) {
+      return { ok: false, status: 400, error: `'${name}' has unsupported type '${normalizeMediaType(mediaType)}'` }
+    }
+    refs.push({ id, name, mediaType: normalizeMediaType(mediaType), bytes })
+  }
+  return { ok: true, refs }
+}
+
 async function acceptMessage(
   entry: SessionEntry,
   req: IncomingMessage,
@@ -2876,11 +2978,27 @@ async function acceptMessage(
 ): Promise<{ ok: false; status: number; error: string } | { ok: true; status: number; body: Record<string, unknown> }> {
   const body = await readJson(req)
   const content = body['content']
-  if (typeof content !== 'string' || content.trim() === '') {
+  if (typeof content !== 'string') {
+    return { ok: false, status: 400, error: 'body needs a string content' }
+  }
+  const parsedAttachments = parseAttachments(body['attachments'], deps.limits.maxAttachmentsPerMessage)
+  if (!parsedAttachments.ok) return parsedAttachments
+  const refs = parsedAttachments.refs
+  // An attachment is a message on its own; only a wholly empty submission is
+  // refused.
+  if (content.trim() === '' && refs.length === 0) {
     return { ok: false, status: 400, error: 'body needs a non-empty string content' }
   }
   // Archived workspaces cannot start new work (memory ws exempt).
   requireWorkspace(deps, entry.workspaceId, true)
+  for (const ref of refs) {
+    try {
+      await deps.attachments.verify(entry.workspaceId, ref)
+    } catch (error) {
+      if (!(error instanceof AttachmentError)) throw error
+      return { ok: false, status: 400, error: error.message }
+    }
+  }
   const controls = deps.controlsFor(entry.workspaceId)
   if (controls.model === undefined || controls.activeProvider === undefined) {
     return { ok: false, status: 400, error: 'no provider/model configured for this workspace; manage providers in settings' }
@@ -2920,6 +3038,7 @@ async function acceptMessage(
     inputId,
     ...(clientRequestId !== undefined ? { clientRequestId } : {}),
     content,
+    ...(refs.length > 0 ? { attachments: refs } : {}),
   })
   try {
     await entry.session.durable()
@@ -2928,7 +3047,7 @@ async function acceptMessage(
   }
 
   const wasBusy = entry.agent.busy
-  entry.agent.enqueueAccepted({ content, inputId })
+  entry.agent.enqueueAccepted({ content, inputId, ...(refs.length > 0 ? { attachments: refs } : {}) })
   if (!wasBusy) {
     // Fire-and-forget: the reply (and any failure, which closes the turn
     // durably) reaches the client through the SSE stream.
@@ -3314,6 +3433,24 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
     throw new Error('request body must be a JSON object')
   }
   return parsed as Record<string, unknown>
+}
+
+/**
+ * Read a raw request body under an explicit cap. Attachments arrive as bytes,
+ * not JSON, so base64 never doubles what crosses the socket.
+ */
+async function readBytes(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  let total = 0
+  for await (const chunk of req) {
+    total += (chunk as Buffer).length
+    if (total > maxBytes) {
+      req.destroy()
+      throw new AttachmentError(`upload exceeds the ${maxBytes} byte limit`)
+    }
+    chunks.push(chunk as Buffer)
+  }
+  return Buffer.concat(chunks)
 }
 
 /** Write one SSE `data:` frame and flush it. */
