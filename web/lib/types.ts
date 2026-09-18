@@ -66,6 +66,9 @@ export type Envelope =
   | { readonly kind: 'approval'; readonly approvalId: string; readonly call: ToolCall }
   | { readonly kind: 'error'; readonly message: string }
 
+/** Sidebar ordering for the conversation list. */
+export type SessionSort = 'recent' | 'oldest' | 'title'
+
 /** One session row; `folder: null` inherits server's default workspace root. */
 export interface SessionListing {
   readonly createdAt?: number
@@ -158,17 +161,31 @@ export interface ProjectRow {
   readonly name: string
   readonly workspaceId: string
   readonly path: string
+  /** Sidebar position; absent until the first drag-to-reorder. */
+  readonly order?: number
   readonly createdAt: number
 }
 
-/** Per-workspace server state (G2): controls live on the workspace. */
+/** Global defaults applied to drafts and snapshotted when a conversation starts. */
+export interface ModelDefaults {
+  readonly provider: string | null
+  readonly model: string | null
+  readonly thinkingLevel: string | null
+}
+
+/** Effective controls for one conversation. `source: 'global'` is a legacy log that follows live global defaults; session nulls are explicit blanks. */
+export interface SessionModel extends ModelDefaults {
+  readonly source: 'session' | 'global'
+}
+
+/** Per-workspace metadata. Provider/default fields remain for compatibility but are global. */
 export interface WorkspaceMeta {
   readonly workspace: { readonly id: string; readonly name: string; readonly archived: boolean }
-  readonly provider: string
-  readonly model: string
-  readonly models: readonly string[]
-  /** Workspace thinking override; null = the model's configured default. */
+  /** Compatibility projection of global defaults. */
+  readonly provider: string | null
+  readonly model: string | null
   readonly thinkingLevel?: string | null
+  readonly models: readonly string[]
   readonly policy?: Record<string, string>
   readonly projects: readonly ProjectRow[]
   readonly providers: readonly ProviderSummary[]
@@ -241,12 +258,12 @@ export interface SecretRow {
 
 // ── G3: skills + memory management ────────────────────────────────────────
 
-/** One workspace skill row (bundled rows are read-only). */
+/** One skill catalog row (only workspace rows are editable). */
 export interface SkillRow {
   readonly name: string
   readonly title: string
   readonly description: string
-  readonly source: 'bundled' | 'workspace'
+  readonly source: 'workspace' | 'user' | 'bundled'
   /** sha256 of the raw SKILL.md — the optimistic-concurrency token. */
   readonly hash: string
 }

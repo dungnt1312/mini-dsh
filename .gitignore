@@ -9,8 +9,8 @@ web-dist/
 .superpowers/
 
 # generated test/browser evidence (regenerable; not approved visual baselines)
-artifacts/
-web/styles/artifacts/
+/artifacts/
+/web/styles/artifacts/
 
 # local tool state
 .zcode/

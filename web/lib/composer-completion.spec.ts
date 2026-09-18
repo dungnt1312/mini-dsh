@@ -3,7 +3,7 @@
  * item does to the draft, and how the two menus rank their items.
  */
 import { describe, expect, it } from 'vitest'
-import { completionAt, moveActive, rankSkills } from './composer-completion.ts'
+import { completionAt, moveActive, rankSkills, skillCompletionItem } from './composer-completion.ts'
 
 describe('completionAt', () => {
   it('detects a file mention at a word boundary and after whitespace', () => {
@@ -35,6 +35,18 @@ describe('completionAt', () => {
     expect(completionAt('@rea', 4, 5)).toBeNull()
     expect(completionAt('@rea', 9)).toBeNull()
     expect(completionAt('@rea', -1)).toBeNull()
+  })
+})
+
+describe('skillCompletionItem', () => {
+  it('returns a command segment with the existing wire text', () => {
+    expect(skillCompletionItem({ name: 'review', description: 'Check a diff' })).toEqual({
+      id: 'skill:review',
+      insert: 'Use the review skill:',
+      segment: { kind: 'command', name: 'review' },
+      label: 'review',
+      detail: 'Check a diff',
+    })
   })
 })
 

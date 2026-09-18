@@ -39,10 +39,13 @@ export { DEFAULT_LIMITS, resolveLimits, type HarnessLimits } from './harness/lim
 // ── Harness: session log ─────────────────────────────────────────────────
 export {
   deriveMessages,
+  deriveSessionModel,
+  sessionModelOf,
   type ApprovalDecision,
   type RequestControls,
   type SessionAppendedEvent,
   type SessionEvent,
+  type SessionModel,
   type TurnEndReason,
   type TurnErrorKind,
 } from './harness/session/events.ts'
@@ -165,7 +168,7 @@ export {
 } from './harness/context/compaction.ts'
 
 // ── Harness: skills (G3) ────────────────────────────────────────────────
-export { SkillsService, SkillError, parseSkill, type SkillEntry, type LoadedSkill } from './harness/skills/service.ts'
+export { SkillsService, SkillError, parseSkill, type SkillEntry, type SkillSource, type LoadedSkill } from './harness/skills/service.ts'
 
 // ── Harness: memory (G3) ────────────────────────────────────────────────
 export { MemoryService, MemoryError, memoryTools, type MemoryEntry } from './harness/memory/index.ts'

@@ -5,6 +5,7 @@ import { Spinner } from '../common/Spinner.tsx'
 import { Button } from '../ui/Button.tsx'
 import { IconButton } from '../ui/IconButton.tsx'
 import { listProjectFiles, type ProjectListing } from '../../lib/api.ts'
+import { fileStyle, type FileIconStyle } from '../../lib/file-icons.ts'
 import { cn } from '../../lib/cn.ts'
 
 function formatSize(bytes: number | undefined): string {
@@ -89,20 +90,23 @@ export function FileBrowser({ workspaceId, project, folder, activeFile, onFolder
                 </button>
               </li>
             ) : null}
-            {listing?.entries.map((entry) => (
-              <li key={entry.path}>
-                <button
-                  type="button"
-                  title={entry.path}
-                  onClick={() => entry.kind === 'dir' ? onFolder(entry.path) : onOpenFile(entry.path)}
-                  className={cn('flex min-h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-sm hover:bg-hover', entry.path === activeFile && 'bg-hover')}
-                >
-                  <Icon name={entry.kind === 'dir' ? 'folder' : 'fileText'} size={15} className={entry.kind === 'dir' ? 'text-fg-muted' : 'text-fg-faint'} />
-                  <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-                  {entry.kind === 'file' ? <span className="shrink-0 text-xs text-fg-faint">{formatSize(entry.size)}</span> : <Icon name="chevronRight" size={14} className="shrink-0 text-fg-faint" />}
-                </button>
-              </li>
-            ))}
+            {listing?.entries.map((entry) => {
+              const icon: FileIconStyle = entry.kind === 'dir' ? { name: 'folder', className: 'text-fg-muted' } : fileStyle(entry.name)
+              return (
+                <li key={entry.path}>
+                  <button
+                    type="button"
+                    title={entry.path}
+                    onClick={() => entry.kind === 'dir' ? onFolder(entry.path) : onOpenFile(entry.path)}
+                    className={cn('flex min-h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-sm hover:bg-hover', entry.path === activeFile && 'bg-hover')}
+                  >
+                    <Icon name={icon.name} size={15} className={icon.className} />
+                    <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+                    {entry.kind === 'file' ? <span className="shrink-0 text-xs text-fg-faint">{formatSize(entry.size)}</span> : <Icon name="chevronRight" size={14} className="shrink-0 text-fg-faint" />}
+                  </button>
+                </li>
+              )
+            })}
             {listing !== null && listing.entries.length === 0 ? <li className="px-2.5 py-3 text-sm text-fg-faint">This folder is empty.</li> : null}
           </ul>
         )}

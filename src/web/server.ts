@@ -36,7 +36,7 @@ import { isThinkingLevel, resolveContextLimit } from '../harness/llm/model-catal
 import type { LlmProvider, ToolCall } from '../harness/llm/types.ts'
 import { fileSessions, SessionsService } from '../harness/session/service.ts'
 import type { Session } from '../harness/session/session.ts'
-import type { SessionEvent } from '../harness/session/events.ts'
+import { sessionModelOf, type SessionEvent } from '../harness/session/events.ts'
 import { deriveTitle } from '../harness/session/title.ts'
 import { newInputId, type ProjectId, type SessionId, type WorkspaceId } from '../util/brand.ts'
 import { canonicalPolicy } from '../harness/tools/names.ts'
@@ -55,9 +55,11 @@ import {
 } from '../harness/attachments/store.ts'
 import { Kernel } from '../kernel/registry.ts'
 import {
-  loadProviders,
+  loadProviderStore,
   maskKey,
-  saveProviders,
+  saveProviderStore,
+  repairDefaults,
+  type ModelDefaults,
   slugify,
   type ModelSettings,
   type ProviderConfig,
@@ -152,16 +154,20 @@ export interface WebServerOptions {
   readonly configFile?: string
   /** Create a `deepseek` entry from `DEEPSEEK_API_KEY` when the config has none. */
   readonly seedDeepseekFromEnv?: boolean
-  /** Initial `(provider, model)`; defaults to the first usable provider's first model. */
+  /** Initial `(provider, model)` override. It is process-local for backwards compatibility and is not persisted. */
   readonly activeModel?: { readonly provider?: string; readonly model?: string }
+  /** Test seam for durable provider-store writes; production uses atomic saveProviderStore. */
+  readonly providerStoreWriter?: (file: string, store: import('./provider-store.ts').ProviderStore) => Promise<void>
   /** Per-tool approval modes (canonical or legacy names); defaults allow reads, ask on writes and bash. */
   readonly policy?: Readonly<Record<string, ApprovalMode>>
   /** Mode for tools the policy map does not name; defaults to `ask`. */
   readonly defaultMode?: ApprovalMode
-  /** Harness limits override (step budget, deadlines, queue bounds). */
+  /** Harness limits override (watchdogs, resource caps, and queue bounds). */
   readonly limits?: Partial<HarnessLimits>
   /** Host-level tool deny patterns (supports `*`); cannot be widened by mode/workspace/child/approval. */
   readonly blockedTools?: readonly string[]
+  /** Read-only user skill layer (e.g. `~/.claude/skills`); workspace skills shadow it by name. */
+  readonly userSkillsDir?: string
   /** Directory of built client assets; defaults to the repo's `web-dist/`. */
   readonly staticDir?: string
   /** Port to listen on; `0` (default) picks an ephemeral port. */
@@ -220,10 +226,6 @@ const CONTENT_TYPES: Readonly<Record<string, string>> = {
 
 /** The live controls, scoped to one workspace. */
 interface WorkspaceControls {
-  activeProvider: string | undefined
-  model: string | undefined
-  /** Thinking/reasoning override; undefined = the model's configured/catalog default. */
-  thinkingLevel: string | undefined
   policy: Record<string, ApprovalMode>
   /** The selected mode id (G3, third live control). */
   modeId: string
@@ -285,7 +287,7 @@ export async function createWebServer(options: WebServerOptions): Promise<WebSer
   // hosts bind them to a fresh temp home so tests stay hermetic.
   const resourceHome = options.home ?? (await fs.mkdtemp(path.join(tmpdir(), 'mini-dsh-resources-')))
   const modes = new ModesService(resourceHome)
-  const skills = new SkillsService(resourceHome)
+  const skills = new SkillsService(resourceHome, undefined, options.userSkillsDir)
   const memory = new MemoryService(resourceHome)
   const checkpoints = new CheckpointStore(path.join(resourceHome, 'workspaces'))
   kernel.ctx.provide('modes', modes)
@@ -315,7 +317,11 @@ export async function createWebServer(options: WebServerOptions): Promise<WebSer
 
   // ── provider registry ────────────────────────────────────────
   const configFile = options.configFile ?? path.join(homedir(), '.mini-dsh', 'providers.json')
-  let list: ProviderConfig[] = loadProviders(configFile)
+  const storedProviders = loadProviderStore(configFile)
+  let list: ProviderConfig[] = [...storedProviders.providers]
+  let durableDefaults: ModelDefaults = storedProviders.defaults
+  let runtimeModelOverride: { readonly provider: string; readonly model: string } | undefined
+  let defaults: ModelDefaults = durableDefaults
   if (list.length === 0 && options.seedDeepseekFromEnv === true) {
     const key = process.env['DEEPSEEK_API_KEY']?.trim()
     if (key !== undefined && key !== '') {
@@ -328,22 +334,21 @@ export async function createWebServer(options: WebServerOptions): Promise<WebSer
         defaultModel: 'deepseek-chat',
         enabled: true,
       }]
-      await saveProviders(configFile, list)
+      durableDefaults = repairDefaults(durableDefaults, list)
+      defaults = durableDefaults
+      await saveProviderStore(configFile, { version: 2, defaults: durableDefaults, providers: list })
     }
   }
 
   const disposers = new Map<string, () => void>()
 
-  /** Live control state per workspace; lazily seeded on first selection. */
+  /** Live workspace policy/mode state, lazily initialized on first selection. */
   const controls = new Map<WorkspaceId, WorkspaceControls>()
   const controlsFor = (workspaceId: WorkspaceId): WorkspaceControls => {
     let state = controls.get(workspaceId)
     if (state === undefined) {
       const bundledDefault = BUNDLED_DEFAULT()
       state = {
-        activeProvider: undefined,
-        model: undefined,
-        thinkingLevel: undefined,
         // Explicit workspace overrides. In home mode the mode's defaults
         // govern unless the operator configured a policy; memory mode keeps
         // the legacy default map for unscoped callers.
@@ -378,6 +383,26 @@ export async function createWebServer(options: WebServerOptions): Promise<WebSer
     ...list.filter(isUsableConfigured).map((entry) => entry.id),
   ]
 
+  const repairGlobalDefaults = (candidate: ModelDefaults, candidateList: readonly ProviderConfig[] = list): ModelDefaults => {
+    // Test/bin injected providers are a non-durable registry overlay and have
+    // always taken precedence over on-disk configurations. Never let an old
+    // disk selection point a host using that explicit overlay elsewhere.
+    const injectedProviders = options.providers ?? []
+    if (injectedProviders.length > 0) {
+      const selected = injectedProviders.find((provider) => provider.name === candidate.provider)
+      if (selected !== undefined && candidate.model !== null && (selected.models ?? []).includes(candidate.model)) return candidate
+      for (const provider of injectedProviders) {
+        const model = provider.models?.[0]
+        if (model !== undefined) return { provider: provider.name, model, thinkingLevel: candidate.thinkingLevel }
+      }
+    }
+    if (candidate.provider !== null && candidate.model !== null) {
+      const configured = candidateList.find((entry) => entry.id === candidate.provider)
+      if (configured?.enabled && configured.models.includes(candidate.model)) return candidate
+    }
+    return repairDefaults(candidate, candidateList)
+  }
+
   /** Re-register every provider source; called after any registry mutation. */
   const syncRegistrations = (): void => {
     for (const dispose of disposers.values()) dispose()
@@ -391,50 +416,65 @@ export async function createWebServer(options: WebServerOptions): Promise<WebSer
     }
   }
 
-  const setActiveFor = (workspaceId: WorkspaceId, providerId: string, model?: string): string => {
-    const state = controlsFor(workspaceId)
-    const ids = usableIds()
-    const id = providerId === '' ? ids[0] : providerId
-    if (id === undefined || !ids.includes(id)) {
-      throw new Error(`no usable provider '${providerId}'`)
+  const validateProviderModel = (providerId: string, model?: string): { provider: string; model: string | undefined } => {
+    const id = providerId
+    if (id === '' || !usableIds().includes(id)) throw new Error(`no usable provider '${providerId}'`)
+    const available = kernel.ctx.llm.providerModels(id)
+    if (model !== undefined && available.length > 0 && !available.includes(model)) {
+      throw new Error(`unknown model '${model}' for provider '${id}'; available: ${available.join(', ')}`)
     }
-    // Switch first so we can introspect the registered instance; if the pair
-    // is invalid, revert to the previous selection before surfacing why.
-    const previous = state.activeProvider
-    kernel.ctx.llm.use(id)
-    const available = kernel.ctx.llm.active().models ?? []
-    const chosen = model ?? available[0]
-    // An advertised list is a contract: reject names outside it. Providers
-    // that have not synced models yet accept any non-empty choice.
-    if (chosen !== undefined && available.length > 0 && !available.includes(chosen)) {
-      if (previous !== undefined && previous !== id) kernel.ctx.llm.use(previous)
-      throw new Error(`unknown model '${chosen}' for provider '${id}'; available: ${available.join(', ')}`)
-    }
-    state.activeProvider = id
-    state.model = chosen
-    return chosen ?? ''
+    return { provider: id, model }
   }
 
   syncRegistrations()
-  /** Seed a workspace's controls so its first meta/messages call works. */
-  const seedWorkspaceControls = (workspaceId: WorkspaceId, seed?: { provider?: string; model?: string }): void => {
-    const state = controlsFor(workspaceId)
-    if (state.activeProvider !== undefined) return
-    try {
-      if (seed?.provider !== undefined || seed?.model !== undefined) {
-        setActiveFor(workspaceId, seed.provider ?? '', seed.model)
-      } else {
-        const first = usableIds()[0]
-        if (first !== undefined) setActiveFor(workspaceId, first)
-      }
-    } catch {
-      // Nothing usable: /meta reports the blank selection.
+  durableDefaults = repairGlobalDefaults(durableDefaults)
+  defaults = durableDefaults
+  // Historical activeModel was an in-memory startup choice. Preserve that
+  // behavior deliberately: it overrides this process only and is never
+  // written back over the operator's durable global default.
+  if (options.activeModel !== undefined) {
+    const provider = options.activeModel.provider ?? defaults.provider
+    const model = options.activeModel.model ?? defaults.model
+    if (provider === null || model === null || provider === undefined || model === undefined) {
+      throw new Error('activeModel needs a complete provider/model pair when no durable default exists')
     }
+    validateProviderModel(provider, model)
+    runtimeModelOverride = { provider, model }
+    defaults = { provider, model, thinkingLevel: durableDefaults.thinkingLevel }
+  }
+  /** Ensure workspace policy/mode controls exist; model defaults are global. */
+  const seedWorkspaceControls = (workspaceId: WorkspaceId, _seed?: { provider?: string; model?: string }): void => {
+    controlsFor(workspaceId)
   }
   seedWorkspaceControls(options.home !== undefined ? workspaces.defaultWorkspace : MEMORY_WORKSPACE, options.activeModel)
 
+
+  interface EffectiveSessionModel {
+    readonly provider: string | null | undefined
+    readonly model: string | null | undefined
+    /** `null` delegates to the selected model's configured default. */
+    readonly thinkingLevel: string | null | undefined
+    readonly source: 'session' | 'global'
+  }
+
+  const resolveEffectiveModel = (session: Session, workspaceId: WorkspaceId, childModelOverride?: string): EffectiveSessionModel => {
+    const preference = sessionModelOf(session.events)
+    // A session/model event is a complete ownership boundary. In particular,
+    // snapshot null is an explicit blank — it must never re-inherit a later
+    // global choice. Only a legacy log (hasEvent false) live-inherits global defaults.
+    const provider = preference.hasEvent ? preference.provider : defaults.provider
+    const model = childModelOverride ?? (preference.hasEvent ? preference.model : defaults.model
+)    // Explicit null means configured model default, whereas an omitted field
+    // in a session update intentionally retains its previous value.
+    const thinkingLevel = preference.hasEvent ? preference.thinkingLevel : defaults.thinkingLevel
+    return { provider, model, thinkingLevel, source: preference.hasEvent ? 'session' : 'global' }
+  }
+
   // ── per-session entries ──────────────────────────────────────
   const sessions = new Map<SessionId, SessionEntry>()
+  // A failed session/model durability barrier leaves an in-memory event that
+  // cannot truthfully be served. Fence the session until host restart/reload.
+  const unavailableSessions = new Set<SessionId>()
 
   // Legacy folder grants (memory mode only), scoped to THIS server.
   const legacyFolders = new Map<SessionId, string | undefined>()
@@ -564,7 +604,7 @@ export async function createWebServer(options: WebServerOptions): Promise<WebSer
       await compactSession(entry.session, checkpoints, async ({ text }) => {
         const lines = text.split('\n').filter((line) => line.trim() !== '')
         return lines.slice(0, 120).join('\n')
-      }, { trigger: 'automatic', ...(deps.controlsFor(scope.workspaceId).model !== undefined ? { model: deps.controlsFor(scope.workspaceId).model as string } : {}) })
+      }, (() => { const model = deps.defaults().model; return model !== null ? { trigger: 'automatic' as const, model } : { trigger: 'automatic' as const } })())
     } catch (error) {
       // Surfaced, bounded: no retry loop.
       console.error(`web: automatic compaction failed for ${scope.sessionId}: ${String(error instanceof Error ? error.message : error)}`)
@@ -1040,6 +1080,16 @@ ${decision.injected}`, ...contents]
   /** Late-bound deps reference: listeners fire only after boot completes. */
   const depsRef: { current: HandlerDeps | undefined } = { current: undefined }
 
+  /** Resolve a root or child session for a scoped request. Children are owned
+   * by ChildExecutor rather than the web session-entry map. */
+  async function scopedSession(sessionId: SessionId | undefined): Promise<Session | undefined> {
+    if (sessionId === undefined) return undefined
+    const loaded = depsRef.current?.sessions.get(sessionId)?.session
+    if (loaded !== undefined) return loaded
+    if (!kernel.ctx.sessions.has(sessionId)) return undefined
+    return kernel.ctx.sessions.load(sessionId).catch(() => undefined)
+  }
+
   /** The open turn's loaded skill names (tool/call events named Skill). */
   function skillsLoadedInTurn(events: readonly SessionEvent[] | undefined): string[] {
     if (events === undefined) return []
@@ -1076,6 +1126,10 @@ ${decision.injected}`, ...contents]
     const scope = agentScope.getStore()
     const workspaceId = scope?.workspaceId ?? (options.home !== undefined ? workspaces.defaultWorkspace : MEMORY_WORKSPACE)
     const state = controlsFor(workspaceId)
+    const session = await scopedSession(scope?.sessionId)
+    const effective = session === undefined
+      ? { provider: defaults.provider, model: defaults.model, thinkingLevel: defaults.thinkingLevel, source: 'global' as const }
+      : resolveEffectiveModel(session, workspaceId, scope?.childOf?.modelOverride)
     const mode = modeOf(workspaceId)
 
     // Budget from the CURRENT (provider, model) pair: an operator context
@@ -1083,14 +1137,17 @@ ${decision.injected}`, ...contents]
     // window (exact ID → known family → 256k default) as a labeled estimate.
     // A live model change recomputes this on the very next request.
     const budget: ResolvedBudget = (() => {
-      if (state.activeProvider === undefined || state.model === undefined) return DEFAULT_BUDGET
+      if (effective.provider === undefined || effective.provider === null || effective.model === undefined || effective.model === null) return DEFAULT_BUDGET
+      // Child overrides share this resolver, so context, manifest budget, and
+      // request dispatch all reject an unavailable effective pair identically.
+      validateProviderModel(effective.provider, effective.model)
       const configured = list
-        .find((entry) => entry.id === state.activeProvider)
-        ?.modelSettings?.[state.model]?.contextTokens
+        .find((entry) => entry.id === effective.provider)
+        ?.modelSettings?.[effective.model]?.contextTokens
       if (configured !== undefined && Number.isFinite(configured) && configured > 0) {
         return { contextLimitTokens: configured, outputReserveTokens: DEFAULT_BUDGET.outputReserveTokens, marginTokens: DEFAULT_BUDGET.marginTokens, verified: true }
       }
-      return { contextLimitTokens: resolveContextLimit(state.model), outputReserveTokens: DEFAULT_BUDGET.outputReserveTokens, marginTokens: DEFAULT_BUDGET.marginTokens, verified: false }
+      return { contextLimitTokens: resolveContextLimit(effective.model), outputReserveTokens: DEFAULT_BUDGET.outputReserveTokens, marginTokens: DEFAULT_BUDGET.marginTokens, verified: false }
     })()
 
     // Exposure-filtered schemas: static mode ceiling + G5 dynamic MCP
@@ -1169,7 +1226,7 @@ ${decision.injected}`, ...contents]
       if (checkpoint !== undefined) compaction = { summary: checkpoint.summary, coversSeq: checkpoint.coversSeq }
     }
 
-    const events = depsRef.current?.sessions.get(scope?.sessionId ?? ('' as SessionId))?.session.events ?? []
+    const events = session?.events ?? []
     // Attachment bytes are read once per request and cached by the store: the
     // log holds references, and the model needs the content itself.
     const referenced = events.flatMap((event) => (event.type === 'user/message' ? [...(event.attachments ?? [])] : []))
@@ -1181,8 +1238,8 @@ ${decision.injected}`, ...contents]
       events,
       mode,
       modeRevision: state.modeRevision,
-      model: state.model,
-      providerName: state.activeProvider,
+      model: effective.model ?? undefined,
+      providerName: effective.provider ?? undefined,
       schemas: exposed,
       ...(workspaceInstructions !== undefined && workspaceInstructions !== '' ? { workspaceInstructions } : {}),
       activeSkills,
@@ -1212,19 +1269,23 @@ ${decision.injected}`, ...contents]
     const scope = agentScope.getStore()
     const workspaceId = scope?.workspaceId ?? (options.home !== undefined ? workspaces.defaultWorkspace : MEMORY_WORKSPACE)
     const state = controlsFor(workspaceId)
-    const model = scope?.childOf?.modelOverride ?? state.model
-    // Thinking resolution: workspace override → the provider entry's
-    // per-model default. Unset means the model's own default behavior —
-    // the provider adapter only sends DOCUMENTED controls.
-    const thinkingLevel =
-      state.thinkingLevel
-      ?? (model !== undefined && state.activeProvider !== undefined
-        ? list.find((entry) => entry.id === state.activeProvider)?.modelSettings?.[model]?.thinkingLevel
+    const session = await scopedSession(scope?.sessionId)
+    const effective = session === undefined
+      ? { provider: defaults.provider, model: scope?.childOf?.modelOverride ?? defaults.model, thinkingLevel: defaults.thinkingLevel }
+      : resolveEffectiveModel(session, workspaceId, scope?.childOf?.modelOverride)
+    const model = effective.model ?? undefined
+    const provider = effective.provider ?? undefined
+    if (provider !== undefined && model !== undefined) validateProviderModel(provider, model)
+    // Explicit null session thinking deliberately falls through to this
+    // model's configured default, never back to workspace thinking.
+    const thinkingLevel = effective.thinkingLevel
+      ?? (model !== undefined && provider !== undefined
+        ? list.find((entry) => entry.id === provider)?.modelSettings?.[model]?.thinkingLevel
         : undefined)
     return next({
       ...request,
       ...(model !== undefined ? { model } : {}),
-      ...(state.activeProvider !== undefined ? { providerName: state.activeProvider } : {}),
+      ...(provider !== undefined ? { providerName: provider } : {}),
       ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
     })
   })
@@ -1272,42 +1333,48 @@ ${decision.injected}`, ...contents]
       }),
   })
 
-  /** Apply a new configured list: re-register, then repair active pointers. */
-  const setProviders = (next: readonly ProviderConfig[]): void => {
-    list = [...next]
-    syncRegistrations()
-    for (const [workspaceId, state] of controls) {
-      const stillUsable =
-        state.activeProvider !== undefined &&
-        (injectionNames().includes(state.activeProvider) ||
-          list.some((entry) => entry.id === state.activeProvider && isUsableConfigured(entry)))
-      if (!stillUsable) {
-        const first = usableIds()[0]
-        let repaired = false
-        if (first !== undefined) {
-          try {
-            setActiveFor(workspaceId, first)
-            repaired = true
-          } catch {
-            repaired = false
-          }
-        }
-        if (!repaired) {
-          state.activeProvider = undefined
-          state.model = undefined
-        }
-        continue
+  /**
+   * Serialize every provider/default mutation. The derivation reads canonical
+   * state only after its predecessor commits; disk commit precedes publication.
+   * Llm registration/disposal is synchronous and non-throwing by the Kernel
+   * contract, so registration publication cannot invalidate a committed store.
+   */
+  let providerTransactionTail: Promise<void> = Promise.resolve()
+  const mutateProviderStore = async <T>(
+    derive: (current: { readonly providers: readonly ProviderConfig[]; readonly defaults: ModelDefaults }) => { readonly providers: readonly ProviderConfig[]; readonly defaults: ModelDefaults; readonly result: T } | Promise<{ readonly providers: readonly ProviderConfig[]; readonly defaults: ModelDefaults; readonly result: T }>,
+    transactionOptions?: { readonly clearRuntimeModelOverride?: boolean },
+  ): Promise<T> => {
+    let release: (() => void) | undefined
+    const predecessor = providerTransactionTail
+    providerTransactionTail = new Promise<void>((resolve) => { release = resolve })
+    await predecessor
+    try {
+      const derived = await derive({ providers: list, defaults: durableDefaults })
+      const repaired = repairGlobalDefaults(derived.defaults, derived.providers)
+      await (options.providerStoreWriter ?? saveProviderStore)(configFile, { version: 2, defaults: repaired, providers: derived.providers })
+      list = [...derived.providers]
+      durableDefaults = repaired
+      if (transactionOptions?.clearRuntimeModelOverride === true) runtimeModelOverride = undefined
+      // The process-local startup override is valid only while its selected
+      // configured provider remains enabled and advertises that exact model.
+      // This publication happens only after the coherent store is committed;
+      // failed writes leave both the override and live registry untouched.
+      if (runtimeModelOverride !== undefined) {
+        const override = runtimeModelOverride
+        const selected = list.find((entry) => entry.id === override.provider)
+        const injected = (options.providers ?? []).find((provider) => provider.name === override.provider)
+        const validConfigured = selected !== undefined && selected.enabled && selected.models.includes(override.model)
+        const validInjected = selected === undefined && injected !== undefined && (injected.models ?? []).includes(override.model)
+        if (!validConfigured && !validInjected) runtimeModelOverride = undefined
       }
-      kernel.ctx.llm.use(state.activeProvider as string)
-      const available = kernel.ctx.llm.active().models ?? []
-      if (available.length > 0 && (state.model === undefined || !available.includes(state.model))) {
-        state.model = available[0]
-      }
+      defaults = runtimeModelOverride === undefined
+        ? durableDefaults
+        : { ...runtimeModelOverride, thinkingLevel: durableDefaults.thinkingLevel }
+      syncRegistrations()
+      return derived.result
+    } finally {
+      release?.()
     }
-  }
-
-  const persistList = async (next: readonly ProviderConfig[]): Promise<void> => {
-    await saveProviders(configFile, next)
   }
 
   const staticDir = options.staticDir
@@ -1316,6 +1383,7 @@ ${decision.injected}`, ...contents]
   const deps: HandlerDeps = {
     kernel,
     sessions,
+    unavailableSessions,
     pending,
     staticDir,
     limits,
@@ -1323,6 +1391,8 @@ ${decision.injected}`, ...contents]
     workspaces,
     controls,
     controlsFor,
+    resolveEffectiveModel,
+    validateProviderModel,
     deniedRoots,
     legacyFolders,
     legacyFolderDefault,
@@ -1345,18 +1415,9 @@ ${decision.injected}`, ...contents]
     cancelMcpConnection,
     ensureMcpServer,
     providers: () => list,
-    setProviders: (next) => {
-      setProviders(next)
-    },
-    persistList,
-    setActive: (workspaceId, providerId, model) => {
-      try {
-        setActiveFor(workspaceId, providerId, model)
-        return { ok: true }
-      } catch (error) {
-        return { ok: false, error: String(error instanceof Error ? error.message : error) }
-      }
-    },
+    defaults: () => defaults,
+    setDefaults: (next) => { defaults = next },
+    mutateProviderStore,
     publicSummary: () => list.map(publicProvider),
   }
   depsRef.current = deps
@@ -1419,6 +1480,7 @@ ${decision.injected}`, ...contents]
 interface HandlerDeps {
   readonly kernel: Kernel
   readonly sessions: Map<SessionId, SessionEntry>
+  readonly unavailableSessions: Set<SessionId>
   readonly pending: Map<string, PendingApproval>
   readonly staticDir: string
   readonly limits: HarnessLimits
@@ -1426,6 +1488,13 @@ interface HandlerDeps {
   readonly workspaces: WorkspaceService
   readonly controls: Map<WorkspaceId, WorkspaceControls>
   readonly controlsFor: (workspaceId: WorkspaceId) => WorkspaceControls
+  readonly resolveEffectiveModel: (session: Session, workspaceId: WorkspaceId) => {
+    provider: string | null | undefined
+    model: string | null | undefined
+    thinkingLevel: string | null | undefined
+    source: 'session' | 'global'
+  }
+  readonly validateProviderModel: (providerId: string, model?: string) => { provider: string; model: string | undefined }
   readonly deniedRoots: readonly string[] | undefined
   readonly legacyFolders: Map<SessionId, string | undefined>
   readonly legacyFolderDefault: { current: string | undefined }
@@ -1448,10 +1517,9 @@ interface HandlerDeps {
   readonly ensureMcpServer: (workspaceId: WorkspaceId, serverName: string) => Promise<McpServerClient>
   readonly seedWorkspaceControls: (workspaceId: WorkspaceId, seed?: { provider?: string; model?: string }) => void
   readonly providers: () => readonly ProviderConfig[]
-  readonly setProviders: (next: readonly ProviderConfig[]) => void
-  readonly persistList: (next: readonly ProviderConfig[]) => Promise<void>
-  /** Returns a user-readable error string on failure. */
-  readonly setActive: (workspaceId: WorkspaceId, providerId: string, model?: string) => { ok: true } | { ok: false; error: string }
+  readonly defaults: () => ModelDefaults
+  readonly setDefaults: (next: ModelDefaults) => void
+  readonly mutateProviderStore: <T>(derive: (current: { readonly providers: readonly ProviderConfig[]; readonly defaults: ModelDefaults }) => { readonly providers: readonly ProviderConfig[]; readonly defaults: ModelDefaults; readonly result: T } | Promise<{ readonly providers: readonly ProviderConfig[]; readonly defaults: ModelDefaults; readonly result: T }>, options?: { readonly clearRuntimeModelOverride?: boolean }) => Promise<T>
   readonly publicSummary: () => readonly PublicProvider[]
 }
 
@@ -1584,6 +1652,24 @@ async function handleApi(
           projectId = rawProject as ProjectId
         }
         const session = deps.kernel.ctx.sessions.create(wsId)
+        const defaults = deps.defaults()
+        // Snapshot global defaults so later changes apply to future sessions
+        // only. Explicit null thinking preserves "use model default".
+        session.append({
+          type: 'session/model',
+          provider: defaults.provider,
+          model: defaults.model,
+          // Null is an intentional snapshot: use the selected model default,
+          // even if the global default gains a thinking override later.
+          thinkingLevel: defaults.thinkingLevel,
+        })
+        try {
+          await session.durable()
+        } catch (error) {
+          await deps.kernel.ctx.sessions.delete(session.id).catch(() => {})
+          send(500, { error: `session model snapshot could not be persisted: ${String(error instanceof Error ? error.message : error)}` })
+          return
+        }
         // G5: bring this workspace's enabled MCP servers up on first use.
         void deps.connectWorkspaceMcp(wsId).catch((error) => console.error(`web: MCP config/start failed for ${wsId}: ${String(error instanceof Error ? error.message : error)}`))
         if (projectId !== undefined) {
@@ -1629,6 +1715,10 @@ async function handleApi(
       if (entry === undefined) {
         // Unknown ids and foreign-workspace ids are indistinguishable: 404.
         send(404, { error: 'no such session' })
+        return
+      }
+      if (deps.unavailableSessions.has(entry.session.id)) {
+        send(503, { error: 'session unavailable after durable storage failure; restart the host to reload canonical history' })
         return
       }
       if (action === undefined) {
@@ -1957,6 +2047,32 @@ async function handleApi(
           send(200, rows)
           return
         }
+        if (req.method === 'GET' && serverName !== undefined && action === undefined) {
+          // Stored config for editing: the form merges its fields into this so
+          // settings it does not show (env, headers, imported extras) survive.
+          const serverConfig = (await deps.mcpStore.loadMcp(wsId)).servers[serverName]
+          if (serverConfig === undefined) {
+            send(404, { error: `no MCP server '${serverName}'` })
+            return
+          }
+          send(200, JSON.parse(JSON.stringify(serverConfig)))
+          return
+        }
+        if (req.method === 'DELETE' && serverName !== undefined && action === undefined) {
+          requireWorkspace(deps, wsId, true)
+          const config = await deps.mcpStore.loadMcp(wsId)
+          if (config.servers[serverName] === undefined) {
+            send(404, { error: `no MCP server '${serverName}'` })
+            return
+          }
+          const { [serverName]: _removed, ...servers } = JSON.parse(JSON.stringify(config.servers)) as Record<string, unknown>
+          void _removed
+          // Stop the process and drop its tool schemas before the config forgets it.
+          await deps.cancelMcpConnection(wsId, serverName)
+          await deps.mcpStore.saveMcp(wsId, parseMcpConfig(JSON.stringify({ version: 1, servers })))
+          send(200, { deleted: serverName })
+          return
+        }
         if (req.method === 'POST' && serverName !== undefined && action === undefined) {
           // Register/update a server (config + provenance, no auto-spawn).
           requireWorkspace(deps, wsId, true)
@@ -2241,6 +2357,25 @@ async function handleApi(
       return
     }
 
+    // ── global provider/model defaults ───────────────────────
+    if (pathname === '/api/model-defaults') {
+      if (req.method === 'GET') {
+        send(200, deps.defaults())
+        return
+      }
+      if (req.method === 'PUT') {
+        const outcome = await putModelDefaults(req, deps)
+        if (!outcome.ok) {
+          send(outcome.status, { error: outcome.error })
+          return
+        }
+        send(200, deps.defaults())
+        return
+      }
+      send(405, { error: 'method not allowed' })
+      return
+    }
+
     // ── legacy meta/model/policy → memory workspace ──────────
     if (pathname === '/api/meta' && req.method === 'GET') {
       send(200, workspaceMeta(implicitWorkspace(deps), deps, deps.legacyFolderDefault.current))
@@ -2253,8 +2388,8 @@ async function handleApi(
         send(resolved.status, { error: resolved.error })
         return
       }
-      const state = deps.controlsFor(MEMORY_WORKSPACE)
-      send(200, { provider: state.activeProvider, model: state.model })
+      const defaults = deps.defaults()
+      send(200, { provider: defaults.provider, model: defaults.model })
       return
     }
     if (pathname === '/api/thinking' && req.method === 'PUT') {
@@ -2264,7 +2399,7 @@ async function handleApi(
         send(outcome.status, { error: outcome.error })
         return
       }
-      send(200, { thinkingLevel: deps.controlsFor(wsId).thinkingLevel ?? null })
+      send(200, { thinkingLevel: deps.defaults().thinkingLevel })
       return
     }
     if (pathname === '/api/policy' && req.method === 'PUT') {
@@ -2288,8 +2423,8 @@ async function handleApi(
         send(outcome.status, { error: outcome.error })
         return
       }
-      const state = deps.controlsFor(wsId)
-      send(200, { provider: state.activeProvider, model: state.model })
+      const defaults = deps.defaults()
+      send(200, { provider: defaults.provider, model: defaults.model })
       return
     }
 
@@ -2302,7 +2437,7 @@ async function handleApi(
         send(outcome.status, { error: outcome.error })
         return
       }
-      send(200, { thinkingLevel: deps.controlsFor(wsId).thinkingLevel ?? null })
+      send(200, { thinkingLevel: deps.defaults().thinkingLevel })
       return
     }
 
@@ -2507,6 +2642,49 @@ async function handleApi(
       return
     }
 
+    // ── per-session model control ─────────────────────────────
+    const wsSessionModelMatch = /^\/api\/workspaces\/([^/]+)\/sessions\/([^/]+)\/model$/.exec(pathname)
+    if (wsSessionModelMatch !== null) {
+      const wsId = decodeURIComponent(wsSessionModelMatch[1] ?? '') as WorkspaceId
+      const entry = await findSession(decodeURIComponent(wsSessionModelMatch[2] ?? ''), wsId, deps)
+      if (entry === undefined) {
+        send(404, { error: 'no such session' })
+        return
+      }
+      if (deps.unavailableSessions.has(entry.session.id)) {
+        send(503, { error: 'session unavailable after durable storage failure; restart the host to reload canonical history' })
+        return
+      }
+      if (req.method === 'GET') {
+        const effective = deps.resolveEffectiveModel(entry.session, wsId)
+        send(200, {
+          provider: effective.provider ?? null,
+          model: effective.model ?? null,
+          thinkingLevel: effective.thinkingLevel ?? null,
+          source: effective.source,
+        })
+        return
+      }
+      if (req.method === 'PUT') {
+        requireWorkspace(deps, wsId, true)
+        const outcome = await putSessionModel(entry, req, deps)
+        if (!outcome.ok) {
+          send(outcome.status, { error: outcome.error })
+          return
+        }
+        const effective = deps.resolveEffectiveModel(entry.session, wsId)
+        send(200, {
+          provider: effective.provider ?? null,
+          model: effective.model ?? null,
+          thinkingLevel: effective.thinkingLevel ?? null,
+          source: 'session',
+        })
+        return
+      }
+      send(405, { error: 'method not allowed' })
+      return
+    }
+
     // ── G3 context manifest inspector + manual compaction ────
     const wsManifestMatch = /^\/api\/workspaces\/([^/]+)\/sessions\/([^/]+)\/manifest$/.exec(pathname)
     if (wsManifestMatch !== null && req.method === 'GET') {
@@ -2554,8 +2732,8 @@ async function handleApi(
           const lines = text.split('\n').filter((line) => line.trim() !== '')
           return lines.slice(0, 120).join('\n')
         }, (() => {
-          const model = deps.controlsFor(wsId).model
-          return model !== undefined ? { trigger: 'manual' as const, model } : { trigger: 'manual' as const }
+          const model = deps.defaults().model
+          return model !== null ? { trigger: 'manual' as const, model } : { trigger: 'manual' as const }
         })())
         send(200, { coversSeq: checkpoint.coversSeq, summaryChars: checkpoint.summary.length })
       } catch (error) {
@@ -2584,6 +2762,28 @@ async function handleApi(
         }
         const created = await deps.workspaces.createProject(wsId, name, projectPath)
         send(201, created)
+        return
+      }
+      send(405, { error: 'method not allowed' })
+      return
+    }
+
+    // ── sidebar project order (drag to reorder) ────────────────
+    // Matched before the /:pid route below, which would otherwise capture
+    // 'order' as a project id.
+    const wsProjectOrderMatch = /^\/api\/workspaces\/([^/]+)\/projects\/order$/.exec(pathname)
+    if (wsProjectOrderMatch !== null) {
+      const wsId = decodeURIComponent(wsProjectOrderMatch[1] ?? '') as WorkspaceId
+      requireWorkspace(deps, wsId, false)
+      if (req.method === 'PUT') {
+        requireWorkspace(deps, wsId, true) // archived: no project mutations
+        const body = await readJson(req)
+        const order = Array.isArray(body['order']) ? body['order'] : null
+        if (order === null || order.some((id) => typeof id !== 'string')) {
+          send(400, { error: "body needs 'order' as an array of project ids" })
+          return
+        }
+        send(200, await deps.workspaces.reorderProjects(wsId, order as ProjectId[]))
         return
       }
       send(405, { error: 'method not allowed' })
@@ -2788,14 +2988,11 @@ async function handleApi(
 
     if (req.method === 'DELETE' && providerMatch !== null) {
       const id = decodeURIComponent(providerMatch[1] ?? '')
-      const current = deps.providers()
-      if (!current.some((entry) => entry.id === id)) {
-        send(404, { error: `no provider '${id}'` })
-        return
-      }
-      const next = current.filter((entry) => entry.id !== id)
-      deps.setProviders(next)
-      await deps.persistList(next)
+      const deleted = await deps.mutateProviderStore(({ providers, defaults }) => {
+        if (!providers.some((entry) => entry.id === id)) return { providers, defaults, result: false }
+        return { providers: providers.filter((entry) => entry.id !== id), defaults, result: true }
+      })
+      if (!deleted) { send(404, { error: `no provider '${id}'` }); return }
       send(200, { deleted: true })
       return
     }
@@ -2815,33 +3012,24 @@ async function handleApi(
     const syncMatch = /^\/api\/providers\/([^/]+)\/sync$/.exec(pathname)
     if (req.method === 'POST' && syncMatch !== null) {
       const id = decodeURIComponent(syncMatch[1] ?? '')
-      const entry = deps.providers().find((e) => e.id === id)
-      if (entry === undefined) {
-        send(404, { error: 'no such provider' })
-        return
-      }
       try {
-        const response = await fetch(`${entry.baseUrl.replace(/\/$/, '')}/models`, {
-          headers: authHeaders(entry),
-          signal: AbortSignal.timeout(10_000),
+        const outcome = await deps.mutateProviderStore<{ ok: true; models: string[] } | { ok: false; status: number; error: string }>(async ({ providers, defaults }) => {
+          const entry = providers.find((candidate) => candidate.id === id)
+          if (entry === undefined) return { providers, defaults, result: { ok: false as const, status: 404, error: 'no such provider' } }
+          const response = await fetch(`${entry.baseUrl.replace(/\/$/, '')}/models`, { headers: authHeaders(entry), signal: AbortSignal.timeout(10_000) })
+          if (!response.ok) return { providers, defaults, result: { ok: false as const, status: 502, error: `HTTP ${response.status}` } }
+          const models = extractModelIds(await response.json())
+          if (models.length === 0) return { providers, defaults, result: { ok: false as const, status: 502, error: 'model list came back empty' } }
+          return {
+            providers: providers.map((candidate) => candidate.id === id
+              ? { ...candidate, models, ...(candidate.defaultModel === undefined ? { defaultModel: models[0]! } : {}) }
+              : candidate),
+            defaults,
+            result: { ok: true as const, models },
+          }
         })
-        if (!response.ok) {
-          send(502, { ok: false, error: `HTTP ${response.status}` })
-          return
-        }
-        const models = extractModelIds(await response.json())
-        if (models.length === 0) {
-          send(502, { ok: false, error: 'model list came back empty' })
-          return
-        }
-        const next = deps.providers().map((candidate) => (
-          candidate.id === id
-            ? { ...candidate, models, ...(candidate.defaultModel === undefined && models.length > 0 ? { defaultModel: models[0] } : {}) }
-            : candidate
-        ))
-        deps.setProviders(next)
-        await deps.persistList(next)
-        send(200, { ok: true, models })
+        if (!outcome.ok) { send(outcome.status, { ok: false, error: outcome.error }); return }
+        send(200, { ok: true, models: outcome.models })
       } catch (error) {
         send(502, { ok: false, error: String(error instanceof Error ? error.message : error) })
       }
@@ -2999,9 +3187,17 @@ async function acceptMessage(
       return { ok: false, status: 400, error: error.message }
     }
   }
-  const controls = deps.controlsFor(entry.workspaceId)
-  if (controls.model === undefined || controls.activeProvider === undefined) {
-    return { ok: false, status: 400, error: 'no provider/model configured for this workspace; manage providers in settings' }
+  if (deps.unavailableSessions.has(entry.session.id)) {
+    return { ok: false, status: 503, error: 'session unavailable after durable storage failure; restart the host to reload canonical history' }
+  }
+  const effectiveModel = deps.resolveEffectiveModel(entry.session, entry.workspaceId)
+  if (effectiveModel.model === undefined || effectiveModel.model === null || effectiveModel.provider === undefined || effectiveModel.provider === null) {
+    return { ok: false, status: 400, error: 'no provider/model configured for this session; manage providers in settings' }
+  }
+  try {
+    deps.validateProviderModel(effectiveModel.provider, effectiveModel.model)
+  } catch (error) {
+    return { ok: false, status: 400, error: `configured session provider/model is unavailable: ${String(error instanceof Error ? error.message : error)}` }
   }
 
   // Transport-retry dedup, resolved against the canonical log: a
@@ -3060,8 +3256,65 @@ async function acceptMessage(
   return { ok: true, status: 202, body: { inputId, queued: wasBusy } }
 }
 
+async function putSessionModel(
+  entry: SessionEntry,
+  req: IncomingMessage,
+  deps: HandlerDeps,
+): Promise<{ ok: false; status: number; error: string } | { ok: true }> {
+  const body = await readJson(req)
+  const provider = body['provider']
+  const model = body['model']
+  const thinkingLevel = body['thinkingLevel']
+  if ((provider !== undefined && provider !== null && typeof provider !== 'string')
+    || (model !== undefined && model !== null && typeof model !== 'string')) {
+    return { ok: false, status: 400, error: "body accepts optional string|null 'provider' and 'model'" }
+  }
+  if (thinkingLevel !== undefined && thinkingLevel !== null && !isThinkingLevel(thinkingLevel)) {
+    return { ok: false, status: 400, error: "'thinkingLevel' must be off|minimal|low|medium|high|xhigh|max, or null" }
+  }
+  if (provider === undefined && model === undefined && thinkingLevel === undefined) {
+    return { ok: false, status: 400, error: "body needs at least one of 'provider', 'model', or 'thinkingLevel'" }
+  }
+  const prior = sessionModelOf(entry.session.events)
+  // A legacy session's first mutation snapshots today's global pair. Once a
+  // session/model event exists, its fields are the whole source of truth:
+  // null is an explicit blank, never a request to re-inherit global defaults.
+  const global = deps.defaults()
+  const priorProvider = prior.hasEvent ? prior.provider : global.provider
+  const priorModel = prior.hasEvent ? prior.model : global.model
+  const resultingProvider = provider === undefined ? priorProvider : provider
+  const resultingModel = model === undefined ? priorModel : model
+  const hasProvider = resultingProvider !== undefined && resultingProvider !== null
+  const hasModel = resultingModel !== undefined && resultingModel !== null
+  if (hasProvider !== hasModel) {
+    return { ok: false, status: 400, error: 'provider and model must both be configured or both be blank' }
+  }
+  if (hasProvider && hasModel) {
+    try {
+      deps.validateProviderModel(resultingProvider, resultingModel)
+    } catch (error) {
+      return { ok: false, status: 400, error: String(error instanceof Error ? error.message : error) }
+    }
+  }
+  entry.session.append({
+    type: 'session/model',
+    ...(provider !== undefined ? { provider } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
+  })
+  try {
+    await entry.session.durable()
+  } catch (error) {
+    // Session.append cannot roll back its in-memory event. Fence this instance
+    // instead of ever serving or executing from uncommitted state.
+    deps.unavailableSessions.add(entry.session.id)
+    return { ok: false, status: 500, error: `session model could not be persisted; session is unavailable until restart: ${String(error instanceof Error ? error.message : error)}` }
+  }
+  return { ok: true }
+}
+
 async function putModel(
-  workspaceId: WorkspaceId,
+  _workspaceId: WorkspaceId,
   req: IncomingMessage,
   deps: HandlerDeps,
 ): Promise<{ ok: false; status: number; error: string } | { ok: true }> {
@@ -3071,12 +3324,51 @@ async function putModel(
   if ((rawModel !== undefined && typeof rawModel !== 'string') || (rawProvider !== undefined && typeof rawProvider !== 'string')) {
     return { ok: false, status: 400, error: "body accepts optional strings 'model' and 'provider'" }
   }
-  const target = rawProvider ?? deps.controlsFor(workspaceId).activeProvider ?? ''
-  if (target === '') {
-    return { ok: false, status: 400, error: 'no provider configured yet' }
+  const current = deps.defaults()
+  const provider = rawProvider ?? current.provider
+  if (provider === null || provider === undefined || provider === '') return { ok: false, status: 400, error: 'no provider configured yet' }
+  let model = rawModel === '' ? undefined : rawModel
+  if (model === undefined) {
+    const configured = deps.providers().find((entry) => entry.id === provider)
+    model = current.provider === provider ? current.model ?? undefined : configured?.defaultModel ?? configured?.models[0]
   }
-  const outcome = deps.setActive(workspaceId, target, rawModel === '' ? undefined : (rawModel as string | undefined))
-  return outcome.ok ? { ok: true as const } : { ok: false as const, status: 400, error: outcome.error }
+  if (model === undefined || model === '') return { ok: false, status: 400, error: 'no model configured yet' }
+  try {
+    deps.validateProviderModel(provider, model)
+  } catch (error) {
+    return { ok: false, status: 400, error: String(error instanceof Error ? error.message : error) }
+  }
+  const next: ModelDefaults = { provider, model, thinkingLevel: current.thinkingLevel }
+  try {
+    await deps.mutateProviderStore(({ providers, defaults }) => ({ providers, defaults: { provider: next.provider, model: next.model, thinkingLevel: defaults.thinkingLevel }, result: undefined })), { clearRuntimeModelOverride: true }
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, status: 500, error: `global model defaults could not be persisted: ${String(error instanceof Error ? error.message : error)}` }
+  }
+}
+
+async function putModelDefaults(req: IncomingMessage, deps: HandlerDeps): Promise<{ ok: false; status: number; error: string } | { ok: true }> {
+  const body = await readJson(req)
+  const provider = body['provider']; const model = body['model']; const thinkingLevel = body['thinkingLevel']
+  if (!Object.hasOwn(body, 'provider') || !Object.hasOwn(body, 'model')) return { ok: false, status: 400, error: "body needs complete 'provider' and 'model' pair" }
+  if ((provider !== null && typeof provider !== 'string') || (model !== null && typeof model !== 'string') || (thinkingLevel !== undefined && thinkingLevel !== null && !isThinkingLevel(thinkingLevel))) {
+    return { ok: false, status: 400, error: "body needs provider/model strings or null, plus documented thinkingLevel or null" }
+  }
+  if ((provider === null) !== (model === null) || (provider === '' || model === '')) return { ok: false, status: 400, error: 'provider and model must both be configured or both be blank' }
+  const next: ModelDefaults = { provider, model, thinkingLevel: thinkingLevel === undefined ? deps.defaults().thinkingLevel : thinkingLevel }
+  if (provider !== null && model !== null) {
+    try { deps.validateProviderModel(provider, model) } catch (error) { return { ok: false, status: 400, error: String(error instanceof Error ? error.message : error) } }
+  }
+  try {
+    await deps.mutateProviderStore(({ providers, defaults }) => ({
+      providers,
+      defaults: { provider: next.provider, model: next.model, thinkingLevel: thinkingLevel === undefined ? defaults.thinkingLevel : next.thinkingLevel },
+      result: undefined,
+    })), { clearRuntimeModelOverride: true }
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, status: 500, error: `global model defaults could not be persisted: ${String(error instanceof Error ? error.message : error)}` }
+  }
 }
 
 /**
@@ -3084,21 +3376,25 @@ async function putModel(
  * the model's configured default; any string must be a documented level.
  */
 async function putThinking(
-  workspaceId: WorkspaceId,
+  _workspaceId: WorkspaceId,
   req: IncomingMessage,
   deps: HandlerDeps,
 ): Promise<{ ok: false; status: number; error: string } | { ok: true }> {
   const body = await readJson(req)
   const raw = body['level']
-  if (raw === undefined || raw === null) {
-    deps.controlsFor(workspaceId).thinkingLevel = undefined
-    return { ok: true }
-  }
-  if (!isThinkingLevel(raw)) {
+  if (raw !== undefined && raw !== null && !isThinkingLevel(raw)) {
     return { ok: false, status: 400, error: "body needs 'level' to be one of off|minimal|low|medium|high|xhigh|max, or null to use the model default" }
   }
-  deps.controlsFor(workspaceId).thinkingLevel = raw
-  return { ok: true }
+  try {
+    await deps.mutateProviderStore(({ providers, defaults }) => ({
+      providers,
+      defaults: { ...defaults, thinkingLevel: raw ?? null },
+      result: undefined,
+    }))
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, status: 500, error: `global thinking default could not be persisted: ${String(error instanceof Error ? error.message : error)}` }
+  }
 }
 
 async function putPolicy(
@@ -3171,7 +3467,8 @@ function defaultWorkspaceId(deps: HandlerDeps): WorkspaceId {
 function workspaceMeta(workspaceId: WorkspaceId, deps: HandlerDeps, folder?: string): Record<string, unknown> {
   const state = deps.controlsFor(workspaceId)
   // Resolved by provider id: the global selection pointer is irrelevant.
-  const models = state.activeProvider === undefined ? [] : deps.kernel.ctx.llm.providerModels(state.activeProvider)
+  const defaults = deps.defaults()
+  const models = defaults.provider === null ? [] : deps.kernel.ctx.llm.providerModels(defaults.provider)
   let workspace: { id: string; name: string; archived: boolean } = {
     id: workspaceId,
     name: 'Default',
@@ -3191,11 +3488,11 @@ function workspaceMeta(workspaceId: WorkspaceId, deps: HandlerDeps, folder?: str
   }
   return {
     workspace,
-    provider: state.activeProvider ?? '',
-    model: state.model ?? '',
+    provider: defaults.provider ?? '',
+    model: defaults.model ?? '',
     models,
-    /** Workspace thinking override; null = the model's configured default. */
-    thinkingLevel: state.thinkingLevel ?? null,
+    /** Global thinking override; null = the model's configured default. */
+    thinkingLevel: defaults.thinkingLevel,
     policy: { ...state.modeDefinition.definition.permissionDefaults, ...state.policy },
     mode: { id: state.modeDefinition.definition.id, name: state.modeDefinition.definition.name, revision: state.modeRevision },
     projects,
@@ -3256,35 +3553,22 @@ async function createProvider(
   const baseUrl = typeof body['baseUrl'] === 'string' ? body['baseUrl'].trim() : ''
   const apiKey = typeof body['apiKey'] === 'string' ? body['apiKey'].trim() : ''
   if (name === '') return { ok: false, status: 400, error: "body needs a non-empty string 'name'" }
-  if (baseUrl === '') return { ok: false, status: 400, error: "body needs a non-empty string 'baseUrl'" }
-  if (!/^https?:\/\//.test(baseUrl)) return { ok: false, status: 400, error: `'${baseUrl}' is not an http(s) URL` }
-  const base = slugify(name)
-  let id = base
-  let bump = 2
-  while (deps.providers().some((entry) => entry.id === id)) {
-    id = `${base}-${bump++}`
-  }
-  const models = Array.isArray(body['models'])
-    ? (body['models'] as unknown[]).filter((model): model is string => typeof model === 'string')
-    : []
-  const entry: ProviderConfig = {
-    id,
-    name,
-    baseUrl: baseUrl.replace(/\/$/, ''),
-    apiKey,
-    models,
-    ...(models.length > 0 ? { defaultModel: models[0] } : {}),
-    enabled: true,
-    // `contextLimits` stays accepted for older clients; it lands in the
-    // same per-model settings the UI edits.
-    ...((): { modelSettings?: Record<string, ModelSettings> } => {
-      const sanitized = sanitizeModelSettings(body['modelSettings'] ?? body['contextLimits'])
-      return sanitized !== undefined ? { modelSettings: sanitized } : {}
-    })(),
-  }
-  const next = [...deps.providers(), entry]
-  deps.setProviders(next)
-  await deps.persistList(next)
+  if (baseUrl === '' || !/^https?:\/\//.test(baseUrl)) return { ok: false, status: 400, error: `'${baseUrl}' is not an http(s) URL` }
+  const models = Array.isArray(body['models']) ? (body['models'] as unknown[]).filter((model): model is string => typeof model === 'string') : []
+  const entry = await deps.mutateProviderStore(({ providers, defaults }) => {
+    const base = slugify(name); let id = base; let bump = 2
+    while (providers.some((candidate) => candidate.id === id)) id = `${base}-${bump++}`
+    const requestedDefault = typeof body['defaultModel'] === 'string' && models.includes(body['defaultModel']) ? body['defaultModel'] : undefined
+    const created: ProviderConfig = {
+      id, name, baseUrl: baseUrl.replace(/\/$/, ''), apiKey, models,
+      ...(requestedDefault !== undefined ? { defaultModel: requestedDefault } : models.length > 0 ? { defaultModel: models[0] } : {}), enabled: true,
+      ...((): { modelSettings?: Record<string, ModelSettings> } => {
+        const sanitized = sanitizeModelSettings(body['modelSettings'] ?? body['contextLimits'])
+        return sanitized !== undefined ? { modelSettings: sanitized } : {}
+      })(),
+    }
+    return { providers: [...providers, created], defaults, result: created }
+  })
   return { ok: true, entry }
 }
 
@@ -3293,42 +3577,30 @@ async function patchProvider(
   id: string,
   body: Record<string, unknown>,
 ): Promise<{ ok: false; status: number; error: string } | { ok: true; entry: ProviderConfig }> {
-  const current = deps.providers().find((entry) => entry.id === id)
-  if (current === undefined) {
-    return { ok: false, status: 404, error: `no provider '${id}'` }
+  const requestedName = typeof body['name'] === 'string' ? body['name'].trim() : undefined
+  const requestedBaseUrl = typeof body['baseUrl'] === 'string' ? body['baseUrl'].trim() : undefined
+  if (requestedBaseUrl !== undefined && requestedBaseUrl !== '' && !/^https?:\/\//.test(requestedBaseUrl)) {
+    return { ok: false, status: 400, error: `'${requestedBaseUrl}' is not an http(s) URL` }
   }
-  let draft = current
-  if (typeof body['name'] === 'string' && body['name'].trim() !== '') draft = { ...draft, name: body['name'].trim() }
-  if (typeof body['baseUrl'] === 'string' && body['baseUrl'].trim() !== '') {
-    const trimmed = body['baseUrl'].trim()
-    if (!/^https?:\/\//.test(trimmed)) {
-      return { ok: false, status: 400, error: `'${trimmed}' is not an http(s) URL` }
+  const models = Array.isArray(body['models']) ? body['models'].filter((model): model is string => typeof model === 'string') : undefined
+  const patched = await deps.mutateProviderStore(({ providers, defaults }) => {
+    const current = providers.find((entry) => entry.id === id)
+    if (current === undefined) return { providers, defaults, result: undefined }
+    let entry = current
+    if (requestedName !== undefined && requestedName !== '') entry = { ...entry, name: requestedName }
+    if (requestedBaseUrl !== undefined && requestedBaseUrl !== '') entry = { ...entry, baseUrl: requestedBaseUrl.replace(/\/$/, '') }
+    if (typeof body['apiKey'] === 'string') entry = { ...entry, apiKey: body['apiKey'].trim() }
+    if (typeof body['enabled'] === 'boolean') entry = { ...entry, enabled: body['enabled'] }
+    if (models !== undefined) entry = { ...entry, models }
+    if (typeof body['defaultModel'] === 'string' && body['defaultModel'] !== '') entry = { ...entry, defaultModel: body['defaultModel'] }
+    if (isRecord(body['modelSettings']) || isRecord(body['contextLimits'])) {
+      const sanitized = sanitizeModelSettings(body['modelSettings'] ?? body['contextLimits'])
+      if (sanitized !== undefined) entry = { ...entry, modelSettings: sanitized }
+      else { const { modelSettings: _dropped, ...rest } = entry; void _dropped; entry = rest }
     }
-    draft = { ...draft, baseUrl: trimmed.replace(/\/$/, '') }
-  }
-  if (typeof body['apiKey'] === 'string') draft = { ...draft, apiKey: body['apiKey'].trim() }
-  if (typeof body['enabled'] === 'boolean') draft = { ...draft, enabled: body['enabled'] }
-  if (Array.isArray(body['models'])) {
-    draft = { ...draft, models: (body['models'] as unknown[]).filter((model): model is string => typeof model === 'string') }
-  }
-  if (typeof body['defaultModel'] === 'string' && body['defaultModel'] !== '') {
-    draft = { ...draft, defaultModel: body['defaultModel'] }
-  }
-  // A modelSettings patch REPLACES the whole map (same semantics as the
-  // models list): merge-with-absent would silently resurrect dropped
-  // entries. Legacy `contextLimits` input maps into the same field.
-  if (isRecord(body['modelSettings']) || isRecord(body['contextLimits'])) {
-    const sanitized = sanitizeModelSettings(body['modelSettings'] ?? body['contextLimits'])
-    draft = sanitized !== undefined ? { ...draft, modelSettings: sanitized } : (() => {
-      const { modelSettings: _dropped, ...rest } = draft
-      void _dropped
-      return rest
-    })()
-  }
-  const next = deps.providers().map((entry) => (entry.id === id ? draft : entry))
-  deps.setProviders(next)
-  await deps.persistList(next)
-  return { ok: true, entry: draft }
+    return { providers: providers.map((candidate) => candidate.id === id ? entry : candidate), defaults, result: entry }
+  })
+  return patched === undefined ? { ok: false, status: 404, error: `no provider '${id}'` } : { ok: true, entry: patched }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

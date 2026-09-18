@@ -2,10 +2,19 @@ import { useEffect, useRef } from 'react'
 import { useScopedState } from '../../hooks/useScopedState.ts'
 import { createProject, renameProject, removeProject, setProjectPath } from '../../lib/api.ts'
 import type { ProjectRow } from '../../lib/types.ts'
+import Icon from '../common/Icon.tsx'
+import { ErrorNotice } from '../common/ErrorNotice.tsx'
+import { FolderPickerModal } from '../composer/FolderPickerModal.tsx'
 import { Button } from '../ui/Button.tsx'
 import { Field } from '../ui/Field.tsx'
+import { IconButton } from '../ui/IconButton.tsx'
 import { TextInput } from '../ui/TextInput.tsx'
-import { ErrorNotice } from '../common/ErrorNotice.tsx'
+import { EmptyState, InlineConfirm, ItemList, ItemRow, Notice, PanelBody, PanelIntro, Section } from './settings-kit.tsx'
+
+type RowMode = { readonly id: string; readonly kind: 'rename' | 'path' | 'remove' }
+
+/** Which input the folder picker fills: the register form or a row's new path. */
+type PickerTarget = 'register' | 'path' | null
 
 export function ProjectsPanel(props: {
   readonly workspaceId: string | null
@@ -16,6 +25,8 @@ export function ProjectsPanel(props: {
   return <ProjectsPanelContent key={props.workspaceId} {...props} />
 }
 
+const folderName = (path: string): string => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path
+
 function ProjectsPanelContent({ workspaceId, projects, onChanged, sessionCounts = {} }: {
   readonly workspaceId: string | null
   readonly projects: readonly ProjectRow[]
@@ -25,53 +36,155 @@ function ProjectsPanelContent({ workspaceId, projects, onChanged, sessionCounts 
   const [name, setName] = useScopedState('')
   const [path, setPath] = useScopedState('')
   const [busy, setBusy] = useScopedState(false)
-  const lock = useRef(false)
   const [error, setError] = useScopedState<string | null>(null)
   const [saved, setSaved] = useScopedState(false)
-  const [editing, setEditing] = useScopedState<string | null>(null)
-  const [editName, setEditName] = useScopedState('')
-  const [retargeting, setRetargeting] = useScopedState<string | null>(null)
-  const [editPath, setEditPath] = useScopedState('')
+  const [mode, setMode] = useScopedState<RowMode | null>(null)
+  const [editValue, setEditValue] = useScopedState('')
   const [rowErrors, setRowErrors] = useScopedState<Record<string, string>>({})
-  const [removing, setRemoving] = useScopedState<string | null>(null)
+  const [picker, setPicker] = useScopedState<PickerTarget>(null)
+  // A ref, not state: a double click in one frame must not start two requests.
+  const lock = useRef(false)
   const alive = useRef(true)
   useEffect(() => () => { alive.current = false; lock.current = false }, [])
-  const mutate = async (projectId: string, action: () => Promise<unknown>) => {
-    if (lock.current || !workspaceId) return
+
+  const mutate = async (projectId: string, action: () => Promise<unknown>): Promise<void> => {
+    if (lock.current || workspaceId === null) return
     lock.current = true; setBusy(true); setError(null); setRowErrors((all) => ({ ...all, [projectId]: '' }))
-    try { await action(); if (!alive.current) return; await onChanged(); if (!alive.current) return; setEditing(null); setRemoving(null); setRetargeting(null) }
-    catch (cause) { setRowErrors((all) => ({ ...all, [projectId]: String(cause) })) }
-    finally { lock.current = false; setBusy(false) }
+    try {
+      await action()
+      if (!alive.current) return
+      await onChanged()
+      if (!alive.current) return
+      setMode(null)
+    } catch (cause) {
+      setRowErrors((all) => ({ ...all, [projectId]: String(cause) }))
+    } finally {
+      lock.current = false; setBusy(false)
+    }
   }
-  const register = async () => {
-    if (!workspaceId || !path.trim() || lock.current) return
+
+  const register = async (): Promise<void> => {
+    if (workspaceId === null || path.trim() === '' || lock.current) return
     lock.current = true; setBusy(true); setError(null); setSaved(false)
     try {
-      await createProject(workspaceId, name.trim() || path.trim().split(/[\\/]/).filter(Boolean).at(-1) || path.trim(), path.trim())
+      await createProject(workspaceId, name.trim() || folderName(path.trim()) || path.trim(), path.trim())
       if (!alive.current) return
       await onChanged()
       if (!alive.current) return
       setPath(''); setName(''); setSaved(true)
-    } catch (cause) { setError(String(cause)) }
-    finally { lock.current = false; setBusy(false) }
+    } catch (cause) {
+      setError(String(cause))
+    } finally {
+      lock.current = false; setBusy(false)
+    }
   }
-  return <div className="manage-panel">
-    <section className="manage-section"><h2>Registered projects</h2><p className="manage-hint">A project is a filesystem root in this workspace. Registration never changes the scope of an existing conversation.</p>
-      {projects.length ? <ul className="manage-list">{projects.map(project => {
-        const count = sessionCounts[project.id] ?? 0
-        return <li className="manage-server" key={project.id}><div><strong>{project.name}</strong><span className="project-sessions">{count} {count === 1 ? 'conversation' : 'conversations'}</span><p className="project-path"><code>{project.path}</code></p></div><div className="manage-actions">
-          {retargeting === project.id ? <><TextInput aria-label="New project folder" value={editPath} onChange={event => setEditPath(event.target.value)} /><Button disabled={busy || !editPath.trim()} onClick={() => void mutate(project.id, () => setProjectPath(workspaceId!, project.id, editPath.trim()))}>Save path</Button><Button disabled={busy} onClick={() => setRetargeting(null)}>Cancel</Button></> : <Button disabled={busy} onClick={() => { setRetargeting(project.id); setEditPath(project.path) }}>Change folder</Button>}
-          {editing === project.id ? <><TextInput aria-label="New project name" value={editName} onChange={event => setEditName(event.target.value)} /><Button disabled={busy || !editName.trim()} onClick={() => void mutate(project.id, () => renameProject(workspaceId!, project.id, editName.trim()))}>Save name</Button><Button disabled={busy} onClick={() => setEditing(null)}>Cancel</Button></> : <Button disabled={busy} onClick={() => { setEditing(project.id); setEditName(project.name) }}>Rename</Button>}
-          {removing === project.id ? <><p>Remove this registration? Files stay on disk. Removal is refused while any conversation is bound to this project.</p><Button variant="outline-danger" disabled={busy} onClick={() => void mutate(project.id, () => removeProject(workspaceId!, project.id))}>Remove registration</Button><Button disabled={busy} onClick={() => setRemoving(null)}>Cancel removal</Button></> : <Button disabled={busy} onClick={() => setRemoving(project.id)}>Remove project</Button>}
-        </div>
-        {rowErrors[project.id] ? <ErrorNotice raw={rowErrors[project.id]!} /> : null}
-      </li>})}</ul> : <p>No projects registered yet.</p>}
-    </section>
-    <form className="manage-section" onSubmit={event => { event.preventDefault(); void register() }} aria-busy={busy}>
-      <h2>Register a folder</h2><Field label="Project name" hint="Optional. Defaults to the folder name."><TextInput value={name} onChange={event => setName(event.target.value)} disabled={busy} /></Field>
-      <Field label="Project folder" hint="Use an existing absolute path on the server. Overlapping roots remain subject to server validation."><TextInput value={path} onChange={event => setPath(event.target.value)} placeholder="C:/workspace/project" disabled={busy} /></Field>
-      {error ? <ErrorNotice raw={error} /> : null}{saved ? <p role="status">Project registered. Start a new conversation to use it.</p> : null}
-      <div className="manage-actions"><Button type="submit" variant="primary" disabled={busy || !workspaceId || !path.trim()}>{busy ? 'Registering…' : 'Register project'}</Button></div>
-    </form>
-  </div>
+
+  const startMode = (project: ProjectRow, kind: RowMode['kind']): void => {
+    setMode({ id: project.id, kind })
+    setEditValue(kind === 'rename' ? project.name : kind === 'path' ? project.path : '')
+    setRowErrors((all) => ({ ...all, [project.id]: '' }))
+  }
+
+  return (
+    <PanelBody>
+      <PanelIntro>A project is a folder on this machine that conversations can read and change. Registration never changes the scope of an existing conversation.</PanelIntro>
+
+      <Section title="Registered projects" count={projects.length}>
+        {projects.length === 0 ? <EmptyState>No projects registered yet.</EmptyState> : (
+          <ItemList label="Registered projects">
+            {projects.map((project) => {
+              const count = sessionCounts[project.id] ?? 0
+              const active = mode?.id === project.id ? mode.kind : null
+              const rowError = rowErrors[project.id]
+              return (
+                <ItemRow
+                  key={project.id}
+                  title={<><Icon name="folder" size={14} className="text-fg-faint" /><span className="break-all">{project.name}</span><span className="text-xs font-normal text-fg-faint">{count} {count === 1 ? 'conversation' : 'conversations'}</span></>}
+                  meta={<code className="font-mono">{project.path}</code>}
+                  actions={active === null ? (
+                    <>
+                      <Button variant="ghost" size="sm" disabled={busy} onClick={() => startMode(project, 'rename')}>Rename</Button>
+                      <Button variant="ghost" size="sm" disabled={busy} onClick={() => startMode(project, 'path')}>Change folder</Button>
+                      <Button variant="ghost" size="sm" className="text-bad" disabled={busy} onClick={() => startMode(project, 'remove')}>Remove project</Button>
+                    </>
+                  ) : undefined}
+                >
+                  {active === 'rename' || active === 'path' ? (
+                    <form
+                      className="flex flex-wrap items-end gap-2"
+                      onSubmit={(event) => {
+                        event.preventDefault()
+                        const value = editValue.trim()
+                        if (value === '' || workspaceId === null) return
+                        void mutate(project.id, () => active === 'rename' ? renameProject(workspaceId, project.id, value) : setProjectPath(workspaceId, project.id, value))
+                      }}
+                    >
+                      <div className="min-w-0 flex-1 basis-64">
+                        <TextInput
+                          autoFocus
+                          mono={active === 'path'}
+                          aria-label={active === 'rename' ? 'New project name' : 'New project folder'}
+                          value={editValue}
+                          onChange={(event) => setEditValue(event.target.value)}
+                          trailing={active === 'path' ? <IconButton label="Browse folders" onClick={() => setPicker('path')}><Icon name="folder" size={15} /></IconButton> : undefined}
+                        />
+                      </div>
+                      <Button type="submit" variant="primary" size="sm" disabled={busy || editValue.trim() === ''}>{active === 'rename' ? 'Save name' : 'Save path'}</Button>
+                      <Button variant="ghost" size="sm" disabled={busy} onClick={() => setMode(null)}>Cancel</Button>
+                    </form>
+                  ) : null}
+                  {active === 'remove' ? (
+                    <InlineConfirm
+                      message="Remove this registration? Files stay on disk. Removal is refused while any conversation is bound to this project."
+                      confirmLabel="Remove registration"
+                      cancelLabel="Cancel removal"
+                      busy={busy}
+                      onConfirm={() => { if (workspaceId !== null) void mutate(project.id, () => removeProject(workspaceId, project.id)) }}
+                      onCancel={() => setMode(null)}
+                    />
+                  ) : null}
+                  {rowError ? <ErrorNotice raw={rowError} /> : null}
+                </ItemRow>
+              )
+            })}
+          </ItemList>
+        )}
+      </Section>
+
+      <Section title="Register a folder">
+        <form className="flex flex-col gap-4" onSubmit={(event) => { event.preventDefault(); void register() }} aria-busy={busy}>
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label="Project folder" hint="An existing absolute path on this machine.">
+              <TextInput
+                mono
+                value={path}
+                placeholder="C:/workspace/project"
+                disabled={busy}
+                onChange={(event) => setPath(event.target.value)}
+                trailing={<IconButton label="Browse folders" disabled={busy} onClick={() => setPicker('register')}><Icon name="folder" size={15} /></IconButton>}
+              />
+            </Field>
+            <Field label="Project name" hint={path.trim() !== '' && name.trim() === '' ? `Optional. Defaults to “${folderName(path.trim())}”.` : 'Optional. Defaults to the folder name.'}>
+              <TextInput value={name} onChange={(event) => setName(event.target.value)} disabled={busy} />
+            </Field>
+          </div>
+          {error !== null ? <ErrorNotice raw={error} /> : null}
+          {saved ? <Notice kind="ok" text="Project registered. Start a new conversation to use it." /> : null}
+          <div>
+            <Button type="submit" variant="primary" size="sm" disabled={busy || workspaceId === null || path.trim() === ''}>{busy ? 'Registering…' : 'Register project'}</Button>
+          </div>
+        </form>
+      </Section>
+
+      <FolderPickerModal
+        open={picker !== null}
+        onDismiss={() => setPicker(null)}
+        onConfirm={(picked) => {
+          if (picker === 'register') { setPath(picked); setSaved(false) }
+          else setEditValue(picked)
+          setPicker(null)
+        }}
+      />
+    </PanelBody>
+  )
 }

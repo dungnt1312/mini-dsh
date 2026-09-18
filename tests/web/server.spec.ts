@@ -19,6 +19,7 @@ import { FakeOpenAiServer, FakeScriptedLlm } from './fake-llm.ts'
 let root = ''
 let server: WebServer
 let baseUrl = ''
+let startCount = 0
 
 beforeAll(async () => {
   root = await fs.mkdtemp(path.join(tmpdir(), 'mini-dsh-web-'))
@@ -35,7 +36,7 @@ async function start(
   provider?: LlmProvider,
   extra?: Partial<Parameters<typeof createWebServer>[0]>,
 ): Promise<void> {
-  server = await createWebServer({ root, providers: [provider ?? new FakeScriptedLlm(steps)], ...extra })
+  server = await createWebServer({ root, providers: [provider ?? new FakeScriptedLlm(steps)], configFile: path.join(root, `providers-${startCount++}.json`), ...extra })
   baseUrl = server.url
 }
 
@@ -476,8 +477,8 @@ describe('provider registry', () => {
       expect(synced.status).toBe(200)
       const syncBody = (await synced.json()) as { ok: boolean; models: string[] }
       expect(syncBody.models).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra'])
-      const persisted = JSON.parse(await fs.readFile(config, 'utf8')) as { models: string[] }[]
-      expect(persisted[0]?.models).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra'])
+      const persisted = JSON.parse(await fs.readFile(config, 'utf8')) as { providers?: { models: string[] }[] }
+      expect(persisted.providers?.[0]?.models).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra'])
 
       // Test connection issues a buffered completion ping against the fake.
       const tested = await fetch(`${base}/api/providers/clip-proxy-one/test`, { method: 'POST' })
@@ -727,8 +728,8 @@ describe('provider registry', () => {
       const list = (await (await fetch(`${s.url}/api/providers`)).json()) as { id: string; keyMasked: string }[]
       expect(list[0]?.id).toBe('deepseek')
       expect(list[0]?.keyMasked).toBe('••••-key')
-      const persisted = JSON.parse(await fs.readFile(config, 'utf8')) as { id: string }[]
-      expect(persisted[0]?.id).toBe('deepseek')
+      const persisted = JSON.parse(await fs.readFile(config, 'utf8')) as { providers?: { id: string }[] }
+      expect(persisted.providers?.[0]?.id).toBe('deepseek')
     } finally {
       if (previous === undefined) delete process.env['DEEPSEEK_API_KEY']
       else process.env['DEEPSEEK_API_KEY'] = previous

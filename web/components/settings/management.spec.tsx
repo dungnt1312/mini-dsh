@@ -121,6 +121,6 @@ describe('skills + memory tabs', () => {
   it('skills list offers a create form with frontmatter guidance', () => {
     const html = renderToStaticMarkup(<SkillsPanel workspaceId="ws-1" />)
     expect(html).toContain('New skill')
-    expect(html).toContain('Bundled rows are read-only')
+    expect(html).toContain('bundled rows are read-only')
   })
 })

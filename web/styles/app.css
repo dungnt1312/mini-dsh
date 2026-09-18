@@ -24,11 +24,12 @@
   --color-warn-soft: var(--warn-soft);
   --color-bad: var(--bad);
   --color-bad-soft: var(--bad-soft);
+  --color-bad-fg: var(--bad-fg);
   --color-scrim: var(--scrim);
   --color-composer: var(--composer);
   --shadow-pop: var(--shadow-pop);
   --shadow-composer: var(--shadow-composer);
-  --font-sans: ui-sans-serif, -apple-system, "Segoe UI", system-ui, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-sans: "Instrument Sans", ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
@@ -53,6 +54,7 @@
   --warn-soft: #fff7e6;
   --bad: #c9252c;
   --bad-soft: #fdf0f0;
+  --bad-fg: #ffffff;
   --scrim: rgb(0 0 0 / 35%);
   --composer: #ffffff;
   --shadow-pop: 0 8px 28px rgb(0 0 0 / 12%), 0 0 0 1px rgb(0 0 0 / 5%);
@@ -87,6 +89,7 @@
   --warn-soft: rgb(245 184 74 / 12%);
   --bad: #ff7b7b;
   --bad-soft: rgb(255 123 123 / 12%);
+  --bad-fg: #1a1a1a;
   --scrim: rgb(0 0 0 / 60%);
   --composer: #303030;
   --shadow-pop: 0 8px 28px rgb(0 0 0 / 45%), 0 0 0 1px rgb(255 255 255 / 6%);
@@ -124,63 +127,23 @@
   .icon { display: inline-block; flex-shrink: 0; }
 }
 
-/* Workspace management panels keep semantic hooks; their visuals live here so the
-   panel modules stay free of repeated utility strings. */
+/* Component-level rules that utilities cannot express. */
 @layer components {
   /* The composer input is a contenteditable, so its placeholder is drawn
      rather than provided by the platform. `:empty` alone is not enough: an
-     editor the browser has seeded with a <br> still reads as empty to a user. */
+     editor the browser has seeded with a <br> still reads as empty to a user.
+     Floated with no size so it takes no inline space: the caret stays at the
+     start of the line instead of after the placeholder text. */
   .composer-input:empty::before,
   .composer-input:has(> br:only-child)::before {
     content: attr(data-placeholder);
+    float: left;
+    width: 0;
+    height: 0;
+    white-space: nowrap;
     color: var(--fg-faint);
     pointer-events: none;
   }
-  .manage-panel { display: flex; min-width: 0; flex-direction: column; gap: 1.5rem; }
-  .manage-section { display: flex; min-width: 0; flex-direction: column; gap: 0.75rem; }
-  .manage-section + .manage-section { border-top: 1px solid var(--line); padding-top: 1.5rem; }
-  .manage-section h2, .manage-section-title { display: flex; align-items: center; gap: 0.5rem; margin: 0; font-size: 13px; font-weight: 600; letter-spacing: 0.02em; }
-  .manage-section-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; }
-  .manage-section details > summary { color: var(--fg-muted); font-size: 13px; }
-  .manage-section details[open] > summary { margin-bottom: 0.5rem; }
-  .manage-hint { margin: 0; color: var(--fg-muted); font-size: 13px; }
-  .manage-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
-  .manage-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.5rem; }
-  .manage-server, .hooks-binding {
-    display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 0.75rem;
-    padding: 0.75rem 0.875rem; border: 1px solid var(--line); border-radius: 12px;
-  }
-  .manage-child { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.75rem 0.875rem; border: 1px solid var(--line); border-radius: 12px; }
-  .manage-server > div:first-child { min-width: 0; flex: 1 1 16rem; }
-  .manage-card {
-    display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 0.25rem; padding: 0.75rem;
-    border: 1px solid var(--line); border-radius: 12px; text-align: left; transition: border-color 0.15s, background-color 0.15s;
-  }
-  .manage-card:hover { background: var(--muted); }
-  .manage-card.is-selected { border-color: var(--fg); }
-  .manage-card-title { display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem; }
-  .manage-notice { display: flex; align-items: flex-start; gap: 0.5rem; margin: 0; padding: 0.5rem 0.75rem; border-radius: 10px; background: var(--muted); color: var(--fg-muted); font-size: 13px; }
-  .manage-notice.tone-ok { background: var(--ok-soft); color: var(--ok); }
-  .manage-notice .icon, .manage-warning .icon { margin-top: 2px; }
-  .manage-server-name { font-weight: 600; overflow-wrap: anywhere; }
-  .manage-code, .manage-mono { font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; }
-  textarea.manage-code, .manage-code-tall {
-    width: 100%; min-height: 8rem; padding: 0.625rem 0.75rem; resize: vertical;
-    border: 1px solid var(--line); border-radius: 10px; background: var(--muted); color: var(--fg);
-  }
-  .manage-code-tall { min-height: 16rem; }
-  .manage-form-grid { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(min(16rem, 100%), 1fr)); }
-  .manage-card-grid { display: grid; gap: 0.5rem; grid-template-columns: repeat(auto-fill, minmax(min(13rem, 100%), 1fr)); }
-  .manage-card-title { font-weight: 600; overflow-wrap: anywhere; }
-  .manage-card-sub, .manage-card-meta { color: var(--fg-muted); font-size: 12px; overflow-wrap: anywhere; }
-  .manage-child-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
-  .manage-child-summary { margin: 0; color: var(--fg-muted); font-size: 13px; }
-  .manage-error { color: var(--bad); font-size: 13px; }
-  .manage-warning { display: flex; align-items: flex-start; gap: 0.5rem; margin: 0; padding: 0.5rem 0.75rem; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 13px; }
-  .memory-snippet { margin: 0.25rem 0 0; color: var(--fg-muted); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .project-sessions { margin-left: 0.5rem; color: var(--fg-faint); font-size: 12px; }
-  .project-path { margin: 0.25rem 0 0; color: var(--fg-muted); font-size: 12px; overflow-wrap: anywhere; }
-  .session-filter { display: flex; align-items: center; gap: 0.5rem; }
   .filter-input {
     min-width: 0; flex: 1; height: 2.25rem; padding: 0 0.75rem; border: 1px solid var(--line);
     border-radius: 10px; background: var(--surface); outline: none;

@@ -5,13 +5,17 @@ import { capabilityBadges } from '../../lib/model-info.ts'
 import { decodeModelChoice, type ModelOption } from '../../lib/providers.ts'
 import { cn } from '../../lib/cn.ts'
 import type { ModelSettings, ProviderSummary } from '../../lib/types.ts'
+import { composerChipClass } from './composer-chip.ts'
 
 /**
- * Header model picker: search over a provider column and the previewed
+ * Composer model picker: search over a provider column and the previewed
  * provider's models, with a Manage models footer. Selecting a row writes the
- * exact provider/model pair for the workspace's next request.
+ * exact provider/model pair for the selected scope's next request.
  */
-export function ModelMenu({ modelLabel, modelValue, options, providers, modelSettings, onModel, onManage }: {
+export function ModelMenu({ menuLabel, disabled = false, modelLabel, modelValue, options, providers, modelSettings, onModel, onManage }: {
+  /** Accessible control label identifies conversation scope or global default. */
+  readonly menuLabel: string
+  readonly disabled?: boolean
   readonly modelLabel: string
   readonly modelValue: string | null
   readonly options: readonly ModelOption[]
@@ -36,15 +40,17 @@ export function ModelMenu({ modelLabel, modelValue, options, providers, modelSet
 
   return (
     <Menu
-      label="Workspace model (next request)"
+      label={menuLabel}
+      disabled={disabled}
       panelRole="dialog"
+      side="top"
+      align="end"
       panelClassName="w-[min(560px,calc(100vw-24px))] p-0"
-      triggerClassName="flex h-9 min-w-0 items-center gap-1.5 rounded-lg px-2.5 text-[17px] font-medium text-fg hover:bg-hover"
+      triggerClassName={composerChipClass}
       trigger={(open) => (
         <>
-          <span className="truncate">{modelName}</span>
-          {providerName !== null ? <span className="hidden truncate text-sm font-normal text-fg-faint sm:inline">{providerName}</span> : null}
-          <Icon name="chevron" size={16} className={cn('shrink-0 text-fg-faint transition-transform', open && 'rotate-180')} />
+          <span className="truncate" title={providerName !== null ? `${providerName} / ${modelName}` : modelName}>{modelName}</span>
+          <Icon name="chevron" size={13} className={cn('shrink-0 transition-transform', open && 'rotate-180')} />
         </>
       )}
     >

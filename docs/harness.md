@@ -49,6 +49,9 @@ approval/decision   its settlement: allow | deny | expired | cancelled | invalid
 input/queued        a pending input waiting for the current turn to close
 session/title       derived or custom session title
 session/project     session project binding
+session/model       the session's model preference (provider/model/thinkingLevel;
+                    an omitted field keeps the previous value, null is an
+                    explicit clear)
 session/child-meta  child-session provenance (parent turn, definition, objective)
 agent/child-spawn   durable spawn intent, written before a child agent starts
 agent/child-result  a child agent's settled status
@@ -69,6 +72,18 @@ is the pure helper: image refs become `ContentPart` image parts, text refs are
 inlined as fenced blocks (truncated at the host's `attachmentTextLimit`), and
 a text-only message stays a plain `string` so existing `toWireMessages` shapes
 are unchanged. This function is the *only* way model context is built.
+
+**`deriveSessionModel(events)`** (alias `sessionModelOf`) projects the
+per-session model preference from the log, last `session/model` event wins.
+An omitted field carries the preceding value forward; `null` survives as an
+explicit session-owned blank for `provider`/`model` (so sending is rejected),
+while `thinkingLevel: null` means the selected model's configured default.
+Neither kind of null re-inherits global controls. The returned `hasEvent`
+flag separates a **legacy log** (no `session/model` event — the caller alone
+falls back to the global default) from a session that owns a preference,
+even an all-null one. `deriveMessages` ignores these
+events; the preference is durable exactly like `session/title` and replays
+across restarts.
 
 ### `Session` (`session.ts`)
 
@@ -215,8 +230,9 @@ Details worth knowing:
   with the (possibly rewritten) contents; `reject` closes the turn with reason
   `rejected`. A first `enter` rewritten to empty closes it with reason `empty`.
 - **`agent/request`** (waterfall) sits between the log projection and the
-  provider — the web host uses it to stamp the selected model onto every
-  request; middleware may prepend a system message, etc.
+  provider — the web host uses it to stamp each session's effective model,
+  provider, and thinking level onto every request; middleware may prepend a
+  system message, etc.
 - **`agent/turn-stopping`** (serial) runs *before* `turn/end` is appended, so
   observers see a settled step and no closing turn yet.
 - **Failure closes the turn durably.** If a step throws, `closeOpenTurn()`
@@ -308,7 +324,14 @@ Three controls take effect **without steering** — each resolves at its gate,
 so a change lands on the next opportunity instead of interrupting a running
 turn:
 
-- **Model** — re-resolved per model request (the next request uses it).
+- **Model** — the model/provider/thinking level are **per-session** facts: a
+  durable `session/model` preference (see the session log vocabulary) is
+  re-resolved per model request, and the host stamps the effective pair onto
+  the request through `agent/request`. A mid-turn change therefore lands on
+  the turn's next request without touching the stream in flight, and the
+  context budget is recomputed for the new model on that same request. Only
+  a legacy log without any `session/model` event falls back to the global
+  default (`/api/model-defaults`), which every workspace shares.
 - **Permission** — re-resolved at each tool-start gate (the next gated call).
 - **Mode** — the strongest: re-gates tool exposure and permission defaults at
   the next tool start *and* reassembles context at the next model request,
@@ -319,14 +342,16 @@ input gets a stable id, duplicate `clientRequestId`s dedup, the queue is
 bounded (`maxPendingInputs`), and queued items wait for the current turn to
 close before claiming the next one.
 
-Bounded execution is centralized in `limits.ts`: `maxSteps` (a turn over
-budget closes as `limit`), `turnDeadlineMs`, `streamInactivityMs`,
-`toolTimeoutMs`, `approvalExpiryMs`, `toolOutputLimit`, `maxPendingInputs`,
-`automaticCompactionChars` (auto-compaction trigger at a completed
-boundary; 0 disables), plus composer-attachment limits `maxAttachmentBytes`,
-`maxAttachmentsPerMessage`, and `attachmentTextLimit` (model-visible cap for
-inlined text attachments; images travel as `ContentPart` image parts with a
-flat `IMAGE_TOKEN_ESTIMATE` so multi-image turns do not silently under-count).
+Turns have no wall-clock deadline or model-step budget: the loop continues until
+the model returns no tool calls or the user explicitly stops it. Operational
+watchdogs and resource caps remain centralized in `limits.ts`:
+`streamInactivityMs`, `toolTimeoutMs`, `approvalExpiryMs`, `toolOutputLimit`,
+`maxPendingInputs`, `automaticCompactionChars` (auto-compaction trigger at a
+completed boundary; 0 disables), plus composer-attachment limits
+`maxAttachmentBytes`, `maxAttachmentsPerMessage`, and `attachmentTextLimit`
+(model-visible cap for inlined text attachments; images travel as `ContentPart`
+image parts with a flat `IMAGE_TOKEN_ESTIMATE` so multi-image turns do not
+silently under-count).
 
 ## Mode-driven context assembly
 

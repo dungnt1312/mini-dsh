@@ -80,6 +80,8 @@ Audit the dependencies.`
     expect(result.definition.name).toBe('security-auditor')
     expect(result.definition.tools).toEqual(['Read', 'Grep', 'Bash'])
     expect(result.definition.model).toBe('sonnet')
+    expect(result.definition.maxTurns).toBe(6)
+    expect(result.warnings).toContain("'maxTurns' is retained as deprecated metadata but is not enforced")
     expect(result.imported).toContain('tools')
     // Blocking fields prevent automatic activation and are reported.
     expect(result.blocked).toContain('hooks')

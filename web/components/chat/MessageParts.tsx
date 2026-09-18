@@ -10,6 +10,8 @@ import { formatTime, toolTarget } from '../../lib/format.ts'
 import { attachmentUrl, waitChild } from '../../lib/api.ts'
 import { cn } from '../../lib/cn.ts'
 import { formatBytes, type AttachmentRef } from '../../lib/composer-draft.ts'
+import { parseMessageText } from '../../lib/inline-chips.ts'
+import { InlineChip } from '../common/InlineChip.tsx'
 import type { ChildRow } from '../../lib/types.ts'
 import type { ViewItem } from '../../lib/project.ts'
 import type { OpenPathResolver } from '../artifacts/ArtifactsPanel.tsx'
@@ -58,7 +60,13 @@ export function UserBubble({ item, workspaceId, onReuse }: {
             ))}
           </ul>
         ) : null}
-        {item.content !== '' ? <p className="m-0 whitespace-pre-wrap break-words">{item.content}</p> : null}
+        {item.content !== '' ? (
+          <p className="m-0 whitespace-pre-wrap break-words">
+            {parseMessageText(item.content).map((segment, index) => (
+              segment.kind === 'text' ? segment.text : <InlineChip key={index} segment={segment} />
+            ))}
+          </p>
+        ) : null}
       </div>
       {!queued && onReuse !== undefined ? (
         <div className={cn('flex items-center gap-0.5', revealActions)}>

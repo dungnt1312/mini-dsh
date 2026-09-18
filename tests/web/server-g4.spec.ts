@@ -84,11 +84,17 @@ describe('G4 HTTP surface', () => {
   it('the child definition ceiling denies Bash for an Explorer even in Full access', async () => {
     // Full access exposes Bash at the MODE level; the Explorer definition
     // ceiling must still deny it — the trust boundary under test.
+    let requests = 0
     const bash: LlmProvider = {
       name: 'scripted',
       models: ['scripted'],
       async *stream() {
-        yield { type: 'toolCalls', calls: [{ id: 'c1', name: 'Bash', args: { command: 'echo hacked > hacked.txt' } }] }
+        requests += 1
+        if (requests === 1) {
+          yield { type: 'toolCalls', calls: [{ id: 'c1', name: 'Bash', args: { command: 'echo hacked > hacked.txt' } }] }
+          return
+        }
+        yield { type: 'delta', delta: 'Bash was denied; stopping without retrying.' }
       },
     }
     const home = await fs.mkdtemp(path.join(tmpdir(), 'mini-dsh-g4-ceil-'))
@@ -150,6 +156,7 @@ describe('G4 HTTP surface', () => {
       reader.cancel().catch(() => {})
     }
     expect(denial).toMatch(/agent 'explorer' does not expose 'Bash'/)
+    expect(requests).toBe(2)
     // The command never executed: no side effect file exists.
     await expect(fs.readFile(path.join(root, 'hacked.txt'), 'utf8')).rejects.toThrow()
     await server.close()

@@ -141,6 +141,18 @@ describe('primitives', () => {
     expect(html).toContain('aria-invalid="true"')
   })
 
+  it('Field links its hint to a custom Select trigger', () => {
+    const html = renderToStaticMarkup(
+      <Field label="Vision" hint="Choose a capability override.">
+        <Select value="auto" options={[{ value: 'auto', label: 'Auto' }]} onChange={() => undefined} label="Vision capability" />
+      </Field>,
+    )
+    const id = /<label[^>]*for="([^"]+)"/.exec(html)?.[1]
+    expect(id).toBeDefined()
+    expect(html).toContain(`<button type="button" id="${id}"`)
+    expect(html).toContain(`aria-describedby="${id}-hint"`)
+  })
+
   it('Switch exposes switch semantics with its label and hint', () => {
     const html = renderToStaticMarkup(<Switch checked label="Enabled" hint="Hidden from the picker when off." onChange={() => undefined} />)
     expect(html).toContain('role="switch"')

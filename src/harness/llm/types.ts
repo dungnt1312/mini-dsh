@@ -107,6 +107,6 @@ export interface LlmProvider {
 
 /** Per-request stream options. */
 export interface StreamOptions {
-  /** Fires when the owning turn stops or a limit kills the request. */
+  /** Fires when the owning turn stops or its provider stream becomes inactive. */
   readonly signal?: AbortSignal
 }

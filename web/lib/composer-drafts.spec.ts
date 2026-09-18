@@ -6,15 +6,54 @@ import { textDraft, type AttachmentRef, type RichDraft } from './composer-draft.
 const REF: AttachmentRef = { id: 'b'.repeat(64), name: 'shot.png', mediaType: 'image/png', bytes: 12 }
 
 describe('parseDrafts', () => {
-  it('round-trips text, mention and attachment segments', () => {
+  it('round-trips semantic segments and tray attachments', () => {
     const draft: RichDraft = {
       segments: [
         { kind: 'text', text: 'compare ' },
         { kind: 'mention', path: 'web/api.ts' },
-        { kind: 'attachment', ref: REF },
+        { kind: 'command', name: 'review' },
       ],
+      attachments: [REF],
     }
     expect(parseDrafts(serializeDrafts({ a: draft }))).toEqual({ a: draft })
+  })
+
+  it('migrates legacy command chips stored as wire text', () => {
+    const payload = JSON.stringify({ a: { segments: [{ kind: 'command', text: 'Use the review skill:' }, { kind: 'command', text: 'bogus' }] } })
+    expect(parseDrafts(payload)).toEqual({ a: { segments: [{ kind: 'command', name: 'review' }], attachments: [] } })
+  })
+
+  it('migrates legacy inline attachments into the tray', () => {
+    const payload = JSON.stringify({
+      a: {
+        segments: [
+          { kind: 'text', text: 'before ' },
+          { kind: 'attachment', ref: REF },
+          { kind: 'text', text: 'after' },
+        ],
+      },
+    })
+
+    expect(parseDrafts(payload)).toEqual({
+      a: { segments: [{ kind: 'text', text: 'before after' }], attachments: [REF] },
+    })
+  })
+
+  it('drops malformed attachment refs from both legacy segments and the tray', () => {
+    const payload = JSON.stringify({
+      a: {
+        segments: [{ kind: 'attachment', ref: { id: 'short', name: 'bad', mediaType: 'image/png', bytes: 1 } }],
+        attachments: [{ id: REF.id, name: 'good.png', mediaType: 'image/png', bytes: 'not-a-number' }],
+      },
+    })
+
+    expect(parseDrafts(payload)).toEqual({})
+  })
+
+  it('keeps attachment-only drafts', () => {
+    expect(parseDrafts(serializeDrafts({ a: { segments: [], attachments: [REF] } }))).toEqual({
+      a: { segments: [], attachments: [REF] },
+    })
   })
 
   it('reads a draft written by the earlier string-only version', () => {

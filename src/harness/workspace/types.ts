@@ -20,6 +20,8 @@ export interface ProjectRecord {
   readonly workspaceId: WorkspaceId
   /** Absolute path of the external working folder. */
   path: string
+  /** Sidebar position; lower sorts first. Absent on records never reordered. */
+  order?: number
   readonly createdAt: number
 }
 

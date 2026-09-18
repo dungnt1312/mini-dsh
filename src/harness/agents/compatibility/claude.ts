@@ -32,8 +32,9 @@ export interface ClaudeImportResult {
 
 /**
  * Import one Claude sub-agent Markdown/frontmatter file. Recognizes name,
- * description, tools, disallowedTools, model, maxTurns (the supported
- * subset). Blocking fields (hooks/mcpServers/permissionMode/isolation/
+ * description, tools, disallowedTools, model, and legacy maxTurns metadata.
+ * maxTurns is retained for round-trip compatibility but is not enforced.
+ * Blocking fields (hooks/mcpServers/permissionMode/isolation/
  * background/worktree/memory/effort) surface in `blocked`; the caller must
  * NOT auto-activate such definitions. Import never executes anything.
  */
@@ -74,8 +75,12 @@ export function importClaudeDefinition(raw: string): ClaudeImportResult {
   let maxTurns: number | undefined
   if (frontmatter['maxTurns'] !== undefined) {
     const value = Number(frontmatter['maxTurns'])
-    if (Number.isInteger(value) && value > 0) maxTurns = value
-    else warnings.push(`'maxTurns' ${JSON.stringify(frontmatter['maxTurns'])} is not a positive integer; host default applies`)
+    if (Number.isInteger(value) && value > 0) {
+      maxTurns = value
+      warnings.push("'maxTurns' is retained as deprecated metadata but is not enforced")
+    } else {
+      warnings.push(`'maxTurns' ${JSON.stringify(frontmatter['maxTurns'])} is not a positive integer and was ignored`)
+    }
   }
 
   if (blocked.length > 0) {

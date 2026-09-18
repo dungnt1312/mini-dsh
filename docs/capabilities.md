@@ -99,6 +99,10 @@ checks protect the file tools, not the shell.
 `Skill` loads one workspace skill's instructions **on demand** — there is no
 classifier and no auto-load:
 
+- **Layered catalog**: names resolve workspace (`<data-dir>/workspaces/<id>/skills`)
+  > user (`userSkillsDir`; the web bin passes `~/.claude/skills`) > bundled.
+  Only workspace skills are writable; a workspace skill shadows a same-named
+  user or bundled one.
 - **Mode-gated**: the tool resolves the current mode through the ambient agent
   scope and refuses when the mode turns skills off; a live mode switch means
   the next call gates fresh.

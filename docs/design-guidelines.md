@@ -8,22 +8,22 @@ mini-dsh is an English developer chat client, not a terminal, file editor, diff 
 
 The client follows a ChatGPT-style layout with a neutral palette in **light and dark** themes. Appearance is **System** by default and can be forced to Light or Dark from the sidebar Preferences menu (browser-local key `mini-dsh.theme`; a pre-paint script in `index.html` avoids a theme flash). Primary actions use the foreground color (black on light, near-white on dark); semantic ok/warn/bad colors are reserved for state. No gradients, glossy effects, copied branding, terminal chrome or decorative statistics.
 
-UI text uses the system sans stack at 13–14px; assistant prose is 15px with a ~1.7 line height. JetBrains Mono is used for code, paths, IDs, commands and durations.
+UI text uses bundled Instrument Sans at 13–14px; assistant prose is 15px with a ~1.7 line height. JetBrains Mono is used for code, paths, IDs, commands and durations.
 
 ## Layout
 
-- **Sidebar (left, 260px)**: brand + collapse, New conversation, conversation search, project-grouped history with Today/Yesterday/Earlier buckets, and a footer with the workspace switcher, Preferences (appearance + approval notifications) and Settings. It docks at **≥768px** (collapse persists in `mini-dsh.workbench.v1`) and is a modal drawer below that.
-- **Main column**: a header (sidebar/new-chat buttons when the sidebar is hidden, model picker, connection state, Context toggle), the transcript, and the composer section. The reading column is `max-w-3xl` (768px) and the composer shares its width.
+- **Sidebar (left, 280px default; 232–420px)**: brand + collapse, New conversation, conversation search, project-grouped history, and a footer with the workspace switcher, Preferences (appearance + approval notifications) and Settings. It docks at **≥768px**, supports pointer/keyboard resizing, and persists collapse + width in `mini-dsh.workbench.v1`; below that it is a modal drawer.
+- **Main column**: a header (sidebar/new-chat buttons when the sidebar is hidden, model picker, connection state, Workbench toggle), the transcript, and the composer section. The reading column is `max-w-3xl` (768px) and the composer shares its width.
 - **Empty state**: greeting, the composer and suggestions are centered vertically; the composer's scope chip picks the project for the first message.
 - **Transcript**: one scroll container spanning the whole column. Opening a conversation lands at the latest row; new output follows only while the reader is within 80px of the bottom; otherwise a round "Jump to latest" button appears. Nothing is pinned over the transcript.
 - **Composer section**: normal document flow below the transcript (never `position: fixed`), stacking the work status line, approval cards, send error and the composer.
-- **Context sheet (right)**: Context and Artifacts tabs in a modal sheet, closed by default at every size; the selected tab is remembered.
+- **Workbench (right)**: read-only Files, Context and Artifacts views plus transient file tabs. It docks at **≥1280px** (360–1100px, resizable, collapsible and expandable) and becomes a modal sheet below that. The selected fixed view and dock width are remembered.
 - **Settings**: centered dialog (full screen below 640px) with grouped Global/Workspace tabs on the left, or a section select on narrow screens.
 - Required widths **320, 375, 768, 1024, 1440, 1920px** have no document-level horizontal overflow.
 
 ## Conversation and safety hierarchy
 
-The durable event log is the source of truth; `projectItems(events)` owns transcript projection. User messages are right-aligned bubbles; assistant answers are plain prose with a hover action row (copy, serving model, time). Tool calls, delegations and audit lines render as compact disclosure rows grouped into one tight activity block between messages; expanding shows exact arguments and recorded output. Running, succeeded, failed, cancelled and recovered/unknown outcomes stay distinct, each with an icon **and** text alternative. A normal `completed` turn end renders no marker; other terminal reasons render a quiet status line, and request failures render one retry card.
+The durable event log is the source of truth; `projectItems(events)` owns transcript projection. User messages are right-aligned bubbles; assistant answers are plain prose, and each closed assistant turn ends with one hover action row (copying every answer the turn produced, serving model, time) — mid-turn answers show no actions while their turn is open. Tool calls, delegations and audit lines render as compact disclosure rows grouped into one tight activity block between messages; expanding shows exact arguments and recorded output. Running, succeeded, failed, cancelled and recovered/unknown outcomes stay distinct, each with an icon **and** text alternative. A normal `completed` turn end renders no marker; other terminal reasons render a quiet status line, and request failures render one retry card.
 
 Connection loss is shown separately from durable running state. Reconnecting never invents a terminal outcome, automatically resends a draft, or replays a request. Queue and Stop use their existing endpoints; while a turn runs the send button becomes Queue (only when a draft exists) next to Stop. Drafts clear only after accepted requests with unchanged edit revisions.
 

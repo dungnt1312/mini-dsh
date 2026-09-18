@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { Generation, composerKey, emptyComposer, acceptedDraft, popupPosition, tabDestination } from './interaction.ts'
-import { emptyDraft, textDraft } from './composer-draft.ts'
+import { emptyDraft, textDraft, type AttachmentRef } from './composer-draft.ts'
+
+const ATTACHMENT: AttachmentRef = { id: 'a'.repeat(64), name: 'image.png', mediaType: 'image/png', bytes: 1 }
 
 describe('navigation completion guards', () => {
   it('rejects a delayed create/delete after A → B → A', async () => {
@@ -33,6 +35,10 @@ describe('scoped send state', () => {
   })
   it('retains a changed draft even if text returns to the submitted value', () => {
     expect(acceptedDraft({ ...emptyComposer, draft: textDraft('same'), revision: 3 }, 1).draft).toEqual(textDraft('same'))
+  })
+  it('retains a changed attachment tray while accepting an older revision', () => {
+    const draft = { segments: [{ kind: 'text' as const, text: 'same' }], attachments: [ATTACHMENT] }
+    expect(acceptedDraft({ ...emptyComposer, draft, revision: 3 }, 1).draft).toEqual(draft)
   })
   it('keys cannot collide on delimiter-containing IDs', () => {
     expect(composerKey('a:b', 'c')).not.toBe(composerKey('a', 'b:c'))

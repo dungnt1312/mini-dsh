@@ -5,7 +5,9 @@ import { Button } from '../ui/Button.tsx'
 import { compactSession, type ContextManifestView, type StreamState } from '../../lib/api.ts'
 import { budgetTone } from '../../lib/format.ts'
 import { cn } from '../../lib/cn.ts'
-import type { Meta, WorkspaceMeta } from '../../lib/types.ts'
+import type { Meta, SessionModel, WorkspaceMeta } from '../../lib/types.ts'
+
+export type SessionControlsStatus = 'loading' | 'unavailable'
 
 const STREAM_LABELS: Readonly<Record<StreamState, string>> = {
   idle: 'No conversation selected',
@@ -39,6 +41,12 @@ function Row({ term, children }: { readonly term: string; readonly children: Rea
 
 export interface ContextPanelProps {
   readonly meta: Meta | WorkspaceMeta | null
+  /** Effective controls for the open conversation, if one has been fetched. */
+  readonly sessionModel?: SessionModel
+  /** Live global controls; legacy `source: 'global'` conversations display these, not their cached GET response. */
+  readonly globalDefaults?: { readonly provider: string | null; readonly model: string | null }
+  /** Existing-session load failure/loading; drafts omit this and use global defaults. */
+  readonly sessionControlsStatus?: SessionControlsStatus
   readonly stream: StreamState
   readonly sessionId: string | null
   readonly sessionFolder: string | null
@@ -51,8 +59,11 @@ export interface ContextPanelProps {
   readonly onOpenSettingsTab?: (tab: 'skills' | 'memory') => void
 }
 
-export function ContextPanel({ meta, stream, sessionId, sessionFolder, eventCount, manifest, workspaceId, running = false, modeLabel, onCompacted, onOpenSettingsTab }: ContextPanelProps) {
+export function ContextPanel({ meta, sessionModel, globalDefaults, sessionControlsStatus, stream, sessionId, sessionFolder, eventCount, manifest, workspaceId, running = false, modeLabel, onCompacted, onOpenSettingsTab }: ContextPanelProps) {
   const toast = useToast()
+  const controls = sessionModel?.source === 'global'
+    ? globalDefaults ?? { provider: null, model: null }
+    : sessionModel ?? { provider: meta?.provider ?? null, model: meta?.model ?? null }
   const folder = sessionFolder ?? (('folder' in (meta ?? {}) ? String((meta as { folder?: string }).folder ?? '') : '') || '—')
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -93,8 +104,8 @@ export function ContextPanel({ meta, stream, sessionId, sessionFolder, eventCoun
       </Card>
 
       <Card title="Effective controls">
-        <Row term="provider">{meta?.provider || '—'}</Row>
-        <Row term="model">{meta?.model || 'Not configured'}</Row>
+        <Row term="provider">{sessionControlsStatus === 'loading' ? 'Loading…' : sessionControlsStatus === 'unavailable' ? 'Unavailable' : controls.provider || '—'}</Row>
+        <Row term="model">{sessionControlsStatus === 'loading' ? 'Loading…' : sessionControlsStatus === 'unavailable' ? 'Unavailable' : controls.model || 'Not configured'}</Row>
         <Row term="mode">{modeLabel ?? '—'}</Row>
         <Row term="folder"><code className="text-xs">{folder}</code></Row>
       </Card>

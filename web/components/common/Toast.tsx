@@ -49,12 +49,16 @@ export function ToastHost({ children }: { readonly children: ReactNode }) {
   return (
     <ToastContext.Provider value={api}>
       {children}
-      <div className="pointer-events-none fixed inset-x-0 top-3 z-[60] flex flex-col items-center gap-2 px-4" role="status">
+      <div className="pointer-events-none fixed inset-x-0 top-3 z-[60] flex flex-col items-center gap-2 px-4">
         {items.map((item) => (
-          <div key={item.id} className="pointer-events-auto flex w-full max-w-md items-start gap-2 rounded-2xl border border-line bg-surface py-2 pl-3.5 pr-1.5 text-sm shadow-pop animate-fade-up">
+          <div
+            key={item.id}
+            role={item.kind === 'bad' ? 'alert' : 'status'}
+            className="pointer-events-auto flex w-full max-w-md items-start gap-2 rounded-2xl border border-line bg-surface py-2 pl-3.5 pr-1.5 text-sm shadow-pop animate-fade-up"
+          >
             {item.kind === 'ok' ? <Icon name="check" size={16} className="mt-2 text-ok" /> : null}
             {item.kind === 'bad' ? <Icon name="alertTriangle" size={16} className="mt-2 text-bad" /> : null}
-            <div className="min-w-0 flex-1 py-1.5">{item.kind === 'bad' ? <ErrorNotice raw={item.text} /> : <p className="m-0">{item.text}</p>}</div>
+            <div className="min-w-0 flex-1 py-1.5">{item.kind === 'bad' ? <ErrorNotice raw={item.text} announce={false} /> : <p className="m-0">{item.text}</p>}</div>
             <IconButton label="Dismiss notification" onClick={() => dispose(item.id)}><Icon name="close" size={14} /></IconButton>
           </div>
         ))}

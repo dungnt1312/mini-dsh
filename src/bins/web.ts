@@ -55,6 +55,8 @@ async function main(): Promise<void> {
 
   const server = await createWebServer({
     home: dataDir,
+    // Claude Code user skills are a read-only layer under workspace skills.
+    userSkillsDir: path.join(homedir(), '.claude', 'skills'),
     seedDeepseekFromEnv: true,
     ...(yolo ? {} : { policy }),
     defaultMode: yolo ? 'allow' : 'ask',

@@ -11,6 +11,7 @@ import {
   SessionsService,
   ToolsService,
   type Agent,
+  type HarnessLimits,
   type LlmProvider,
   type ModelRequest,
   type Session,
@@ -33,7 +34,7 @@ interface Harness {
 /** Boot the harness with a scripted provider and a controllable tool set. */
 function boot(
   steps: readonly (string | { toolCalls?: readonly { name: string; args: Record<string, unknown> }[] })[],
-  extra?: Partial<{ limits: Record<string, number> }>,
+  extra?: Partial<{ limits: Partial<HarnessLimits> }>,
 ): Harness {
   const kernel = new Kernel()
   kernel.ctx.plugin(SessionsService)
@@ -313,27 +314,29 @@ describe('turn invariants', () => {
   })
 })
 
-describe('limits', () => {
-  it('the step budget closes the turn as limit with a durable reason', async () => {
+describe('unbounded turns', () => {
+  it('legacy step and deadline overrides no longer cut off a turn', async () => {
     const toolStep = { toolCalls: [call('c', 'Glob')] }
-    const h = boot([toolStep, toolStep, toolStep, toolStep], { limits: { maxSteps: 3 } })
+    const h = boot([toolStep, toolStep, toolStep, toolStep, 'done'], {
+      limits: { maxSteps: 2, turnDeadlineMs: 1 },
+    })
     h.kernel.ctx.tools.register({
       name: 'Glob',
-      description: 'noop',
+      description: 'slow noop',
       parameters: { type: 'object', properties: {}, required: [] },
       async execute() {
+        await new Promise((resolve) => setTimeout(resolve, 10))
         return 'no matches'
       },
     })
 
-    h.agent.send('loop forever')
+    h.agent.send('keep going until done')
     await h.agent.run()
 
-    expect(h.session.events.filter((e) => e.type === 'step/start')).toHaveLength(3)
-    const error = h.session.events.find((e) => e.type === 'turn/error')
-    expect(error?.type === 'turn/error' && error.kind).toBe('limit')
+    expect(h.session.events.filter((e) => e.type === 'step/start')).toHaveLength(5)
+    expect(h.session.events.some((e) => e.type === 'turn/error' && e.kind === 'limit')).toBe(false)
     const end = h.session.events.findLast((e) => e.type === 'turn/end')
-    expect(end?.type === 'turn/end' && end.reason).toBe('limit')
+    expect(end?.type === 'turn/end' && end.reason).toBe('completed')
     void h.kernel.stop()
   })
 
@@ -408,9 +411,9 @@ describe('turn settlement', () => {
     void h.kernel.stop()
   })
 
-  it('agent/turn-settled fires exactly once for a limit turn (the lease-release path)', async () => {
+  it('agent/turn-settled fires exactly once after an extended tool loop', async () => {
     const toolStep = { toolCalls: [call('c', 'Glob')] }
-    const h = boot([toolStep, toolStep, toolStep], { limits: { maxSteps: 2 } })
+    const h = boot([toolStep, toolStep, toolStep, 'done'], { limits: { maxSteps: 1, turnDeadlineMs: 1 } })
     h.kernel.ctx.tools.register({
       name: 'Glob', description: 'n', parameters: { type: 'object', properties: {}, required: [] },
       async execute() { return 'none' },
@@ -424,7 +427,7 @@ describe('turn settlement', () => {
     h.agent.send('loop')
     await h.agent.run()
     expect(count).toBe(1)
-    expect(reason).toBe('limit')
+    expect(reason).toBe('completed')
     void h.kernel.stop()
   })
 })

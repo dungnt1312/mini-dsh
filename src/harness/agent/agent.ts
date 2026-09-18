@@ -33,7 +33,7 @@ class StopRequested extends Error {
 }
 
 /** Why the abort controller fired; decides the truthful terminal reason. */
-type AbortCause = 'stop' | 'deadline' | 'inactivity'
+type AbortCause = 'stop' | 'inactivity'
 
 /** Storage acknowledged nothing; the turn fails and the run halts. */
 class StorageFailed extends Error {
@@ -190,20 +190,14 @@ export class Agent {
   /**
    * One turn. Claims the whole pending inbox (a simplification of the
    * upstream bounded claim), asks `agent/pre-step` to admit it, then spends
-   * steps while tools keep owing the model their results, within the step
-   * budget and the turn deadline. Returns the terminal reason so `run()`
-   * knows which outcomes end the run (a stop leaves queued input queued).
+   * steps while tools keep owing the model their results. Returns the terminal
+   * reason so `run()` knows which outcomes end the run (a stop leaves queued
+   * input queued).
    */
-  private async turn(): Promise<'completed' | 'cancelled' | 'limit' | 'failed' | 'rejected' | 'empty'> {
-    const limits = this.limits()
+  private async turn(): Promise<'completed' | 'cancelled' | 'failed' | 'rejected' | 'empty'> {
     const turnId = newTurnId()
     this.session.append({ type: 'turn/start', turnId })
     const controller = this.abortController
-    const deadline = setTimeout(() => {
-      this.abortCause = 'deadline'
-      controller?.abort()
-    }, limits.turnDeadlineMs)
-    deadline.unref?.()
     try {
       const claimed = this.inbox.splice(0, this.inbox.length)
       const contents = claimed.map((item) => item.content)
@@ -227,13 +221,8 @@ export class Agent {
       }
 
       let lastStep: StepId | null = null
-      // A turn keeps spending steps while tools owe the model their results,
-      // inside the configured step budget.
+      // A turn keeps spending steps while tools owe the model their results.
       for (let spent = 1; ; spent++) {
-        if (spent > limits.maxSteps) {
-          await this.failTurn(turnId, 'limit', `step budget exhausted after ${limits.maxSteps} steps`)
-          return 'limit'
-        }
         let step: { stepId: StepId; toolCalls: readonly ToolCall[] }
         try {
           step = await this.step(turnId, spent === 1 ? decision.contents : [], spent === 1 ? claimed : [])
@@ -260,11 +249,9 @@ export class Agent {
         const aborted = controller?.signal.aborted === true
         const { kind, message, reason } = error instanceof StorageFailed
           ? { kind: 'storage' as const, message: error.message, reason: 'failed' as const }
-          : aborted && this.abortCause === 'deadline'
-            ? { kind: 'limit' as const, message: 'turn deadline exceeded', reason: 'limit' as const }
-            : aborted && this.abortCause === 'inactivity'
-              ? { kind: 'provider' as const, message: 'provider stream stayed inactive past the limit', reason: 'failed' as const }
-              : { kind: 'internal' as const, message: String(error instanceof Error ? error.message : error), reason: 'failed' as const }
+          : aborted && this.abortCause === 'inactivity'
+            ? { kind: 'provider' as const, message: 'provider stream stayed inactive past the limit', reason: 'failed' as const }
+            : { kind: 'internal' as const, message: String(error instanceof Error ? error.message : error), reason: 'failed' as const }
         try {
           this.session.append({ type: 'turn/error', turnId, kind, message })
           await this.session.durable()
@@ -280,13 +267,11 @@ export class Agent {
       // Even a poisoned session must release per-Turn holders.
       await this.ctx.parallel('agent/turn-settled', { turnId, reason: 'failed' }).catch(() => {})
       return 'failed'
-    } finally {
-      clearTimeout(deadline)
     }
   }
 
   /** Append and durably flush a turn end, then release per-Turn holders. */
-  private async recordTurnEnd(turnId: TurnId, reason: 'completed' | 'rejected' | 'empty' | 'cancelled' | 'limit' | 'failed'): Promise<void> {
+  private async recordTurnEnd(turnId: TurnId, reason: 'completed' | 'rejected' | 'empty' | 'cancelled' | 'failed'): Promise<void> {
     this.session.append({ type: 'turn/end', turnId, reason })
     try {
       await this.session.durable()
@@ -295,21 +280,6 @@ export class Agent {
     }
     // Terminalization is durable: per-Turn resources (writer leases) go.
     await this.ctx.parallel('agent/turn-settled', { turnId, reason })
-  }
-
-  /** Record a classified turn failure, close the turn, release per-Turn holders. */
-  private async failTurn(turnId: TurnId, kind: 'limit' | 'provider' | 'storage' | 'internal', message: string): Promise<void> {
-    this.session.append({ type: 'turn/error', turnId, kind, message })
-    await this.session.durable().catch(() => {})
-    this.session.append({ type: 'turn/end', turnId, reason: kind === 'limit' ? 'limit' : 'failed' })
-    try {
-      await this.session.durable()
-    } catch (cause) {
-      throw new StorageFailed(cause)
-    }
-    // Every terminalization releases per-Turn resources (writer leases) —
-    // the step-budget path included.
-    await this.ctx.parallel('agent/turn-settled', { turnId, reason: kind === 'limit' ? 'limit' : 'failed' }).catch(() => {})
   }
 
   /**
@@ -505,12 +475,7 @@ export class Agent {
 
   private limits(): HarnessLimits {
     const shared = (this.ctx.get('limits') ?? {}) as Partial<HarnessLimits>
-    // Per-agent step budget (G4 child definitions override the shared
-    // default without mutating process-global state).
-    const maxSteps = this.identity.childOf !== undefined || (this.ctx.get('agent-step-budgets') as Map<string, number> | undefined)?.has(this.session.id)
-      ? (this.ctx.get('agent-step-budgets') as Map<string, number> | undefined)?.get(this.session.id)
-      : undefined
-    return resolveLimits({ ...shared, ...(maxSteps !== undefined ? { maxSteps } : {}) })
+    return resolveLimits(shared)
   }
 }
 
@@ -524,7 +489,7 @@ function safeProviderName(ctx: Context): string | undefined {
 
 /**
  * Race one iterator step against the abort signal, so a provider that never
- * yields cannot hold the loop past a stop, deadline, or inactivity abort.
+ * yields cannot hold the loop past a stop or inactivity abort.
  */
 function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined, makeError: () => Error): Promise<T> {
   if (signal === undefined) return promise

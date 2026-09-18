@@ -34,6 +34,24 @@ async function boot(provider: LlmProvider, extra?: Partial<Parameters<typeof cre
   return { home, server, wsId, base: server.url }
 }
 
+describe('G5 web MCP server config editing', () => {
+  it('returns one stored config with fields the form does not show, and deletes a server', async () => {
+    const provider: LlmProvider = { name: 'idle', models: ['idle'], async *stream() { yield { type: 'delta', delta: 'ok' } } }
+    const { base, wsId } = await boot(provider)
+    const config = { transport: 'stdio', command: process.execPath, args: [mcpFixture], env: { API_KEY: '${API_KEY}' }, enabled: false }
+    expect((await post(base, `/api/workspaces/${wsId}/mcp/fixture`, config)).status).toBe(201)
+
+    const stored = await (await fetch(`${base}/api/workspaces/${wsId}/mcp/fixture`)).json() as Record<string, unknown>
+    expect(stored).toMatchObject({ transport: 'stdio', command: process.execPath, env: { API_KEY: '${API_KEY}' }, enabled: false })
+    expect((await fetch(`${base}/api/workspaces/${wsId}/mcp/missing`)).status).toBe(404)
+
+    const deleted = await fetch(`${base}/api/workspaces/${wsId}/mcp/fixture`, { method: 'DELETE' })
+    expect(deleted.status).toBe(200)
+    expect(await (await fetch(`${base}/api/workspaces/${wsId}/mcp`)).json()).toEqual([])
+    expect((await fetch(`${base}/api/workspaces/${wsId}/mcp/fixture`, { method: 'DELETE' })).status).toBe(404)
+  })
+})
+
 describe('G5 web MCP + hooks', () => {
   it('registers stdio tools, asks by default, audits hashed args, and disabling removes schemas', async () => {
     const requests: { tools: string[] }[] = []

@@ -242,4 +242,37 @@ describe('skills + memory units', () => {
     await expect(skills.save(ws, 'release-flow', '---\n---\n\nx', saved.hash)).rejects.toMatchObject({ code: 'conflict' })
     await fs.rm(home, { recursive: true, force: true })
   })
+
+  it('skill layers resolve workspace > user > bundled by name', async () => {
+    const { SkillsService } = await import('mini-dsh')
+    const { promises: fs } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const path = await import('node:path')
+    const root = await fs.mkdtemp(path.join(tmpdir(), 'mini-dsh-g3-skill-layers-'))
+    const home = path.join(root, 'home')
+    const userDir = path.join(root, 'user')
+    const bundledDir = path.join(root, 'bundled')
+    const write = async (base: string, name: string, body: string): Promise<void> => {
+      await fs.mkdir(path.join(base, name), { recursive: true })
+      await fs.writeFile(path.join(base, name, 'SKILL.md'), `---\nname: ak:${name}\ndescription: "${body}"\n---\n\n${body}`, 'utf8')
+    }
+    await write(userDir, 'shared', 'user shared')
+    await write(userDir, 'user-only', 'user only')
+    await write(bundledDir, 'user-only', 'bundled shadowed')
+    await write(bundledDir, 'bundled-only', 'bundled only')
+    const skills = new SkillsService(home, bundledDir, userDir)
+    const ws = 'ws-l' as never
+    await skills.save(ws, 'shared', '---\nname: shared\n---\n\nworkspace shared')
+
+    const sources = Object.fromEntries((await skills.list(ws)).map((entry) => [entry.name, entry.source]))
+    expect(sources).toEqual({ 'bundled-only': 'bundled', shared: 'workspace', 'user-only': 'user' })
+    expect((await skills.load(ws, 'shared')).instructions).toBe('workspace shared')
+    const userOnly = await skills.load(ws, 'user-only')
+    expect(userOnly).toMatchObject({ source: 'user', title: 'ak:user-only', instructions: 'user only' })
+
+    // A missing user directory is an empty layer, not an error.
+    const noUser = new SkillsService(home, undefined, path.join(root, 'missing'))
+    expect((await noUser.list(ws)).map((entry) => entry.name)).toEqual(['shared'])
+    await fs.rm(root, { recursive: true, force: true })
+  })
 })

@@ -84,7 +84,7 @@ export function ApprovalBar({
               {truncated ? <p className="m-0 mt-1">Arguments truncated for display. Expand the source request if you need the full payload.</p> : null}
             </details>
             <p className="m-0 text-xs text-fg-faint">This decision applies to this request only, not the project or future requests. Arguments may target systems outside the project; server policy still applies.</p>
-            {errors[approvalId] ? <ErrorNotice raw={errors[approvalId]!} /> : null}
+            {errors[approvalId] ? <ErrorNotice raw={errors[approvalId]!} announce={false} /> : null}
             <div className="flex flex-wrap items-center justify-end gap-2">
               {onAlwaysAllow !== undefined ? (
                 <Button variant="ghost" size="sm" className="mr-auto" disabled={busy} onClick={() => { setConfirmError(null); setConfirming(approvalId) }}>

@@ -1,15 +1,9 @@
 /**
- * The composer draft model: an ordered list of segments, because chips live
- * inline in the text rather than in a tray beside it. A plain typed message is
- * a single text segment, so the simple case stays simple.
- *
- * Two kinds of chip exist and they are not the same thing:
- * - a **mention** is a reference to a file in the conversation's project. It
- *   sends a path and nothing else; the agent reads the file itself, under the
- *   same permission gates as any other file access.
- * - an **attachment** is a file the user uploaded. Its bytes are already
- *   stored server-side and the message carries the reference.
+ * Composer drafts keep semantic editor content separate from uploaded files.
+ * Attachments live in a tray, so their names never become part of model text.
  */
+
+import { messageText, parseMessageText } from './inline-chips.ts'
 
 export interface AttachmentRef {
   readonly id: string
@@ -18,23 +12,31 @@ export interface AttachmentRef {
   readonly bytes: number
 }
 
+/** Ordered semantic content from the editor. */
 export type DraftSegment =
   | { readonly kind: 'text'; readonly text: string }
   | { readonly kind: 'mention'; readonly path: string }
-  | { readonly kind: 'attachment'; readonly ref: AttachmentRef }
+  /** A skill command; its wire text lives in `inline-chips.ts`. */
+  | { readonly kind: 'command'; readonly name: string }
 
 export interface RichDraft {
   readonly segments: readonly DraftSegment[]
+  readonly attachments: readonly AttachmentRef[]
 }
 
-export const emptyDraft: RichDraft = { segments: [] }
+export const emptyDraft: RichDraft = { segments: [], attachments: [] }
 
 export function textDraft(text: string): RichDraft {
-  return text === '' ? emptyDraft : { segments: [{ kind: 'text', text }] }
+  return text === '' ? emptyDraft : { segments: [{ kind: 'text', text }], attachments: [] }
+}
+
+/** A sent message back as an editable draft, its chips restored. */
+export function messageDraft(text: string): RichDraft {
+  return normalizeDraft(parseMessageText(text))
 }
 
 /** Merge neighbouring text and drop empty text, so equal drafts compare equal. */
-export function normalizeDraft(segments: readonly DraftSegment[]): RichDraft {
+export function normalizeDraft(segments: readonly DraftSegment[], attachments: readonly AttachmentRef[] = []): RichDraft {
   const merged: DraftSegment[] = []
   for (const segment of segments) {
     if (segment.kind !== 'text') { merged.push(segment); continue }
@@ -46,27 +48,40 @@ export function normalizeDraft(segments: readonly DraftSegment[]): RichDraft {
     }
     merged.push(segment)
   }
-  return { segments: merged }
+  return { segments: merged, attachments: draftAttachments({ segments: [], attachments }) }
 }
 
-/**
- * What the model reads. A mention becomes its path and an attachment its file
- * name, both in the position the user put them, so "compare A with B" still
- * reads that way once the chips are gone.
- */
+/** What the model reads: text plus each chip's wire text. */
 export function draftText(draft: RichDraft): string {
-  return draft.segments
-    .map((segment) => (segment.kind === 'text' ? segment.text : segment.kind === 'mention' ? segment.path : segment.ref.name))
-    .join('')
+  return messageText(draft.segments)
 }
 
-/** The uploaded files this draft sends alongside its text. */
+/** Uploaded files in first-seen order, with duplicate ids removed. */
 export function draftAttachments(draft: RichDraft): readonly AttachmentRef[] {
   const refs: AttachmentRef[] = []
-  for (const segment of draft.segments) {
-    if (segment.kind === 'attachment' && !refs.some((existing) => existing.id === segment.ref.id)) refs.push(segment.ref)
+  const seen = new Set<string>()
+  for (const ref of draft.attachments) {
+    if (!seen.has(ref.id)) {
+      seen.add(ref.id)
+      refs.push(ref)
+    }
   }
   return refs
+}
+
+/** Add tray attachments without changing semantic editor content. */
+export function appendAttachments(draft: RichDraft, attachments: readonly AttachmentRef[]): RichDraft {
+  return { segments: draft.segments, attachments: draftAttachments({ segments: [], attachments: [...draft.attachments, ...attachments] }) }
+}
+
+/** Remove one tray attachment without changing semantic editor content. */
+export function removeAttachment(draft: RichDraft, id: string): RichDraft {
+  return { segments: draft.segments, attachments: draft.attachments.filter((attachment) => attachment.id !== id) }
+}
+
+/** Replace semantic editor content while retaining the attachment tray. */
+export function updateDraftSegments(draft: RichDraft, segments: readonly DraftSegment[]): RichDraft {
+  return normalizeDraft(segments, draft.attachments)
 }
 
 /** An attachment alone is a message; only nothing at all is unsendable. */

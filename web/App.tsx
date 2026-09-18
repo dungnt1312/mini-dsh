@@ -1,7 +1,7 @@
 import { errorSummary, modeLabel } from './lib/copy.ts'
 import { Generation, composerKey, emptyComposer, acceptedDraft, validConversationScope, type ComposerState } from './lib/interaction.ts'
 import { persistDrafts, readDrafts } from './lib/composer-drafts.ts'
-import { draftAttachments, draftIsEmpty, draftText, textDraft, type AttachmentRef, type RichDraft } from './lib/composer-draft.ts'
+import { draftAttachments, draftIsEmpty, draftText, messageDraft, textDraft, type AttachmentRef, type RichDraft } from './lib/composer-draft.ts'
 import { parseRoute, routePath, sessionRoute, workspaceRoute, type AppRoute } from './lib/route.ts'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -12,7 +12,10 @@ import {
   deleteSessionIn,
   fetchManifest,
   fetchWorkspaceMeta,
+  getSessionModel,
+  getModelDefaults,
   listProjects,
+  reorderProjects,
   listSessionsIn,
   listSkills,
   listWorkspaces,
@@ -24,8 +27,8 @@ import {
   setMode,
   listModes,
   setPolicy,
-  setWorkspaceModel,
-  setWorkspaceThinking,
+  setSessionModel,
+  setModelDefaults,
 } from './lib/api.ts'
 import { decodeModelChoice, activeModelValue, modelOptions } from './lib/providers.ts'
 import { isTurnRunning, projectItems } from './lib/project.ts'
@@ -42,6 +45,8 @@ import { Button } from './components/ui/Button.tsx'
 import { Sheet } from './components/ui/Sheet.tsx'
 import { Sidebar } from './components/layout/Sidebar.tsx'
 import { ChatHeader } from './components/layout/ChatHeader.tsx'
+import { ScopeControl } from './components/layout/ScopeControl.tsx'
+import { composerChipClass } from './components/composer/composer-chip.ts'
 import { Workbench } from './components/workbench/Workbench.tsx'
 import { useWorkbenchFiles } from './hooks/useWorkbenchFiles.ts'
 import { usePanelResize } from './hooks/usePanelResize.ts'
@@ -57,7 +62,7 @@ import { FolderPickerModal } from './components/composer/FolderPickerModal.tsx'
 import ConfirmDialog from './components/common/ConfirmDialog.tsx'
 import type { ContextManifestView } from './lib/api.ts'
 import type { CompletionItem } from './lib/composer-completion.ts'
-import type { ProjectRow, SessionListing, SkillRow, WorkspaceMeta, WorkspaceRow } from './lib/types.ts'
+import type { ModelDefaults, ProjectRow, SessionListing, SessionModel, SkillRow, WorkspaceMeta, WorkspaceRow } from './lib/types.ts'
 
 /** The sidebar docks beside the conversation at this width; below it is a drawer. */
 const SIDEBAR_DOCK_QUERY = '(min-width: 768px)'
@@ -66,6 +71,132 @@ const WORKBENCH_DOCK_QUERY = '(min-width: 1280px)'
 
 function focusComposer(): void {
   requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('[data-composer-input]')?.focus())
+}
+
+export const sessionModelKey = (workspaceId: string, sessionId: string): string => `${workspaceId}:${sessionId}`
+
+export type SessionModelLoadState =
+  | { readonly status: 'loading' }
+  | { readonly status: 'ready'; readonly model: SessionModel }
+  | { readonly status: 'error'; readonly error: string }
+
+/** Serializes partial writes for each conversation so the server observes their intended order. */
+export class SessionModelMutationQueue {
+  private readonly tails = new Map<string, Promise<void>>()
+  private readonly pending = new Map<string, number>()
+
+  constructor(private readonly onPendingChange?: (key: string, count: number) => void) {}
+
+  isPending(key: string): boolean {
+    return (this.pending.get(key) ?? 0) > 0
+  }
+
+  enqueue<T>(key: string, write: () => Promise<T>): Promise<T> {
+    const count = (this.pending.get(key) ?? 0) + 1
+    this.pending.set(key, count)
+    this.onPendingChange?.(key, count)
+    const previous = this.tails.get(key) ?? Promise.resolve()
+    const result = previous.catch(() => undefined).then(write)
+    this.tails.set(key, result.then(() => undefined, () => undefined))
+    void result.finally(() => {
+      const remaining = (this.pending.get(key) ?? 1) - 1
+      if (remaining === 0) this.pending.delete(key)
+      else this.pending.set(key, remaining)
+      this.onPendingChange?.(key, remaining)
+    }).catch(() => undefined)
+    return result
+  }
+}
+
+export function sessionEffectiveControls(
+  current: string | null,
+  defaults: ModelDefaults | null,
+  state: SessionModelLoadState | undefined,
+): ModelDefaults {
+  if (current === null || state?.status === 'ready' && state.model.source === 'global') {
+    return defaults ?? { provider: null, model: null, thinkingLevel: null }
+  }
+  if (state?.status !== 'ready') return { provider: null, model: null, thinkingLevel: null }
+  const { provider, model, thinkingLevel } = state.model
+  return { provider, model, thinkingLevel }
+}
+
+export type ModelDefaultsLoadState =
+  | { readonly status: 'loading' }
+  | { readonly status: 'ready'; readonly defaults: ModelDefaults }
+  | { readonly status: 'error'; readonly error: string }
+
+/**
+ * Owns global-default reads and serialized writes. Each mutation advances the
+ * epoch when queued and when settled, fencing every stale GET response (even a
+ * Settings refresh that began before a successful PUT).
+ */
+export class ModelDefaultsCoordinator {
+  private tail: Promise<void> = Promise.resolve()
+  private epoch = 0
+  private request = 0
+  private pending = 0
+  private state: ModelDefaultsLoadState = { status: 'loading' }
+  /** Last server-confirmed complete record; retained through transient errors. */
+  private lastConfirmed: ModelDefaults | null = null
+
+  constructor(
+    private readonly onStateChange: (state: ModelDefaultsLoadState) => void,
+    private readonly onPendingChange?: (pending: number) => void,
+  ) {}
+
+  isPending(): boolean {
+    return this.pending > 0
+  }
+
+  refresh(read: () => Promise<ModelDefaults>): Promise<void> {
+    const request = ++this.request
+    const epoch = this.epoch
+    this.publish({ status: 'loading' })
+    return read().then(
+      (defaults) => {
+        if (this.request === request && this.epoch === epoch) {
+          this.lastConfirmed = defaults
+          this.publish({ status: 'ready', defaults })
+        }
+      },
+      (cause: unknown) => {
+        if (this.request === request && this.epoch === epoch) this.publish({ status: 'error', error: String(cause) })
+      },
+    )
+  }
+
+  enqueue(write: (current: ModelDefaults | null) => Promise<ModelDefaults>): Promise<ModelDefaults> {
+    this.epoch += 1
+    this.pending += 1
+    this.onPendingChange?.(this.pending)
+    // A rejected PUT is defined by the server as not published, so the most
+    // recent confirmed record remains authoritative for queued dependent writes.
+    const result = this.tail.catch(() => undefined).then(() => write(this.lastConfirmed))
+    const published = result.then(
+      (defaults) => {
+        this.epoch += 1
+        this.lastConfirmed = defaults
+        this.publish({ status: 'ready', defaults })
+        return defaults
+      },
+      (cause: unknown) => {
+        this.epoch += 1
+        this.publish({ status: 'error', error: String(cause) })
+        throw cause
+      },
+    )
+    this.tail = published.then(() => undefined, () => undefined)
+    return published.finally(() => {
+      this.pending -= 1
+      this.onPendingChange?.(this.pending)
+    })
+  }
+
+  private publish(state: ModelDefaultsLoadState): void {
+    this.state = state
+    this.onStateChange(state)
+  }
 }
 
 /**
@@ -154,6 +285,22 @@ export function App() {
   const updateComposer = (scope: string, update: (state: ComposerState) => ComposerState) => setComposers((all) => ({ ...all, [scope]: update(all[scope] ?? emptyComposer) }))
   const setDraft = (draft: RichDraft) => updateComposer(key, (state) => ({ ...state, draft, revision: state.revision + 1 }))
   const [meta, setMeta] = useState<WorkspaceMeta | null>(null)
+  const [modelDefaultsState, setModelDefaultsState] = useState<ModelDefaultsLoadState>({ status: 'loading' })
+  const [pendingModelDefaultsMutations, setPendingModelDefaultsMutations] = useState(0)
+  const modelDefaultsCoordinator = useRef(new ModelDefaultsCoordinator(setModelDefaultsState, setPendingModelDefaultsMutations))
+  const modelDefaults = modelDefaultsState.status === 'ready' ? modelDefaultsState.defaults : null
+  /** Resolved session controls, loading, and failure are distinct so `null` remains meaningful. */
+  const [sessionModelStates, setSessionModelStates] = useState<ReadonlyMap<string, SessionModelLoadState>>(() => new Map())
+  const sessionModelRequests = useRef(new Map<string, number>())
+  const [pendingSessionModelMutations, setPendingSessionModelMutations] = useState<ReadonlyMap<string, number>>(() => new Map())
+  const sessionModelQueue = useRef(new SessionModelMutationQueue((cacheKey, count) => {
+    setPendingSessionModelMutations((pending) => {
+      const next = new Map(pending)
+      if (count === 0) next.delete(cacheKey)
+      else next.set(cacheKey, count)
+      return next
+    })
+  }))
   // Skill catalog for the composer's `/` menu. A failure just leaves the menu
   // empty — it never interrupts a conversation.
   const [skills, setSkills] = useState<readonly SkillRow[]>([])
@@ -209,6 +356,14 @@ export function App() {
     if (!open) setWorkbenchExpanded(false)
     if (workbenchDocked) patchPreferences({ rightCollapsed: !open })
   }, [workbenchDocked, patchPreferences])
+  const sidebarResize = usePanelResize({
+    width: preferences.leftWidth,
+    min: PANEL_LIMITS.left.min,
+    max: PANEL_LIMITS.left.max,
+    defaultWidth: PANEL_LIMITS.left.default,
+    side: 'left',
+    onChange: (leftWidth) => patchPreferences({ leftWidth }),
+  })
   const workbenchResize = usePanelResize({
     width: preferences.rightWidth,
     min: PANEL_LIMITS.right.min,
@@ -226,19 +381,29 @@ export function App() {
   const projectedItems = useMemo(() => projectItems(events), [events])
   const running = useMemo(() => isTurnRunning(events), [events])
   const currentSession = useMemo(() => sessions.find((session) => session.id === current) ?? null, [sessions, current])
-  const modelValue = useMemo(() => activeModelValue(meta), [meta])
+  const currentSessionModelState = current !== null && activeWs !== null ? sessionModelStates.get(sessionModelKey(activeWs, current)) : undefined
+  const currentSessionModel = currentSessionModelState?.status === 'ready' ? currentSessionModelState.model : undefined
+  // A loaded conversation owns its values exactly, including deliberate nulls.
+  // Drafts and legacy global conversations derive live global defaults.
+  const effectiveControls = sessionEffectiveControls(current, modelDefaults, currentSessionModelState)
+  const effectiveProvider = effectiveControls.provider
+  const effectiveModel = effectiveControls.model
+  const effectiveThinking = effectiveControls.thinkingLevel
+  const modelValue = effectiveProvider !== null && effectiveProvider !== '' && effectiveModel !== null && effectiveModel !== ''
+    ? `${effectiveProvider}:${effectiveModel}`
+    : null
   const availableModelOptions = useMemo(() => modelOptions(meta), [meta])
-  /** Per-model settings of the ACTIVE provider (thinking default, capabilities). */
+  /** Per-model settings of the provider serving this conversation's next request. */
   const activeModelSettings = useMemo(() => {
-    if (meta === null || meta.provider === '') return undefined
-    return meta.providers.find((provider) => provider.id === meta.provider)?.modelSettings
-  }, [meta])
+    if (meta === null || effectiveProvider === null || effectiveProvider === '') return undefined
+    return meta.providers.find((provider) => provider.id === effectiveProvider)?.modelSettings
+  }, [meta, effectiveProvider])
   /** `provider/model` display form for the composer's model trigger. */
   const modelLabel = useMemo(() => {
-    if (meta === null || meta.model === '') return null
-    const name = meta.providers.find((provider) => provider.id === meta.provider)?.name ?? meta.provider
-    return name === '' ? meta.model : `${name}/${meta.model}`
-  }, [meta])
+    if (effectiveModel === null || effectiveModel === '') return null
+    const name = meta?.providers.find((provider) => provider.id === effectiveProvider)?.name ?? effectiveProvider
+    return name === null || name === '' ? effectiveModel : `${name}/${effectiveModel}`
+  }, [meta, effectiveModel, effectiveProvider])
   const currentProject = useMemo(
     () => projects.find((project) => project.id === currentSession?.projectId) ?? null,
     [projects, currentSession],
@@ -273,6 +438,14 @@ export function App() {
     return counts
   }, [sessions])
 
+  const refreshModelDefaults = useCallback(async () => {
+    await modelDefaultsCoordinator.current.refresh(getModelDefaults)
+  }, [])
+
+  useEffect(() => {
+    void refreshModelDefaults()
+  }, [refreshModelDefaults])
+
   const refreshMeta = useCallback(async () => {
     if (activeWs === null) return
     const nav = navigation.current.current()
@@ -305,6 +478,24 @@ export function App() {
       toast.notify(String(cause))
     }
   }, [activeWs, toast])
+
+  /** Drag-to-reorder sidebar folders: apply at once, then let the server confirm. */
+  const reorderProjectFolders = useCallback(async (orderedIds: readonly string[]) => {
+    if (activeWs === null || workspaceRef.current !== activeWs) return
+    setProjects((prev) => {
+      const byId = new Map(prev.map((row) => [row.id, row]))
+      const next = orderedIds.map((id) => byId.get(id)).filter((row): row is ProjectRow => row !== undefined)
+      return next.length === prev.length ? next : prev
+    })
+    try {
+      const rows = await reorderProjects(activeWs, orderedIds)
+      if (workspaceRef.current !== activeWs) return
+      setProjects(rows)
+    } catch (cause) {
+      toast.notify(String(cause))
+      await refreshList()
+    }
+  }, [activeWs, refreshList, toast])
 
   const refreshWorkspaces = useCallback(async () => {
     try {
@@ -455,6 +646,30 @@ export function App() {
     return () => { cancelled = true }
   }, [activeWs, navigate, toast])
 
+  // Each existing conversation receives its server-snapshotted controls once. A failed read
+  // remains an explicit unavailable state until the user retries, never a workspace fallback.
+  const loadSessionModel = useCallback((workspaceId: string, sessionId: string, force = false): void => {
+    const cacheKey = sessionModelKey(workspaceId, sessionId)
+    const existing = sessionModelStates.get(cacheKey)
+    if (!force && (existing?.status === 'loading' || existing?.status === 'ready')) return
+    const request = (sessionModelRequests.current.get(cacheKey) ?? 0) + 1
+    sessionModelRequests.current.set(cacheKey, request)
+    setSessionModelStates((states) => new Map(states).set(cacheKey, { status: 'loading' }))
+    void getSessionModel(workspaceId, sessionId).then(
+      (model) => {
+        if (sessionModelRequests.current.get(cacheKey) !== request) return
+        setSessionModelStates((states) => new Map(states).set(cacheKey, { status: 'ready', model }))
+      },
+      (cause: unknown) => {
+        if (sessionModelRequests.current.get(cacheKey) !== request) return
+        setSessionModelStates((states) => new Map(states).set(cacheKey, { status: 'error', error: String(cause) }))
+      },
+    )
+  }, [sessionModelStates])
+  useEffect(() => {
+    if (activeWs !== null && current !== null) loadSessionModel(activeWs, current)
+  }, [activeWs, current, loadSessionModel])
+
   // Skill catalog for the composer's `/` menu, per workspace.
   useEffect(() => {
     setSkills([])
@@ -490,8 +705,7 @@ export function App() {
   useEffect(() => {
     if (streamError === null) return
     toast.notify(streamError)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streamError])
+  }, [streamError, toast])
 
   useEffect(() => {
     if (activeWs === null || current === null || listedWorkspace !== activeWs) return
@@ -511,6 +725,8 @@ export function App() {
 
   const send = useCallback(async () => {
     if (sendingRef.current.has(key) || draftIsEmpty(draft) || modelValue === null || activeWs === null) return
+    if (current === null && modelDefaultsCoordinator.current.isPending()) return
+    if (current !== null && sessionModelQueue.current.isPending(sessionModelKey(activeWs, current))) return
     if (!validConversationScope(effectiveDraftProject, projects.map((project) => project.id))) return
     const workspaceId = activeWs
     const sourceKey = key
@@ -579,6 +795,7 @@ export function App() {
   // completed, so no tool side effects can be duplicated.
   const retryLast = useCallback(async () => {
     if (sendingRef.current.has(key) || current === null || activeWs === null || running || modelValue === null) return
+    if (sessionModelQueue.current.isPending(sessionModelKey(activeWs, current))) return
     const lastUser = [...projectedItems].reverse().find((item) => item.kind === 'user' && item.queued !== true)
     if (lastUser === undefined || (lastUser.kind !== 'user')) return
     sendingRef.current.add(key)
@@ -652,16 +869,31 @@ export function App() {
   const selectModel = useCallback(async (value: string) => {
     const choice = decodeModelChoice(value)
     if (choice === null || activeWs === null) return
-    const nav = navigation.current.current()
-    const token = controls.current.next()
-    metadata.current.next()
+    if (current === null) {
+      try {
+        await modelDefaultsCoordinator.current.enqueue((defaults) => setModelDefaults({
+          provider: choice.provider,
+          model: choice.model,
+          thinkingLevel: defaults?.thinkingLevel ?? null,
+        }))
+      } catch (cause) {
+        toast.notify(String(cause))
+      }
+      return
+    }
+    const workspaceId = activeWs
+    const sessionId = current
+    const cacheKey = sessionModelKey(workspaceId, sessionId)
+    if (currentSessionModelState?.status !== 'ready') return
     try {
-      await setWorkspaceModel(activeWs, choice.model, choice.provider)
-      if (navigation.current.matches(nav) && controls.current.matches(token)) await refreshMeta()
+      const saved = await sessionModelQueue.current.enqueue(cacheKey, () => setSessionModel(workspaceId, sessionId, { provider: choice.provider, model: choice.model }))
+      setSessionModelStates((states) => new Map(states).set(cacheKey, { status: 'ready', model: saved }))
     } catch (cause) {
+      // Do not restore a historical snapshot: reload the server's authoritative state.
+      loadSessionModel(workspaceId, sessionId, true)
       toast.notify(String(cause))
     }
-  }, [activeWs, refreshMeta, toast])
+  }, [activeWs, current, currentSessionModelState, loadSessionModel, toast])
 
   const selectMode = useCallback(async (modeId: string) => {
     if (activeWs === null) return
@@ -676,19 +908,34 @@ export function App() {
     }
   }, [activeWs, refreshMeta, toast])
 
-  /** Live thinking control: null clears back to the model's default. */
+  /** Draft thinking changes global defaults; conversations edit their snapshot. */
   const selectThinking = useCallback(async (level: string | null) => {
     if (activeWs === null) return
-    const nav = navigation.current.current()
-    const token = controls.current.next()
-    metadata.current.next()
+    if (current === null) {
+      try {
+        await modelDefaultsCoordinator.current.enqueue((defaults) => setModelDefaults({
+          provider: defaults?.provider ?? null,
+          model: defaults?.model ?? null,
+          thinkingLevel: level,
+        }))
+      } catch (cause) {
+        toast.notify(String(cause))
+      }
+      return
+    }
+    const workspaceId = activeWs
+    const sessionId = current
+    const cacheKey = sessionModelKey(workspaceId, sessionId)
+    if (currentSessionModelState?.status !== 'ready') return
     try {
-      await setWorkspaceThinking(activeWs, level)
-      if (navigation.current.matches(nav) && controls.current.matches(token)) await refreshMeta()
+      const saved = await sessionModelQueue.current.enqueue(cacheKey, () => setSessionModel(workspaceId, sessionId, { thinkingLevel: level }))
+      setSessionModelStates((states) => new Map(states).set(cacheKey, { status: 'ready', model: saved }))
     } catch (cause) {
+      // Do not restore a historical snapshot: reload the server's authoritative state.
+      loadSessionModel(workspaceId, sessionId, true)
       toast.notify(String(cause))
     }
-  }, [activeWs, refreshMeta, toast])
+  }, [activeWs, current, currentSessionModelState, loadSessionModel, toast])
 
   const switchWorkspace = useCallback((id: string) => {
     if (id === '') return
@@ -748,6 +995,7 @@ export function App() {
       onSelect={openSession}
       onNew={beginConversation}
       onNewInProject={newInProject}
+      {...(workspaces.some((workspace) => workspace.id === activeWs && workspace.archived) ? {} : { onReorderProjects: reorderProjectFolders })}
       onRename={(id, title) => void rename(id, title)}
       onDeleteRequest={setPendingDelete}
       onOpenSettings={() => openSettings()}
@@ -760,8 +1008,26 @@ export function App() {
     />
   )
 
-  const modelControl = modelValue !== null && availableModelOptions.length > 0 ? (
+  const sessionControlsPending = current !== null && activeWs !== null && (pendingSessionModelMutations.get(sessionModelKey(activeWs, current)) ?? 0) > 0
+  const defaultControlsPending = current === null && pendingModelDefaultsMutations > 0
+  const defaultControlsUnavailable = current === null && modelDefaultsState.status !== 'ready'
+  const sessionControlsUnavailable = current !== null && currentSessionModelState?.status !== 'ready'
+  const sessionControlsMessage = currentSessionModelState?.status === 'error'
+    ? 'Conversation controls are unavailable. Retry loading before sending.'
+    : modelDefaultsState.status === 'error'
+      ? 'Global defaults are unavailable. Retry loading before sending.'
+      : sessionControlsPending
+        ? 'Saving conversation controls before sending…'
+        : defaultControlsPending
+          ? 'Saving global defaults before sending…'
+          : current === null
+            ? 'Loading global defaults…'
+            : 'Loading conversation controls…'
+  // Unavailable controls are reported (with Retry) by the composer's own status chip.
+  const modelControl = sessionControlsUnavailable || defaultControlsUnavailable ? null : modelValue !== null && availableModelOptions.length > 0 ? (
     <ModelMenu
+      menuLabel={current === null ? 'Default model for new conversations' : currentSessionModel?.source === 'session' ? 'Conversation model (next request)' : 'Conversation model (global default, next request)'}
+      disabled={sessionControlsPending || defaultControlsPending}
       modelLabel={modelLabel ?? modelValue}
       modelValue={modelValue}
       options={availableModelOptions}
@@ -771,9 +1037,9 @@ export function App() {
       onManage={() => openSettings()}
     />
   ) : meta !== null ? (
-    <button type="button" onClick={() => openSettings()} className="flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-[17px] font-medium text-fg hover:bg-hover">
-      {modelLabel ?? 'Configure a model'}
-      <Icon name="chevron" size={16} className="text-fg-faint" />
+    <button type="button" onClick={() => openSettings()} className={composerChipClass}>
+      <span className="truncate">{modelLabel ?? 'Configure a model'}</span>
+      <Icon name="chevron" size={13} />
     </button>
   ) : null
 
@@ -819,8 +1085,7 @@ export function App() {
 
   const composerNode = (
     <Composer
-      scope={currentProject?.path ?? null}
-      {...(current === null ? { scopePicker: { value: effectiveDraftProject, options: scopeOptions, onChange: changeDraftProject, onPickFolder: () => setFolderPickerOpen(true) } } : {})}
+      modelControl={modelControl}
       policy={meta?.policy}
       workspaceId={activeWs}
       onPolicySaved={() => void refreshMeta()}
@@ -832,7 +1097,16 @@ export function App() {
       onSend={() => void send()}
       onStop={() => void stop()}
       modelValue={modelValue}
-      thinkingValue={meta?.thinkingLevel ?? null}
+      controlsUnavailable={sessionControlsUnavailable || defaultControlsUnavailable || sessionControlsPending || defaultControlsPending}
+      {...(sessionControlsUnavailable || defaultControlsUnavailable || sessionControlsPending || defaultControlsPending ? { controlsUnavailableMessage: sessionControlsMessage } : {})}
+      {...(currentSessionModelState?.status === 'error' && activeWs !== null && current !== null
+        ? { onRetryControls: () => loadSessionModel(activeWs, current, true) }
+        : modelDefaultsState.status === 'error'
+          ? { onRetryControls: () => void refreshModelDefaults() }
+          : {})}
+      thinkingValue={effectiveThinking}
+      thinkingMenuLabel={current === null ? 'Default thinking level for new conversations' : currentSessionModel?.source === 'session' ? 'Conversation thinking level (next request)' : 'Conversation thinking level (global default, next request)'}
+      thinkingDisabled={sessionControlsPending || defaultControlsPending}
       {...(activeModelSettings !== undefined ? { modelSettings: activeModelSettings } : {})}
       onThinking={(level) => void selectThinking(level)}
       modes={modeSelection.modes}
@@ -870,7 +1144,7 @@ export function App() {
       {...(workbenchDocked ? { onToggleExpand: () => setWorkbenchExpanded((expanded) => !expanded) } : {})}
       onClose={() => onWorkbenchOpenChange(false)}
       openPath={openRecordedPath}
-      context={{ meta, stream, sessionId: current, sessionFolder: currentProject?.path ?? null, eventCount: events.length, manifest, workspaceId: activeWs, running, modeLabel: envModeLabel, onCompacted: () => setCompactNonce((nonce) => nonce + 1), onOpenSettingsTab: (tab) => openSettings(tab) }}
+      context={{ meta, ...(modelDefaults !== null ? { globalDefaults: modelDefaults } : {}), ...(currentSessionModel !== undefined ? { sessionModel: currentSessionModel } : {}), ...(current !== null && currentSessionModelState?.status === 'loading' ? { sessionControlsStatus: 'loading' as const } : {}), ...(current !== null && currentSessionModelState?.status === 'error' ? { sessionControlsStatus: 'unavailable' as const } : {}), stream, sessionId: current, sessionFolder: currentProject?.path ?? null, eventCount: events.length, manifest, workspaceId: activeWs, running, modeLabel: envModeLabel, onCompacted: () => setCompactNonce((nonce) => nonce + 1), onOpenSettingsTab: (tab) => openSettings(tab) }}
     />
   )
 
@@ -880,7 +1154,18 @@ export function App() {
   return (
     <>
       <div className="flex h-dvh overflow-hidden bg-bg text-fg">
-        {sidebarDocked && sidebarOpen ? <aside className="h-full w-[260px] shrink-0 border-r border-line dark:border-transparent">{sidebar}</aside> : null}
+        {sidebarDocked && sidebarOpen ? (
+          <>
+            <aside className="h-full min-w-0 shrink-0" style={{ width: preferences.leftWidth }}>{sidebar}</aside>
+            <div
+              {...sidebarResize}
+              aria-label="Resize sidebar"
+              className="group relative w-px shrink-0 cursor-col-resize bg-line outline-none focus-visible:bg-link dark:bg-transparent dark:focus-visible:bg-link"
+            >
+              <span aria-hidden="true" className="absolute inset-y-0 -left-1.5 -right-1.5 group-hover:bg-line/60" />
+            </div>
+          </>
+        ) : null}
         {!sidebarDocked ? <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen} side="left" label="Conversation navigation">{sidebar}</Sheet> : null}
 
         {/* Full-width workbench hides (but keeps mounted) the chat so drafts and scroll survive. */}
@@ -889,7 +1174,12 @@ export function App() {
             sidebarVisible={sidebarDocked && sidebarOpen}
             stream={stream}
             workbenchOpen={workbenchOpen}
-            modelControl={modelControl}
+            scopeControl={
+              <ScopeControl
+                scope={currentProject?.path ?? null}
+                picker={current === null ? { value: effectiveDraftProject, options: scopeOptions, onChange: changeDraftProject, onPickFolder: () => setFolderPickerOpen(true) } : undefined}
+              />
+            }
             title={currentSession?.title}
             onOpenSidebar={() => onLeftOpenChange(true)}
             onNew={beginConversation}
@@ -903,14 +1193,17 @@ export function App() {
                   <h1 className="m-0 text-[28px] font-medium tracking-tight">What can I help with?</h1>
                   <p className="m-0 max-w-xl text-sm text-fg-muted">
                     {draftProjectName !== undefined
-                      ? `Working in ${draftProjectName}. Pick another folder from the chip in the input.`
-                      : 'Pick a project folder from the chip in the input for file and shell tools, or keep Chat only.'}
+                      ? `Working in ${draftProjectName}. Pick another folder from the folder chip at the top.`
+                      : 'Pick a project folder from the folder chip at the top for file and shell tools, or keep Chat only.'}
                   </p>
                 </div>
                 {sendErrorNotice}
                 {composerNode}
                 <div className="flex flex-wrap justify-center gap-2">
-                  {modelValue === null ? <Button variant="primary" size="sm" onClick={() => openSettings()}>Configure provider</Button> : null}
+                  {modelValue === null ? modelDefaultsState.status === 'error'
+                    ? <Button variant="primary" size="sm" onClick={() => void refreshModelDefaults()}>Retry defaults</Button>
+                    : <Button variant="primary" size="sm" disabled={modelDefaultsState.status === 'loading'} onClick={() => openSettings()}>{modelDefaultsState.status === 'loading' ? 'Loading defaults…' : availableModelOptions.length === 0 ? 'Configure provider' : 'Select default model'}</Button>
+                    : null}
                   {suggestions.map((suggestion) => (
                     <Button key={suggestion} variant="outline" size="sm" className="text-fg-muted" disabled={modelValue === null} onClick={() => { setDraft(textDraft(suggestion)); focusComposer() }}>
                       {suggestion}
@@ -930,9 +1223,9 @@ export function App() {
                   key={current}
                   conversationId={current}
                   items={projectedItems}
-                  {...(modelValue !== null && meta?.model !== undefined && meta.model !== '' ? { modelLabel: meta.model } : {})}
+                  {...(effectiveModel !== null && effectiveModel !== '' ? { modelLabel: effectiveModel } : {})}
                   workspaceId={activeWs}
-                  onReuse={(text) => { setDraft(textDraft(text)); focusComposer() }}
+                  onReuse={(text) => { setDraft(messageDraft(text)); focusComposer() }}
                   onOpenChild={openSession}
                   onRetry={() => void retryLast()}
                   onOpenSettings={() => openSettings()}
@@ -985,18 +1278,18 @@ export function App() {
         workspaceId={activeWs}
         rootSessionId={current}
         providers={meta?.providers ?? []}
-        activeProvider={meta?.provider ?? ''}
-        activeModel={meta?.model ?? ''}
+        activeProvider={modelDefaults?.provider ?? ''}
+        activeModel={modelDefaults?.model ?? ''}
         onDismiss={() => setSettingsOpen(false)}
-        onRefresh={refreshMeta}
+        onRefresh={async () => {
+          await Promise.all([refreshMeta(), refreshModelDefaults()])
+        }}
         onSelectActive={async (provider, model) => {
-          if (activeWs !== null) {
-            const nav = navigation.current.current()
-            const token = controls.current.next()
-            metadata.current.next()
-            await setWorkspaceModel(activeWs, model, provider)
-            if (navigation.current.matches(nav) && controls.current.matches(token)) await refreshMeta()
-          }
+          await modelDefaultsCoordinator.current.enqueue((defaults) => setModelDefaults({
+            provider,
+            model,
+            thinkingLevel: defaults?.thinkingLevel ?? null,
+          }))
         }}
       />
       <ConfirmDialog

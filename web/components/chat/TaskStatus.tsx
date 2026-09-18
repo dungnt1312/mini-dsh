@@ -11,7 +11,6 @@ const LABELS: Record<TaskPhase, string> = { idle: 'Ready', preparing: 'Preparing
  */
 export function TaskStatus({ events, pending, sending, connected }: { readonly events: readonly SseEvent[]; readonly pending: number; readonly sending: boolean; readonly connected: boolean }) {
   const phase = taskPhase(events, pending, sending)
-  const recover = phase === 'interrupted' || phase === 'cancelled' || phase === 'limit' || phase === 'empty'
   const recovered = events.some((event) => event.recovery === true)
   // Failed and rejected turns render as one card inside the transcript itself.
   const showPhase = !(phase === 'idle' || phase === 'completed' || phase === 'failed' || phase === 'rejected')
@@ -24,12 +23,6 @@ export function TaskStatus({ events, pending, sending, connected }: { readonly e
           {busy ? <Spinner size={12} /> : <Icon name={phase === 'waiting' ? 'shield' : 'info'} size={14} className={phase === 'waiting' ? 'text-warn' : undefined} />}
           <strong className={busy ? 'font-medium text-shimmer' : 'font-medium text-fg'}>{LABELS[phase]}</strong>
           {phase === 'preparing' ? <span>Queued input does not run automatically after a restart.</span> : null}
-          {recover ? (
-            <details className="w-full">
-              <summary className="text-xs">Before continuing</summary>
-              <p className="m-0 mt-1 text-xs">Inspect tool results and actual changes before continuing. Tools may already have run; nothing is replayed automatically.</p>
-            </details>
-          ) : null}
         </div>
       ) : null}
       {!connected ? (

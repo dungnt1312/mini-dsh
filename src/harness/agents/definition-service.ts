@@ -26,7 +26,7 @@ export interface AgentDefinition {
   readonly skills?: readonly string[]
   /** Optional model override; undefined inherits the session's selection. */
   readonly model?: string
-  /** Max child steps; undefined uses the host default (harness limits). */
+  /** Deprecated compatibility metadata. Retained when importing old definitions, but never enforced. */
   readonly maxTurns?: number
 }
 
@@ -54,8 +54,8 @@ const KNOWN_KEYS = new Set([
 
 /**
  * Parse one definition file. Strict: unknown keys, unknown tools, missing
- * descriptions and non-positive maxTurns reject with the invalid fields
- * listed — definitions that parse into something else are never executed.
+ * descriptions and invalid compatibility metadata reject with the invalid
+ * fields listed — definitions that parse into something else are never executed.
  */
 export function parseAgentDefinition(name: string, raw: string): AgentDefinition {
   const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(raw)

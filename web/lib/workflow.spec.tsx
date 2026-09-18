@@ -35,7 +35,7 @@ describe('production conversation workflows', () => {
   it('separates connection loss from execution and never offers replay', () => {
     const html = renderToStaticMarkup(<TaskStatus events={[{ type: 'turn/end', seq: 0, reason: 'interrupted' }, { type: 'tool/result', seq: 1, recovery: true }]} pending={0} sending={false} connected={false} />)
     expect(html).toContain('does not mean work has stopped')
-    expect(html).toContain('nothing is replayed automatically')
+    expect(html).not.toContain('Before continuing')
     expect(html).toContain('unknown')
     expect(html).not.toContain('<button')
   })

@@ -1,5 +1,5 @@
 import type { AttachmentRef } from './composer-draft.ts'
-import type { AgentDefinitionRow, ChildRow, Envelope, HooksConfigRow, McpServerRow, MemoryEntryRow, Meta, ProjectRow, ProviderInput, ProviderSummary, SecretRow, SessionListing, SkillRow, WorkspaceMeta, WorkspaceRow } from './types.ts'
+import type { AgentDefinitionRow, ChildRow, Envelope, HooksConfigRow, McpServerRow, MemoryEntryRow, Meta, ModelDefaults, ProjectRow, ProviderInput, ProviderSummary, SecretRow, SessionListing, SessionModel, SkillRow, WorkspaceMeta, WorkspaceRow } from './types.ts'
 
 async function json<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -223,6 +223,15 @@ export function createProject(workspaceId: string, name: string, path: string): 
   }).then((r) => json<ProjectRow>(r))
 }
 
+/** Persist a sidebar folder order; answers the reordered rows. */
+export function reorderProjects(workspaceId: string, order: readonly string[]): Promise<ProjectRow[]> {
+  return fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/projects/order`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ order }),
+  }).then((r) => json<ProjectRow[]>(r))
+}
+
 /** One level of the folder picker: child directories of `path` (home when empty). */
 export interface FolderListing {
   readonly path: string
@@ -292,7 +301,39 @@ export function fetchWorkspaceMeta(workspaceId: string): Promise<WorkspaceMeta> 
   return fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/meta`).then((r) => json<WorkspaceMeta>(r))
 }
 
-/** Live model control, scoped to one workspace. */
+/** Read one conversation's controls; legacy `source: 'global'` follows live global defaults. */
+export function getSessionModel(workspaceId: string, sessionId: string): Promise<SessionModel> {
+  return fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}/model`).then((r) => json<SessionModel>(r))
+}
+
+/** Update a conversation's model controls; null deliberately clears a control. */
+export function setSessionModel(
+  workspaceId: string,
+  sessionId: string,
+  update: Partial<Pick<SessionModel, 'provider' | 'model' | 'thinkingLevel'>>,
+): Promise<SessionModel> {
+  return fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}/model`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(update),
+  }).then((r) => json<SessionModel>(r))
+}
+
+/** Read the global defaults used by drafts and new conversations. */
+export function getModelDefaults(): Promise<ModelDefaults> {
+  return fetch('/api/model-defaults').then((r) => json<ModelDefaults>(r))
+}
+
+/** Update global defaults. A complete provider/model pair or both null is required by the server. */
+export function setModelDefaults(update: ModelDefaults): Promise<ModelDefaults> {
+  return fetch('/api/model-defaults', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(update),
+  }).then((r) => json<ModelDefaults>(r))
+}
+
+/** @deprecated Global defaults are no longer workspace-scoped. Use `setModelDefaults`. */
 export function setWorkspaceModel(workspaceId: string, model: string, provider?: string): Promise<unknown> {
   return fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/model`, {
     method: 'PUT',
@@ -301,10 +342,7 @@ export function setWorkspaceModel(workspaceId: string, model: string, provider?:
   }).then((r) => json<unknown>(r))
 }
 
-/**
- * Live thinking-level control, scoped to one workspace. `null` clears the
- * override back to the model's configured default.
- */
+/** @deprecated Global defaults are no longer workspace-scoped. Use `setModelDefaults`. */
 export function setWorkspaceThinking(workspaceId: string, level: string | null): Promise<{ thinkingLevel: string | null }> {
   return fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/thinking`, {
     method: 'PUT',
@@ -456,9 +494,9 @@ export function listSkills(workspaceId: string): Promise<SkillRow[]> {
 }
 
 /** One skill's raw SKILL.md + hash (the settings editor's load). */
-export function getSkill(workspaceId: string, name: string): Promise<{ readonly name: string; readonly title: string; readonly description: string; readonly source: 'bundled' | 'workspace'; readonly hash: string; readonly instructions: string }> {
+export function getSkill(workspaceId: string, name: string): Promise<SkillRow & { readonly instructions: string }> {
   return fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/skills/${encodeURIComponent(name)}`).then((r) =>
-    json<{ readonly name: string; readonly title: string; readonly description: string; readonly source: 'bundled' | 'workspace'; readonly hash: string; readonly instructions: string }>(r),
+    json<SkillRow & { readonly instructions: string }>(r),
   )
 }
 
@@ -602,6 +640,17 @@ export function upsertMcpServer(workspaceId: string, name: string, config: Recor
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ ...config, name }),
   }).then((r) => json<{ readonly saved: string; readonly enabled: boolean }>(r))
+}
+
+/** Stored config of one server, including fields the settings form does not show. */
+export function getMcpServer(workspaceId: string, name: string): Promise<Record<string, unknown>> {
+  return fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/mcp/${encodeURIComponent(name)}`).then((r) => json<Record<string, unknown>>(r))
+}
+
+export function deleteMcpServer(workspaceId: string, name: string): Promise<{ readonly deleted: string }> {
+  return fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/mcp/${encodeURIComponent(name)}`, { method: 'DELETE' }).then((r) =>
+    json<{ readonly deleted: string }>(r),
+  )
 }
 
 export function setMcpServerAction(workspaceId: string, name: string, action: 'enable' | 'disable' | 'reconnect'): Promise<{ readonly status: string }> {

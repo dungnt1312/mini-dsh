@@ -3,12 +3,15 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { replaceFileAtomic } from '../storage/events-jsonl.ts'
 
+/** Catalog layer a skill resolved from; only `workspace` is writable. */
+export type SkillSource = 'workspace' | 'user' | 'bundled'
+
 export interface SkillEntry {
   /** Directory/lookup name (kebab-case). */
   readonly name: string
   readonly title: string
   readonly description: string
-  readonly source: 'bundled' | 'workspace'
+  readonly source: SkillSource
   /** sha256 of the raw SKILL.md. */
   readonly hash: string
 }
@@ -32,27 +35,37 @@ export class SkillError extends Error {
  * (Markdown + minimal frontmatter) plus optional resource files —
  * file-native, editable by external editors. Loading validates and hashes;
  * an externally edited file loads fresh content with a NEW hash (the hash
- * pins what an execution saw, it never blocks a read). Bundled skills are
- * read-only.
+ * pins what an execution saw, it never blocks a read). Layers resolve by
+ * name in precedence order workspace > user (e.g. `~/.claude/skills`) >
+ * bundled; user and bundled skills are read-only.
  */
 export class SkillsService {
   private readonly home: string
   private readonly bundledDir: string | undefined
+  private readonly userDir: string | undefined
 
-  constructor(home: string, bundledDir?: string) {
+  constructor(home: string, bundledDir?: string, userDir?: string) {
     this.home = home
     this.bundledDir = bundledDir
+    this.userDir = userDir
   }
 
   private dir(workspaceId: string): string {
     return path.join(this.home, 'workspaces', workspaceId, 'skills')
   }
 
-  /** Catalog: workspace skills first, then bundled (bounded, searchable by name). */
+  /** Configured layers, highest precedence first. */
+  private layers(workspaceId: string): Array<readonly [string, SkillSource]> {
+    const layers: Array<readonly [string, SkillSource]> = [[this.dir(workspaceId), 'workspace']]
+    if (this.userDir !== undefined) layers.push([this.userDir, 'user'])
+    if (this.bundledDir !== undefined) layers.push([this.bundledDir, 'bundled'])
+    return layers
+  }
+
+  /** Catalog: one row per name, the highest-precedence layer wins. */
   async list(workspaceId: string): Promise<SkillEntry[]> {
     const rows = new Map<string, SkillEntry>()
-    for (const [base, source] of [[this.dir(workspaceId), 'workspace'] as const, [this.bundledDir, 'bundled'] as const]) {
-      if (base === undefined) continue
+    for (const [base, source] of this.layers(workspaceId)) {
       let entries
       try {
         entries = await fs.readdir(base, { withFileTypes: true })
@@ -84,8 +97,7 @@ export class SkillsService {
     if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(name)) {
       throw new SkillError('not-found', `no skill '${name}'`)
     }
-    for (const [base, source] of [[this.dir(workspaceId), 'workspace'] as const, [this.bundledDir, 'bundled'] as const]) {
-      if (base === undefined) continue
+    for (const [base, source] of this.layers(workspaceId)) {
       const raw = await fs.readFile(path.join(base, name, 'SKILL.md'), 'utf8').catch(() => undefined)
       if (raw === undefined) continue
       const parsed = parseSkill(raw)

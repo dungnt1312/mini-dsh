@@ -65,6 +65,9 @@ const PATHS: Readonly<Record<string, ReactNode>> = {
       <path d="M19 12l-7 7-7-7" />
     </>
   ),
+  funnel: (
+    <path d="M10 20a1 1 0 0 0 .553.895l2 1A1 1 0 0 0 14 21v-7a2 2 0 0 1 .517-1.341L21.74 4.67A1 1 0 0 0 21 3H3a1 1 0 0 0-.742 1.67l7.225 7.989A2 2 0 0 1 10 14z" />
+  ),
   chevronRight: <path d="M9 6l6 6-6 6" />,
   folder: (
     <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
@@ -81,6 +84,79 @@ const PATHS: Readonly<Record<string, ReactNode>> = {
   messageSquare: <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />,
   fileText: (
     <>
+      <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+      <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+    </>
+  ),
+  fileCode: (
+    <>
+      <path d="M10 12.5 8 15l2 2.5" />
+      <path d="m14 12.5 2 2.5-2 2.5" />
+      <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z" />
+      <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+    </>
+  ),
+  fileJson: (
+    <>
+      <path d="M10 12a1 1 0 0 0-1 1v1a1 1 0 0 1-1 1 1 1 0 0 1 1 1v1a1 1 0 0 0 1 1" />
+      <path d="M14 18a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1 1 1 0 0 1-1-1v-1a1 1 0 0 0-1-1" />
+      <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+      <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+    </>
+  ),
+  fileCog: (
+    <>
+      <path d="m3.2 12.9-.9-.4" />
+      <path d="m3.2 15.1-.9.4" />
+      <path d="m4.9 11.2-.4-.9" />
+      <path d="m4.9 16.8-.4.9" />
+      <path d="m7.5 10.3-.4.9" />
+      <path d="m7.5 17.7-.4-.9" />
+      <path d="m9.7 12.5-.9.4" />
+      <path d="m9.7 15.5-.9-.4" />
+      <circle cx="6" cy="14" r="3" />
+      <path d="M4.677 21.5a2 2 0 0 0 1.313.5H18a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v2.5" />
+      <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+    </>
+  ),
+  fileImage: (
+    <>
+      <circle cx="10" cy="12" r="2" />
+      <path d="m20 17-1.296-1.296a2.41 2.41 0 0 0-3.408 0L9 22" />
+      <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+      <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+    </>
+  ),
+  fileAudio: (
+    <>
+      <path d="M17.5 22h.5a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v3" />
+      <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+      <path d="M2 19a2 2 0 1 1 4 0v1a2 2 0 1 1-4 0v-4a6 6 0 0 1 12 0v4a2 2 0 1 1-4 0v-1a2 2 0 1 1 4 0" />
+    </>
+  ),
+  fileVideo: (
+    <>
+      <path d="m10 11 5 3-5 3v-6Z" />
+      <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+      <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+    </>
+  ),
+  fileArchive: (
+    <>
+      <path d="M10 12v-1" />
+      <path d="M10 18v-2" />
+      <path d="M10 7V6" />
+      <circle cx="10" cy="20" r="2" />
+      <path d="M15.5 22H18a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v16a2 2 0 0 0 .274 1.01" />
+      <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+    </>
+  ),
+  fileSpreadsheet: (
+    <>
+      <path d="M8 13h2" />
+      <path d="M14 13h2" />
+      <path d="M8 17h2" />
+      <path d="M14 17h2" />
       <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
       <path d="M14 2v4a2 2 0 0 0 2 2h4" />
     </>
@@ -232,12 +308,14 @@ const PATHS: Readonly<Record<string, ReactNode>> = {
   ),
 }
 
+export type IconName = keyof typeof PATHS
+
 function Icon({
   name,
   size = 16,
   className,
   ...props
-}: { readonly name: keyof typeof PATHS; readonly size?: number } & SVGProps<SVGSVGElement>) {
+}: { readonly name: IconName; readonly size?: number } & SVGProps<SVGSVGElement>) {
   return (
     <svg
       className={className === undefined ? 'icon' : `icon ${className}`}

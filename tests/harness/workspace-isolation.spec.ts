@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Kernel, SessionsService, fileSessions, WorkspaceService, ScopeError } from 'mini-dsh'
-import type { SessionId, WorkspaceId } from 'mini-dsh'
+import type { ProjectId, SessionId, WorkspaceId } from 'mini-dsh'
 
 let home = ''
 let dirA = ''
@@ -135,6 +135,37 @@ describe('project binding', () => {
     expect(ws.getProject(project.id, a.id).id).toBe(project.id)
     // A project binding for a session in the wrong workspace is refused at
     // the API layer through the same check.
+  })
+
+  it('reorderProjects persists a dragged order; unspecified ids trail by creation', async () => {
+    const { ws, home } = await workspaces()
+    await ws.boot()
+    const target = await ws.create('Ordered')
+    const extra = await fs.mkdtemp(path.join(tmpdir(), 'mini-dsh-g2-extra-'))
+    try {
+      const p1 = await ws.createProject(target.id, 'one', dirA)
+      const p2 = await ws.createProject(target.id, 'two', dirB)
+      const p3 = await ws.createProject(target.id, 'three', extra)
+      // Creation order before any drag.
+      expect((await ws.listProjects(target.id)).map((row) => row.id)).toEqual([p1.id, p2.id, p3.id])
+
+      // Dragging 'three' above 'one': the untouched 'two' trails, keeping
+      // its relative creation position.
+      const reordered = await ws.reorderProjects(target.id, [p3.id, p1.id])
+      expect(reordered.map((row) => row.id)).toEqual([p3.id, p1.id, p2.id])
+      expect(reordered.map((row) => row.order)).toEqual([0, 1, 2])
+
+      // Foreign and duplicate ids fail closed / dedupe.
+      await expect(ws.reorderProjects(target.id, ['proj-nope' as ProjectId])).rejects.toMatchObject({ code: 'project-not-found' })
+      expect((await ws.reorderProjects(target.id, [p1.id, p1.id, p2.id])).map((row) => row.id)).toEqual([p1.id, p2.id, p3.id])
+
+      // The order written by the last reorder survives a reload from disk.
+      const fresh = new WorkspaceService(home)
+      await fresh.boot()
+      expect((await fresh.listProjects(target.id)).map((row) => row.id)).toEqual([p1.id, p2.id, p3.id])
+    } finally {
+      await fs.rm(extra, { recursive: true, force: true })
+    }
   })
 
   it('the writer lease serializes distinct sessions and re-admits the holder', async () => {

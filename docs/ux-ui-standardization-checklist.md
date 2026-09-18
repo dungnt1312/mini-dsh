@@ -1,5 +1,8 @@
 # Checklist Chuẩn hóa UX/UI — mini-dsh (Làm lại từ đầu)
 
+
+> **Historical execution record (stale):** checklist này mô tả một implementation trước đây (`TopBar`, `InspectorPanel`, `WorkbenchShell`) và không còn là source of truth cho code hiện tại. Dùng `docs/design-guidelines.md`, `docs/design-system.md`, `docs/web.md` và test hiện hành để review/verify; không suy ra trạng thái pass hiện tại từ các dấu ✅ bên dưới.
+
 > **Mục tiêu:** Coi như rebuild chuẩn Warm Studio từ token lên component, xóa drift, thống nhất responsive + a11y, đạt `design-system.md` + `design-guidelines.md` + 6 breakpoint 320/375/768/1024/1440/1920 không overflow.
 > **Phạm vi:** `web/` toàn bộ, `web/styles/app.css` (single source), `web/App.tsx`, `docs/design-system.md`.
 > **Nguyên tắc:** Tailwind = authority cho geometry/spacing/typography, CVA = variants, Radix = interaction, 3 file CSS duy nhất (`app.css`, `markdown.css`, `motion.css`).

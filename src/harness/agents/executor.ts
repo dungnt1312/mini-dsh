@@ -54,7 +54,6 @@ export interface ChildHandle {
 
 const MAX_ACTIVE_CHILDREN = 3
 const MAX_CHILDREN_PER_TURN = 8
-const CHILD_DEFAULT_STEPS = 12
 
 export class SpawnError extends Error {
   constructor(
@@ -89,19 +88,10 @@ interface InternalChild {
 export class ChildExecutor {
   private readonly children = new Map<SessionId, InternalChild>()
   private readonly spawnedPerTurn = new Map<string, number>()
-  /** Per-child step budgets, shared with Agent.limits() by reference. */
-  private readonly stepBudgets = new Map<string, number>()
   /** Active capacity reservations include spawns that have not reached children.set yet. */
   private reservedActive = 0
 
-  constructor(private readonly ctx: Context) {
-    // Publish the map ONCE; later spawns mutate the same instance.
-    try {
-      this.ctx.provide('agent-step-budgets', this.stepBudgets)
-    } catch {
-      // A second executor in the same kernel reuses the published map.
-    }
-  }
+  constructor(private readonly ctx: Context) {}
 
   /**
    * Recover child relationships from durable logs after a restart: any
@@ -281,11 +271,6 @@ export class ChildExecutor {
       }
       this.children.set(session.id, child)
 
-      // Step budget: a per-child entry read by Agent.limits() — the shared
-      // 'limits' service is never mutated (two children may budget
-      // differently).
-      this.stepBudgets.set(session.id, request.definition.maxTurns ?? CHILD_DEFAULT_STEPS)
-
       // Run through the child's OWN identity (Agent.run re-stamps it): the
       // outer agentScope.run here only satisfies listeners expecting a
       // scope during setup.
@@ -314,7 +299,6 @@ export class ChildExecutor {
           }
         }
         child.endedAt = Date.now()
-        this.stepBudgets.delete(session.id)
         try {
           const parentSession = (this.ctx.get('sessions') as { get(id: SessionId): { append(event: unknown): unknown; durable(): Promise<void> } }).get(request.parentSessionId)
           parentSession.append({ type: 'agent/child-result', childSessionId: session.id, parentTurnId: request.parentTurnId, status: child.status })

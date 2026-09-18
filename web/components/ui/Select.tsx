@@ -1,12 +1,19 @@
 import * as Popover from '@radix-ui/react-popover'
-import { isValidElement, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactElement, type ReactNode } from 'react'
+import { cloneElement, isValidElement, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactElement, type ReactNode } from 'react'
 import Icon from '../common/Icon.tsx'
 import { cn } from '../../lib/cn.ts'
 
 export interface SelectOption { readonly value: string; readonly label: string; readonly provider?: string }
 
+function cloneTrigger(element: ReactElement, id: string | undefined, ariaDescribedBy: string | undefined): ReactElement {
+  return cloneElement(element as ReactElement<{ id?: string; 'aria-describedby'?: string }>, {
+    ...(id !== undefined ? { id } : {}),
+    ...(ariaDescribedBy !== undefined ? { 'aria-describedby': ariaDescribedBy } : {}),
+  })
+}
+
 /** Searchable controlled selection surface; Radix owns portal, dismissal, and focus restoration. */
-export function Select({ value, options, onChange, disabled = false, label, triggerClassName, renderTrigger }: {
+export function Select({ value, options, onChange, disabled = false, label, triggerClassName, renderTrigger, id: triggerId, 'aria-describedby': ariaDescribedBy }: {
   readonly value: string
   readonly options: readonly SelectOption[]
   readonly onChange: (value: string) => void
@@ -14,6 +21,8 @@ export function Select({ value, options, onChange, disabled = false, label, trig
   readonly label?: string
   readonly triggerClassName?: string
   readonly renderTrigger?: (current: SelectOption | undefined, open: boolean) => ReactNode
+  readonly id?: string
+  readonly 'aria-describedby'?: string
 }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -44,13 +53,15 @@ export function Select({ value, options, onChange, disabled = false, label, trig
 
   const rendered = renderTrigger?.(current, open)
   const trigger = renderTrigger !== undefined && isValidElement(rendered)
-    ? rendered as ReactElement
+    ? cloneTrigger(rendered as ReactElement, triggerId, ariaDescribedBy)
     : (
         <button
           type="button"
           ref={triggerRef}
+          id={triggerId}
           disabled={disabled}
           aria-label={label}
+          aria-describedby={ariaDescribedBy}
           aria-haspopup="listbox"
           title={current?.label ?? value}
           className={cn('flex h-9 w-full min-w-0 items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 text-left text-sm hover:bg-hover disabled:opacity-50', triggerClassName)}

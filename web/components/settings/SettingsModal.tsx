@@ -4,7 +4,7 @@ import { ProjectsPanel } from './ProjectsPanel.tsx'
 import { ErrorNotice } from '../common/ErrorNotice.tsx'
 import ConfirmDialog from '../common/ConfirmDialog.tsx'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import Icon from '../common/Icon.tsx'
+import Icon, { type IconName } from '../common/Icon.tsx'
 import { Badge } from '../ui/Badge.tsx'
 import { Button } from '../ui/Button.tsx'
 import { Field } from '../ui/Field.tsx'
@@ -33,18 +33,18 @@ import type { ModelSettings, ProjectRow, ProviderSummary } from '../../lib/types
 /** Settings are grouped per concern; providers keep their own full editor. */
 type SettingsTab = 'providers' | 'projects' | 'skills' | 'memory' | 'agents' | 'mcp' | 'hooks' | 'secrets'
 
-const TABS: readonly { readonly id: SettingsTab; readonly label: string; readonly hint: string }[] = [
-  { id: 'providers', label: 'Providers', hint: 'Endpoints and models' },
-  { id: 'projects', label: 'Projects', hint: 'Registered workspace folders' },
-  { id: 'skills', label: 'Skills', hint: 'Workspace SKILL.md packages' },
-  { id: 'memory', label: 'Memory', hint: 'Scoped memory entries' },
-  { id: 'agents', label: 'Agents', hint: 'Definitions and child agents' },
-  { id: 'mcp', label: 'MCP', hint: 'Server stdio/HTTP' },
-  { id: 'hooks', label: 'Hooks', hint: 'Pre/Post/UserPrompt' },
-  { id: 'secrets', label: 'Secrets', hint: 'Encrypted credentials' },
+const TABS: readonly { readonly id: SettingsTab; readonly label: string; readonly hint: string; readonly icon: IconName }[] = [
+  { id: 'providers', label: 'Providers', hint: 'Model endpoints, keys, and the default model for new conversations', icon: 'globe' },
+  { id: 'projects', label: 'Projects', hint: 'Folders conversations in this workspace can work in', icon: 'folder' },
+  { id: 'skills', label: 'Skills', hint: 'SKILL.md instruction packages', icon: 'zap' },
+  { id: 'memory', label: 'Memory', hint: 'Notes the model recalls in this workspace', icon: 'lightbulb' },
+  { id: 'agents', label: 'Agents', hint: 'Roles and child agents', icon: 'gitBranch' },
+  { id: 'mcp', label: 'MCP', hint: 'Tool servers over stdio or HTTP', icon: 'terminal' },
+  { id: 'hooks', label: 'Hooks', hint: 'Commands that run around tool calls and sessions', icon: 'wrench' },
+  { id: 'secrets', label: 'Secrets', hint: 'Encrypted credentials for MCP servers', icon: 'key' },
 ]
 
-/** Spec: nav groups Global / Workspace (11px caps heads). */
+/** Nav groups: global settings first, then the active workspace's. */
 const TAB_GROUPS: readonly { readonly label: string; readonly ids: readonly SettingsTab[] }[] = [
   { label: 'Global', ids: ['providers'] },
   { label: 'Workspace', ids: ['projects', 'skills', 'memory', 'agents', 'mcp', 'hooks', 'secrets'] },
@@ -155,9 +155,12 @@ export function SettingsModal({
   )
   const isNew = selectedId === null
 
+  /** Whether this open has picked a provider to show; false while the list is still empty. */
+  const seeded = useRef(false)
   useEffect(() => {
     if (!open) return
     const first = providers.find((provider) => provider.id === activeProvider) ?? providers[0]
+    seeded.current = first !== undefined
     setTab(initialTab)
     setSelectedId(first?.id ?? null)
     setDraft(first === undefined ? BLANK : draftOf(first))
@@ -167,6 +170,21 @@ export function SettingsModal({
     setModelDraft('')
     setTunedModel(null)
   }, [open]) // Seed once per open so a background refresh never discards edits.
+
+  // Settings opened before providers loaded: show the real provider once the
+  // list arrives, unless the user already started typing a new one.
+  useEffect(() => {
+    if (!open || seeded.current || providers.length === 0) return
+    seeded.current = true
+    if (selectedId !== null || JSON.stringify(draft) !== JSON.stringify(BLANK) || modelDraft !== '') return
+    const first = providers.find((provider) => provider.id === activeProvider) ?? providers[0]
+    if (first === undefined) return
+    setSelectedId(first.id)
+    setDraft(draftOf(first))
+  }, [providers])
+
+  // Opening Settings at another tab while it is already open still switches.
+  useEffect(() => { if (open) setTab(initialTab) }, [initialTab])
 
   const dirty = useMemo(() => {
     if (selected === undefined) return JSON.stringify(draft) !== JSON.stringify(BLANK)
@@ -311,11 +329,22 @@ export function SettingsModal({
       setNotice({ kind: 'ok', text: 'Provider deleted.' })
     })
 
+  /**
+   * Why a model cannot become the global default yet, or null when it can.
+   * The server only accepts saved models of enabled providers.
+   */
+  const globalDefaultBlocker = (model: string): string | null =>
+    selected === undefined ? 'Add the provider first.'
+      : !selected.enabled ? 'Enable and save this provider first.'
+        : !selected.models.includes(model) ? 'Save this model to the provider first.'
+          : dirty ? 'Save or discard your changes first.'
+            : null
+
   const useForChat = (model: string): Promise<void> =>
     run('activate', async () => {
-      if (selected === undefined) return
+      if (selected === undefined || globalDefaultBlocker(model) !== null) return
       await onSelectActive(selected.id, model)
-      setNotice({ kind: 'ok', text: `Workspace now uses ${selected.name} / ${model}.` })
+      setNotice({ kind: 'ok', text: `Global default is now ${selected.name} / ${model}.` })
     })
 
   const addModels = (): void => {
@@ -355,7 +384,8 @@ export function SettingsModal({
   }
 
   const activeTab = TABS.find((entry) => entry.id === tab)
-  const tabTrigger = 'flex w-full flex-col items-start rounded-lg px-3 py-2 text-left text-sm text-fg-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-link data-[state=active]:bg-hover data-[state=active]:text-fg'
+  const tabTrigger = 'flex h-9 w-full items-center gap-2.5 rounded-lg px-3 text-left text-sm text-fg-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-link disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-hover data-[state=active]:font-medium data-[state=active]:text-fg'
+  const testBlocker = isNew ? 'Add the provider first.' : dirty ? 'Save your changes first — the test uses the saved configuration.' : null
 
   return (
     <><Modal open={open} onDismiss={dismiss} label="Settings" width="xl" bodyClassName="flex p-0 overflow-hidden">
@@ -378,8 +408,9 @@ export function SettingsModal({
                         {group.ids.map((id) => {
                           const entry = TABS.find((item) => item.id === id)
                           return entry === undefined ? null : (
-                            <RadixSelect.Item key={entry.id} value={entry.id} className="relative flex min-h-10 cursor-default select-none items-center justify-between rounded-lg px-2.5 text-sm outline-none data-[highlighted]:bg-hover">
-                              <RadixSelect.ItemText>{entry.label}</RadixSelect.ItemText>
+                            <RadixSelect.Item key={entry.id} value={entry.id} className="relative flex min-h-10 cursor-default select-none items-center gap-2.5 rounded-lg px-2.5 text-sm outline-none data-[highlighted]:bg-hover">
+                              <Icon name={entry.icon} size={16} className="shrink-0 text-fg-muted" aria-hidden="true" />
+                              <span className="flex-1"><RadixSelect.ItemText>{entry.label}</RadixSelect.ItemText></span>
                               <RadixSelect.ItemIndicator><Icon name="check" size={14} /></RadixSelect.ItemIndicator>
                             </RadixSelect.Item>
                           )
@@ -393,14 +424,14 @@ export function SettingsModal({
           </div>
           <Tabs.List className="hidden min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-2 pb-4 sm:flex" aria-label="Settings sections">
             {TAB_GROUPS.map((group) => (
-              <div key={group.label} className="flex flex-col gap-px">
+              <div key={group.label} className="flex flex-col gap-0.5">
                 <div className="px-3 pb-1 text-xs font-medium text-fg-faint">{group.label}</div>
                 {group.ids.map((id) => {
                   const entry = TABS.find((item) => item.id === id)
                   return entry === undefined ? null : (
-                    <Tabs.Trigger key={entry.id} value={entry.id} className={tabTrigger}>
-                      <span>{entry.label}</span>
-                      <small className="text-xs text-fg-faint">{entry.hint}</small>
+                    <Tabs.Trigger key={entry.id} value={entry.id} className={tabTrigger} disabled={busy !== null && entry.id !== tab}>
+                      <Icon name={entry.icon} size={16} className="shrink-0" aria-hidden="true" />
+                      <span className="truncate">{entry.label}</span>
                     </Tabs.Trigger>
                   )
                 })}
@@ -410,29 +441,20 @@ export function SettingsModal({
         </aside>
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-line px-5">
-            <div className="flex min-w-0 items-baseline gap-2">
-              <h2 className="m-0 text-base font-semibold">{activeTab?.label ?? 'Settings'}</h2>
+          <header className="flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-line px-5 py-2">
+            <div className="flex min-w-0 flex-col">
+              <div className="flex min-w-0 items-center gap-2">
+                <h2 className="m-0 text-base font-semibold">{activeTab?.label ?? 'Settings'}</h2>
+                {tab === 'providers'
+                  ? <Badge>All workspaces</Badge>
+                  : <Badge tone="blue" title="These settings apply only to this workspace.">Workspace: {workspaceName ?? workspaceId ?? 'none'}</Badge>}
+              </div>
               <span className="truncate text-[13px] text-fg-faint">{activeTab?.hint ?? ''}</span>
             </div>
-            <IconButton label="Close settings" size="md" onClick={dismiss}><Icon name="close" size={18} /></IconButton>
+            <IconButton label="Close settings" size="md" disabled={busy !== null} onClick={dismiss}><Icon name="close" size={18} /></IconButton>
           </header>
 
           <Tabs.Content key={tab} value={tab} tabIndex={0} className="min-h-0 min-w-0 flex-1 overflow-y-auto px-5 py-5 outline-none">
-            <section className="mb-5 flex flex-col gap-1.5 text-[13px]" aria-label="Settings scope">
-              <p className="m-0 text-fg-muted">
-                {tab === 'providers' ? 'Global provider configuration' : 'Workspace configuration and services'}
-                <span className="text-fg-faint"> · Workspace: {workspaceName ?? workspaceId ?? 'Not selected'}</span>
-              </p>
-              <details className="text-fg-muted">
-                <summary className="text-xs">Scope and runtime details</summary>
-                <div className="mt-2 flex flex-col gap-1.5 rounded-xl bg-muted p-3 text-xs">
-                  <p className="m-0">{tab === 'providers' ? 'Endpoints, keys, and model lists are stored globally. Activation changes only this workspace. Saving does not verify connectivity. Test connection uses saved configuration, not the draft.' : 'Changes apply only to this workspace. Live service state is separate from saved configuration.'}</p>
-                  {tab === 'providers' ? <p className="m-0">Active workspace model: <code>{activeProvider || 'Not selected'} / {activeModel || 'Not selected'}</code></p> : null}
-                  {tab === 'agents' ? <p className="m-0">Agent definitions belong to the workspace. Child agents belong only to the current conversation.</p> : null}
-                </div>
-              </details>
-            </section>
 
             {tab !== 'providers' ? (
               <>
@@ -447,10 +469,7 @@ export function SettingsModal({
             ) : (
               <div className="grid min-w-0 gap-6 lg:grid-cols-[13rem_minmax(0,1fr)]">
                 <aside className="flex min-w-0 flex-col gap-1">
-                  <div className="flex items-center justify-between px-1">
-                    <span className="flex items-center gap-2 text-xs font-medium text-fg-faint">Providers<Badge>{providers.length}</Badge></span>
-                    <IconButton label="Add provider" onClick={() => leave(beginNew)}><Icon name="plus" size={16} /></IconButton>
-                  </div>
+                  <span className="flex h-8 items-center gap-2 px-1 text-xs font-medium text-fg-faint">Providers<Badge>{providers.length}</Badge></span>
                   <div className="flex flex-col gap-px" role="listbox" aria-label="Providers">
                     {providers.map((provider) => {
                       const isSelected = provider.id === selectedId
@@ -469,7 +488,7 @@ export function SettingsModal({
                             <span className="truncate text-sm">{provider.name}</span>
                             <span className="text-xs text-fg-faint">{provider.models.length > 0 ? `${provider.models.length} models` : 'No models'}</span>
                           </span>
-                          {provider.id === activeProvider ? <Badge tone="green">active</Badge> : null}
+                          {provider.id === activeProvider ? <Badge tone="green" title="Provides the default model for new conversations">default</Badge> : null}
                         </button>
                       )
                     })}
@@ -490,11 +509,11 @@ export function SettingsModal({
                     <h3 className="m-0 mr-1 text-lg font-semibold">{isNew ? 'Add provider' : selected?.name}</h3>
                     {dirty ? <Badge tone="amber">Unsaved</Badge> : null}
                     {!isNew && selected?.enabled === false ? <Badge>disabled</Badge> : null}
-                    {selected?.id === activeProvider ? <Badge tone="green">Active in workspace</Badge> : null}
+                    {selected?.id === activeProvider ? <Badge tone="green">Global default</Badge> : null}
                   </div>
 
                   <div className="grid gap-4 md:grid-cols-2">
-                    <Field label="Name" hint="Shown in the picker. The ID is derived from this name.">
+                    <Field label="Name" hint={isNew ? 'Shown in the model picker. The provider ID is derived from it.' : 'Shown in the model picker.'}>
                       <TextInput ref={nameRef} value={draft.name} placeholder="cliproxy1" onChange={(event) => patch({ name: event.target.value })} />
                     </Field>
                     <Field label="Base URL" tone={urlLooksWrong ? 'bad' : 'default'} hint={urlLooksWrong ? 'Enter an HTTP or HTTPS URL.' : 'Base endpoint for /chat/completions and /models.'}>
@@ -553,8 +572,8 @@ export function SettingsModal({
                                 <button
                                   type="button"
                                   aria-pressed={isDefault}
-                                  aria-label={isDefault ? `${model} is the default model` : `Set ${model} as default`}
-                                  title={isDefault ? 'Current default' : 'Set as default'}
+                                  aria-label={isDefault ? `${model} is this provider's default model` : `Make ${model} this provider's default model`}
+                                  title={isDefault ? "This provider's default model" : "Make this the provider's default model"}
                                   onClick={() => patch({ defaultModel: model })}
                                   className={`flex size-7 shrink-0 items-center justify-center rounded-md hover:bg-hover ${isDefault ? 'text-fg' : 'text-fg-faint'}`}
                                 >
@@ -570,10 +589,22 @@ export function SettingsModal({
                                 >
                                   {context.label}{context.overridden ? ' · custom' : ''}
                                 </span>
-                                {isDefault ? <Badge tone="blue">default</Badge> : null}
-                                {isLive ? <Badge tone="green">live</Badge> : null}
+                                {isDefault ? <Badge tone="blue">provider default</Badge> : null}
+                                {isLive ? <Badge tone="green" title="Used for new conversations">global default</Badge> : null}
                                 <span className="ml-auto flex items-center gap-0.5">
-                                  <Button variant="ghost" size="sm" disabled={isNew || busy !== null} onClick={() => void useForChat(model)}>Use in workspace</Button>
+                                  {!isLive ? (
+                                    // Revealed on row hover/focus where hover exists; always shown on touch.
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      className="[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:focus-visible:opacity-100"
+                                      disabled={busy !== null || globalDefaultBlocker(model) !== null}
+                                      title={globalDefaultBlocker(model) ?? 'Use this model for new conversations'}
+                                      onClick={() => void useForChat(model)}
+                                    >
+                                      {busy === 'activate' ? 'Setting…' : 'Set as global default'}
+                                    </Button>
+                                  ) : null}
                                   <IconButton
                                     label={tuning ? `Hide ${model} settings` : `Configure ${model} (context, vision, thinking)`}
                                     aria-expanded={tuning}
@@ -656,19 +687,21 @@ export function SettingsModal({
                       <Button variant="outline" disabled={modelDraft.trim() === ''} onClick={addModels}><Icon name="plus" size={15} />Add</Button>
                     </div>
                   </section>
-
-                  {notice !== null ? (
-                    notice.kind === 'bad'
-                      ? <ErrorNotice raw={notice.text} />
-                      : <p className="m-0 flex items-center gap-2 rounded-lg bg-ok-soft px-3 py-2 text-[13px] text-ok" role="status"><Icon name="check" size={15} />{notice.text}</p>
-                  ) : null}
                 </div>
               </div>
             )}
           </Tabs.Content>
 
+          {tab === 'providers' && notice !== null ? (
+            // Outside the scrolling pane, so a save or test result is always in view.
+            <div className="shrink-0 border-t border-line px-5 pt-3">
+              {notice.kind === 'bad'
+                ? <ErrorNotice raw={notice.text} />
+                : <p className="m-0 flex items-center gap-2 rounded-lg bg-ok-soft px-3 py-2 text-[13px] text-ok" role="status"><Icon name="check" size={15} />{notice.text}</p>}
+            </div>
+          ) : null}
           {tab === 'providers' ? (
-            <footer className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-line px-5 py-3">
+            <footer className={`flex shrink-0 flex-wrap items-center justify-between gap-2 px-5 py-3 ${notice === null ? 'border-t border-line' : ''}`}>
               <span className="flex flex-wrap items-center gap-2">
                 {isNew ? null : confirmDelete ? (
                   <>
@@ -681,7 +714,7 @@ export function SettingsModal({
                 )}
               </span>
               <span className="flex items-center gap-2">
-                <Button variant="outline" size="sm" disabled={isNew || busy !== null} onClick={() => void test()}>{busy === 'test' ? 'Testing…' : 'Test connection'}</Button>
+                <Button variant="outline" size="sm" disabled={testBlocker !== null || busy !== null} title={testBlocker ?? 'Send a short completion with the saved configuration'} onClick={() => void test()}>{busy === 'test' ? 'Testing…' : 'Test connection'}</Button>
                 <Button variant="primary" size="sm" disabled={busy !== null || !dirty} onClick={() => void save()}>{busy === 'save' ? 'Saving…' : isNew ? 'Add provider' : 'Save changes'}</Button>
               </span>
             </footer>

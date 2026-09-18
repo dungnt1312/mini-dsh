@@ -4,10 +4,10 @@
  * magic numbers through the loop.
  */
 export interface HarnessLimits {
-  /** Model requests one turn may spend before it closes as `limit`. Set to Infinity for unbounded (real limit is turnDeadlineMs). */
-  readonly maxSteps: number
-  /** Wall-clock budget for one turn, including tools and approvals. */
-  readonly turnDeadlineMs: number
+  /** @deprecated Ignored. Turns no longer have a model-step budget. */
+  readonly maxSteps?: number
+  /** @deprecated Ignored. Turns no longer have a wall-clock deadline. */
+  readonly turnDeadlineMs?: number
   /** Kill a provider stream that stays silent this long (inactivity). */
   readonly streamInactivityMs: number
   /** Default wall-clock kill for one bash command. */
@@ -29,8 +29,6 @@ export interface HarnessLimits {
 }
 
 export const DEFAULT_LIMITS: HarnessLimits = {
-  maxSteps: Infinity, // unbounded tool loop - real safety net is turnDeadlineMs (10 min)
-  turnDeadlineMs: 10 * 60_000,
   streamInactivityMs: 120_000,
   toolTimeoutMs: 30_000,
   approvalExpiryMs: 5 * 60_000,

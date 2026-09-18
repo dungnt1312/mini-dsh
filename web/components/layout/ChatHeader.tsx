@@ -13,13 +13,13 @@ const STREAM_TEXT: Readonly<Record<StreamState, string>> = {
 
 /**
  * Center-column header: navigation affordances when the sidebar is hidden,
- * the model picker, connection state and the workbench toggle.
+ * the conversation's folder, connection state and the workbench toggle.
  */
-export function ChatHeader({ sidebarVisible, stream, workbenchOpen, modelControl, title, onOpenSidebar, onNew, onToggleWorkbench }: {
+export function ChatHeader({ sidebarVisible, stream, workbenchOpen, scopeControl, title, onOpenSidebar, onNew, onToggleWorkbench }: {
   readonly sidebarVisible: boolean
   readonly stream: StreamState
   readonly workbenchOpen: boolean
-  readonly modelControl: ReactNode
+  readonly scopeControl: ReactNode
   readonly title?: string | undefined
   readonly onOpenSidebar: () => void
   readonly onNew: () => void
@@ -34,7 +34,7 @@ export function ChatHeader({ sidebarVisible, stream, workbenchOpen, modelControl
           <IconButton label="New conversation" size="md" onClick={onNew}><Icon name="squarePen" size={18} /></IconButton>
         </>
       ) : null}
-      <div className="flex min-w-0 items-center">{modelControl}</div>
+      <div className="flex min-w-0 items-center">{scopeControl}</div>
       {title !== undefined && title !== '' ? <span className="hidden min-w-0 truncate px-2 text-sm text-fg-faint lg:block" title={title}>{title}</span> : null}
       <div className="flex-1" />
       <span role="status" className={connecting ? 'flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs text-fg-muted' : 'sr-only'}>

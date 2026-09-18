@@ -329,6 +329,7 @@ export class WorkspaceService {
       name: name.trim() === '' ? path.basename(canonical) : name.trim().slice(0, 80),
       workspaceId,
       path: canonical,
+      order: this.listProjects(workspaceId).reduce((max, existing) => Math.max(max, existing.order ?? -1), -1) + 1,
       createdAt: this.now(),
     }
     this.projects.set(id, record)
@@ -352,7 +353,37 @@ export class WorkspaceService {
     this.get(workspaceId)
     return [...this.projects.values()]
       .filter((record) => record.workspaceId === workspaceId)
-      .sort((a, b) => a.createdAt - b.createdAt)
+      // Never-reordered records (no `order`) trail explicitly ordered ones,
+      // keeping their own creation order until the first drag assigns orders.
+      .sort((a, b) => (a.order ?? Number.MAX_SAFE_INTEGER) - (b.order ?? Number.MAX_SAFE_INTEGER) || a.createdAt - b.createdAt)
+  }
+
+  /**
+   * Persist a sidebar order for the workspace's projects. Ids beyond the
+   * workspace are refused; ids left out trail the ordered ones by creation.
+   */
+  async reorderProjects(workspaceId: WorkspaceId, orderedIds: readonly ProjectId[]): Promise<ProjectRecord[]> {
+    this.get(workspaceId)
+    const known = new Map(this.listProjects(workspaceId).map((record) => [record.id, record]))
+    const ordered: ProjectRecord[] = []
+    const seen = new Set<ProjectId>()
+    let index = 0
+    for (const id of orderedIds) {
+      const record = known.get(id)
+      if (record === undefined) throw new ScopeError('project-not-found', `no project '${id}' in this workspace`)
+      if (seen.has(id)) continue
+      seen.add(id)
+      ordered.push({ ...record, order: index++ })
+    }
+    for (const record of known.values()) {
+      if (!seen.has(record.id)) ordered.push({ ...record, order: index++ })
+    }
+    for (const record of ordered) {
+      if (record.order === known.get(record.id)?.order) continue
+      this.projects.set(record.id, record)
+      await writeJson(this.projectPath(workspaceId, record.id), record)
+    }
+    return this.listProjects(workspaceId)
   }
 
   /** Direct-ID lookup; a workspace mismatch fails closed (never leaks). */

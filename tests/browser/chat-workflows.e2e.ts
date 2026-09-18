@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 // page.evaluate and init-script callbacks run in the browser.
-import { expect, test, type Page, type Route } from '@playwright/test'
+import { expect, test, type Locator, type Page, type Route } from '@playwright/test'
 import { AxeBuilder } from '@axe-core/playwright'
 import { mkdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -134,6 +134,9 @@ async function fixture(page: Page, state: FixtureState): Promise<Fixture> {
       thinkingLevel: null,
     })
     if (path === '/api/workspaces/w/mode' && method === 'GET') return json(route, { modes: [{ id: 'chat', name: 'Chat', source: 'bundled' }], selected: 'chat', revision: 1 })
+    if (path === '/api/model-defaults' && method === 'GET') return json(route, { provider: 'fixture-provider', model: 'fixture-model', thinkingLevel: null })
+    if (path === '/api/model-defaults' && method === 'PUT') return json(route, { thinkingLevel: null, ...(body as object) })
+    if (/^\/api\/workspaces\/w\/sessions\/[^/]+\/model$/.test(path) && method === 'GET') return json(route, { provider: 'fixture-provider', model: 'fixture-model', thinkingLevel: null, source: 'global' })
     if (path === '/api/workspaces/w/projects/p/files' && method === 'GET') return json(route, url.searchParams.get('path') === 'src'
       ? { path: 'src', entries: [{ name: 'index.ts', path: 'src/index.ts', kind: 'file', size: 26 }] }
       : { path: '', entries: [{ name: 'src', path: 'src', kind: 'dir' }, { name: 'README.md', path: 'README.md', kind: 'file', size: 9 }] })
@@ -150,7 +153,8 @@ async function fixture(page: Page, state: FixtureState): Promise<Fixture> {
       if (path === '/api/providers/fixture-provider' && method === 'PATCH') { provider = { ...provider, ...(body as object) }; return json(route, provider) }
       if (path === '/api/providers/fixture-provider' && method === 'DELETE') { providerDeleted = true; return json(route, { deleted: true }) }
       if (path === '/api/providers/fixture-provider/test' && method === 'POST') return json(route, { ok: true })
-      if (path === '/api/providers/fixture-provider/sync' && method === 'POST') return json(route, { ok: true, models: ['fixture-model', 'fixture-next'] })
+      // Sync persists the fetched list, as the server does.
+      if (path === '/api/providers/fixture-provider/sync' && method === 'POST') { provider = { ...provider, models: ['fixture-model', 'fixture-next'] }; return json(route, { ok: true, models: provider.models }) }
       if (path === '/api/workspaces/w/model' && method === 'PUT') return json(route, { model: (body as { model?: string }).model })
       if (path === '/api/workspaces/w/projects/p' && method === 'DELETE') return json(route, { error: 'project is bound to 1 conversation and has a running session' }, 409)
       if (path === '/api/workspaces/w/skills' && method === 'GET') return json(route, [{ name: 'fixture-skill', title: 'Fixture skill', description: '', source: 'workspace', hash: 'skill-old' }])
@@ -169,6 +173,7 @@ async function fixture(page: Page, state: FixtureState): Promise<Fixture> {
       if (path === '/api/workspaces/w/secrets' && method === 'GET') return json(route, secretDeleteCount < 2 ? [{ name: 'FIXTURE_SECRET' }] : [])
       if (path === '/api/workspaces/w/secrets/FIXTURE_SECRET' && method === 'DELETE') { secretDeleteCount += 1; return secretDeleteCount === 1 ? json(route, { error: 'secret delete refused' }, 503) : json(route, { deleted: 'FIXTURE_SECRET' }) }
     }
+    if (path === '/api/workspaces/w/skills' && method === 'GET') return json(route, [])
     throw new Error(`Unexpected fixture API request: ${method} ${url.href}`)
   })
 
@@ -199,6 +204,13 @@ async function fixture(page: Page, state: FixtureState): Promise<Fixture> {
 }
 
 /** Settings lives in the sidebar footer; on narrow screens the sidebar is a drawer. */
+/** The provider editor fills in once providers load; edit it only after that. */
+async function providerName(dialog: Locator): Promise<Locator> {
+  const name = dialog.getByLabel('Name')
+  await expect(name).toHaveValue('Fixture provider')
+  return name
+}
+
 async function settingsTrigger(page: Page) {
   const trigger = page.getByRole('button', { name: 'Open settings', exact: true })
   if (!(await trigger.isVisible())) await page.getByRole('button', { name: 'Open sidebar' }).click()
@@ -268,7 +280,7 @@ for (const width of [375, 1024]) {
     await fixture(page, 'settings')
     await (await settingsTrigger(page)).click()
     const dialog = page.getByRole('dialog', { name: 'Settings' })
-    await dialog.getByLabel('Name').fill('Dirty provider')
+    await (await providerName(dialog)).fill('Dirty provider')
     if (width <= 600) {
       await page.getByRole('combobox', { name: 'Settings section' }).click()
       await page.getByRole('option', { name: 'Projects', exact: true }).click()
@@ -284,7 +296,7 @@ test('provider replacement, close, and pending model text all require discard co
   const trigger = await settingsTrigger(page)
   await trigger.click()
   const dialog = page.getByRole('dialog', { name: 'Settings' })
-  await dialog.getByLabel('Name').fill('dirty')
+  await (await providerName(dialog)).fill('dirty')
   await dialog.getByRole('option', { name: /Replacement provider/ }).click()
   await expect(page.getByRole('dialog', { name: 'Discard unsaved provider changes?' })).toBeVisible()
   await page.getByRole('button', { name: 'Cancel' }).click()
@@ -304,7 +316,7 @@ test('discarding a provider draft actually clears it — later tab switches and 
   await fixture(page, 'settings')
   await (await settingsTrigger(page)).click()
   const dialog = page.getByRole('dialog', { name: 'Settings' })
-  await dialog.getByLabel('Name').fill('dirty and discarded')
+  await (await providerName(dialog)).fill('dirty and discarded')
   await dialog.getByRole('tab', { name: /Skills/ }).click()
   await expect(page.getByRole('dialog', { name: 'Discard unsaved provider changes?' })).toBeVisible()
   await page.getByRole('button', { name: 'Discard changes' }).click()
@@ -326,7 +338,7 @@ test('provider dirty draft survives sections, confirms discard, and omits a blan
   const state = await fixture(page, 'settings')
   await (await settingsTrigger(page)).click()
   const dialog = page.getByRole('dialog', { name: 'Settings' })
-  const name = dialog.getByLabel('Name')
+  const name = await providerName(dialog)
   await name.fill('Fixture provider edited')
   await dialog.getByRole('tab', { name: /Skills/ }).click()
   await expect(page.getByRole('dialog', { name: 'Discard unsaved provider changes?' })).toBeVisible()
@@ -346,17 +358,19 @@ test('provider test, sync, activate, and delete use exact existing requests', as
   await dialog.getByRole('button', { name: 'Test connection' }).click()
   await dialog.getByRole('button', { name: 'Sync from /models' }).click()
   await expect(dialog.getByText('fixture-next')).toBeVisible()
-  await dialog.getByRole('button', { name: 'Use in workspace' }).first().click()
+  await dialog.getByRole('button', { name: 'Set as global default' }).first().click()
+  await expect.poll(() => state.count('PUT', '/api/model-defaults')).toBe(1)
   await dialog.getByRole('button', { name: 'Delete provider' }).click()
   await dialog.getByRole('button', { name: 'Delete permanently' }).click()
   await expect.poll(() => state.count('DELETE', '/api/providers/fixture-provider')).toBe(1)
   for (const expected of [
     ['POST', '/api/providers/fixture-provider/test'],
     ['POST', '/api/providers/fixture-provider/sync'],
-    ['PUT', '/api/workspaces/w/model'],
+    ['PUT', '/api/model-defaults'],
     ['DELETE', '/api/providers/fixture-provider'],
   ] as const) expect(state.count(expected[0], expected[1])).toBe(1)
-  expect(state.requests().find(request => request.path === '/api/workspaces/w/model')?.body).toEqual({ provider: 'fixture-provider', model: 'fixture-model' })
+  // fixture-model is already the global default, so the first offer is the synced model.
+  expect(state.requests().find(request => request.method === 'PUT' && request.path === '/api/model-defaults')?.body).toMatchObject({ provider: 'fixture-provider', model: 'fixture-next' })
   expect(state.requests().filter(request => ['/api/providers/fixture-provider/test', '/api/providers/fixture-provider/sync', '/api/providers/fixture-provider'].includes(request.path) && request.method !== 'PATCH').every(request => request.body === null)).toBe(true)
 })
 
@@ -685,7 +699,7 @@ test('reconnect retains running state, editable draft, queue and stop controls a
   await expect(page.getByRole('status', { name: 'Work status' })).toContainText('does not mean work has stopped')
   await expect(transcriptOf(page).getByRole('button', { name: /Bash/ })).toContainText('Running')
   await expect(transcriptOf(page).getByRole('button', { name: /Bash/ })).not.toContainText(/Succeeded|Failed/)
-  await expect(input).toHaveValue('draft retained during reconnect')
+  await expect(input).toHaveText('draft retained during reconnect')
   await expect(input).toBeEditable()
   await expect(page.getByRole('button', { name: 'Stop work' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Queue message' })).toBeVisible()
@@ -709,7 +723,7 @@ test('immediate successful first send atomically migrates and clears the target 
   await input.fill(content)
   await input.press('Enter')
   await expect(page).toHaveURL('/workspaces/w/sessions/created')
-  await expect(input).toHaveValue('')
+  await expect(input).toHaveText('')
   await expect.poll(() => state.count('POST', '/api/workspaces/w/sessions')).toBe(1)
   await expect.poll(() => state.count('POST', '/api/workspaces/w/sessions/created/messages')).toBe(1)
   const sent = state.requests().find((request) => request.method === 'POST' && request.path === '/api/workspaces/w/sessions/created/messages')
@@ -724,7 +738,7 @@ test('first-send failure keeps the draft in the created conversation and sends o
   await input.press('Enter')
   await expect(page).toHaveURL('/workspaces/w/sessions/created')
   await expect(page.getByRole('alert')).toContainText('Your draft has been kept')
-  await expect(input).toHaveValue('preserve this first draft')
+  await expect(input).toHaveText('preserve this first draft')
   await expect.poll(() => state.count('POST', '/api/workspaces/w/sessions')).toBe(1)
   await expect.poll(() => state.count('POST', '/api/workspaces/w/sessions/created/messages')).toBe(1)
 })
@@ -848,7 +862,7 @@ test('captures the deterministic screenshot matrix', async ({ browser }) => {
     { name: 'context-tab', fixture: 'no-work', prepare: openContext },
     { name: 'artifacts-empty', fixture: 'no-work', prepare: async page => { await (await openWorkbench(page)).getByRole('button', { name: 'Artifacts', exact: true }).click() } },
     { name: 'artifacts-populated', fixture: 'artifacts', prepare: async page => { await (await openWorkbench(page)).getByRole('button', { name: 'Artifacts', exact: true }).click() } },
-    { name: 'settings-dirty', fixture: 'settings', prepare: async page => { await (await settingsTrigger(page)).click(); await page.getByRole('dialog', { name: 'Settings' }).getByLabel('Name').fill('Dirty provider draft') } },
+    { name: 'settings-dirty', fixture: 'settings', prepare: async page => { await (await settingsTrigger(page)).click(); await (await providerName(page.getByRole('dialog', { name: 'Settings' }))).fill('Dirty provider draft') } },
     { name: 'settings-conflict', fixture: 'settings', prepare: async page => { const dialog = page.getByRole('dialog', { name: 'Settings' }); await (await settingsTrigger(page)).click(); if (await dialog.getByRole('tab', { name: /Skills/ }).isVisible()) await dialog.getByRole('tab', { name: /Skills/ }).click(); else { await page.getByRole('combobox', { name: 'Settings section' }).click(); await page.getByRole('option', { name: 'Skills' }).click() } await dialog.getByRole('button', { name: 'Edit' }).click(); await dialog.getByLabel('SKILL.md content').fill('local conflict draft'); await dialog.getByRole('button', { name: 'Save skill' }).click(); await expect(dialog.getByRole('button', { name: 'Overwrite anyway' })).toBeVisible() } },
   ]
   for (const width of REQUIRED_WIDTHS) {

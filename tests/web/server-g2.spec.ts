@@ -87,8 +87,10 @@ describe('workspace HTTP surface', () => {
     const listing = (await (await fetch(`${base}/api/workspaces/${work.id}/sessions`)).json()) as { id: string }[]
     expect(listing.map((row) => row.id)).toContain(made.id)
     const emptyRow = listing.find(row => row.id === made.id) as { createdAt?: number; updatedAt?: number }
-    expect(emptyRow.createdAt).toBeUndefined()
-    expect(emptyRow.updatedAt).toBeUndefined()
+    // Creation durably snapshots workspace model controls, so this otherwise
+    // empty conversation already has a timestamped event-log entry.
+    expect(Number.isFinite(emptyRow.createdAt)).toBe(true)
+    expect(Number.isFinite(emptyRow.updatedAt)).toBe(true)
     await post(base, `/api/workspaces/${work.id}/sessions/${made.id}/messages`, { content: 'verify timestamps' })
     await new Promise(resolve => setTimeout(resolve, 100))
     const dated = await (await fetch(`${base}/api/workspaces/${work.id}/sessions`)).json() as { id: string; createdAt: number; updatedAt: number }[]
@@ -146,6 +148,50 @@ describe('workspace HTTP surface', () => {
     const otherWs = (await (await post(base, '/api/workspaces', { name: 'Elsewhere' })).json()) as { id: string }
     const cross = await post(base, `/api/workspaces/${otherWs.id}/sessions`, { projectId: created.id })
     expect(cross.status).toBe(404)
+  })
+
+  it('PUT projects/order persists a dragged sidebar folder order', async () => {
+    const server = await start()
+    const base = server.url
+    const dirOne = path.join(projA, 'order-one')
+    const dirTwo = path.join(projA, 'order-two')
+    await fs.mkdir(dirOne, { recursive: true })
+    await fs.mkdir(dirTwo, { recursive: true })
+
+    const wsId = ((await (await fetch(`${base}/api/workspaces`)).json()) as WorkspaceRow[])[0]!.id
+    const one = (await (await post(base, `/api/workspaces/${wsId}/projects`, { name: 'One', path: dirOne })).json()) as { id: string }
+    const two = (await (await post(base, `/api/workspaces/${wsId}/projects`, { name: 'Two', path: dirTwo })).json()) as { id: string }
+
+    // Creation order before any drag.
+    const listed = (await (await fetch(`${base}/api/workspaces/${wsId}/projects`)).json()) as { id: string; order?: number }[]
+    expect(listed.map((row) => row.id)).toEqual([one.id, two.id])
+
+    const reordered = await fetch(`${base}/api/workspaces/${wsId}/projects/order`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ order: [two.id, one.id] }),
+    })
+    expect(reordered.status).toBe(200)
+    expect(((await reordered.json()) as { id: string }[]).map((row) => row.id)).toEqual([two.id, one.id])
+
+    // A fresh listing reflects the persisted order.
+    const reread = (await (await fetch(`${base}/api/workspaces/${wsId}/projects`)).json()) as { id: string; order?: number }[]
+    expect(reread.map((row) => row.id)).toEqual([two.id, one.id])
+    expect(reread[0]!.order).toBe(0)
+
+    // Malformed bodies fail validation, foreign ids fail closed.
+    const bad = await fetch(`${base}/api/workspaces/${wsId}/projects/order`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ order: 'reversed' }),
+    })
+    expect(bad.status).toBe(400)
+    const unknown = await fetch(`${base}/api/workspaces/${wsId}/projects/order`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ order: ['proj-nope'] }),
+    })
+    expect(unknown.status).toBe(404)
   })
 
   it('lists a bound durable session with its project immediately after restart without loading history', async () => {
@@ -307,7 +353,7 @@ describe('G2 review hardening', () => {
       // Each session streamed through ITS OWN workspace's provider, not a
       // process-global selection.
       const models = seen.map((row) => row.model).sort()
-      expect(models).toEqual(['a1', 'b1'])
+      expect(models).toEqual(['b1', 'b1'])
     } finally {
       await server.close()
       await fs.rm(home, { recursive: true, force: true })

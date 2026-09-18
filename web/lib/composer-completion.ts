@@ -9,6 +9,7 @@
  */
 
 import type { DraftSegment } from './composer-draft.ts'
+import { messageText } from './inline-chips.ts'
 
 export type CompletionKind = 'file' | 'skill'
 
@@ -27,13 +28,22 @@ export interface CompletionItem {
   readonly id: string
   /** Text inserted in place of the trigger and its query. */
   readonly insert: string
-  /**
-   * What the editor actually inserts. A file mention becomes a chip; a skill
-   * command is plain text, so it stays editable like anything else typed.
-   */
+  /** What the editor actually inserts, when it is semantic rather than plain text. */
   readonly segment?: DraftSegment
   readonly label: string
   readonly detail?: string
+}
+
+/** A skill becomes a command chip; its wire text is owned by `inline-chips.ts`. */
+export function skillCompletionItem(skill: { readonly name: string; readonly description?: string }): CompletionItem {
+  const segment: DraftSegment = { kind: 'command', name: skill.name }
+  return {
+    id: `skill:${skill.name}`,
+    insert: messageText([segment]),
+    segment,
+    label: skill.name,
+    ...(skill.description !== undefined ? { detail: skill.description } : {}),
+  }
 }
 
 /** A mention query stops at whitespace; the trigger needs a word boundary. */

@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { loadProviders, maskKey, parseProviders, saveProviders, slugify } from '../../src/web/provider-store.ts'
+import { loadProviderStore, loadProviders, maskKey, parseProviderStore, parseProviders, saveProviderStore, saveProviders, slugify } from '../../src/web/provider-store.ts'
 
 let dir = ''
 
@@ -34,6 +34,35 @@ describe('provider store', () => {
     expect(loaded[1]?.enabled).toBe(false)
     const onDisk = await readFile(file, 'utf8')
     expect(onDisk).toContain('api.deepseek.com')
+  })
+
+
+  it('migrates a legacy array with defaultModel precedence and preserves provider fields', () => {
+    const store = parseProviderStore(JSON.stringify([{
+      id: 'alpha', name: 'Alpha', baseUrl: 'http://x/v1', apiKey: 'secret',
+      models: ['first', 'preferred'], defaultModel: 'preferred', enabled: true,
+      modelSettings: { preferred: { contextTokens: 99_999 } },
+    }]))
+    expect(store).toMatchObject({ version: 2, defaults: { provider: 'alpha', model: 'preferred', thinkingLevel: null } })
+    expect(store.providers[0]?.apiKey).toBe('secret')
+    expect(store.providers[0]?.modelSettings).toEqual({ preferred: { contextTokens: 99_999 } })
+  })
+
+  it('round-trips a versioned envelope including explicit global defaults', async () => {
+    const file = path.join(dir, 'envelope.json')
+    await saveProviderStore(file, {
+      version: 2,
+      defaults: { provider: 'beta', model: 'b2', thinkingLevel: 'high' },
+      providers: [{ id: 'beta', name: 'Beta', baseUrl: 'http://x/v1', apiKey: '', models: ['b1', 'b2'], defaultModel: 'b2', enabled: true }],
+    })
+    expect(loadProviderStore(file)).toMatchObject({ defaults: { provider: 'beta', model: 'b2', thinkingLevel: 'high' } })
+    expect((await readFile(file, 'utf8')).trimStart()).toMatch(/^\{/)
+  })
+
+  it('uses null defaults when no enabled provider has a model', () => {
+    expect(parseProviderStore(JSON.stringify([])).defaults).toEqual({ provider: null, model: null, thinkingLevel: null })
+    expect(parseProviderStore(JSON.stringify([{ id: 'a', name: 'A', baseUrl: 'http://x', apiKey: '', models: [], enabled: true }])).defaults)
+      .toEqual({ provider: null, model: null, thinkingLevel: null })
   })
 
   it('slugify produces stable url-safe ids', () => {

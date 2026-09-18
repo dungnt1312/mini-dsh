@@ -42,6 +42,7 @@ export type SessionEvent =
   | ({ readonly type: 'input/queued'; readonly inputId: string; readonly clientRequestId?: string; readonly content: string; readonly attachments?: readonly AttachmentRef[] } & SessionEventStamp)
   | ({ readonly type: 'session/title'; readonly title: string | null } & SessionEventStamp)
   | ({ readonly type: 'session/project'; readonly projectId: string | null } & SessionEventStamp)
+  | ({ readonly type: 'session/model'; readonly provider?: string | null; readonly model?: string | null; readonly thinkingLevel?: string | null } & SessionEventStamp)
   | ({ readonly type: 'session/child-meta'; readonly parentSessionId: string; readonly parentTurnId: string; readonly definition: string; readonly objective: string } & SessionEventStamp)
   | ({ readonly type: 'agent/child-spawn'; readonly childSessionId: string; readonly parentTurnId: string; readonly definition: string; readonly objective: string } & SessionEventStamp)
   | ({ readonly type: 'agent/child-result'; readonly childSessionId: string; readonly parentTurnId: string; readonly status: string } & SessionEventStamp)
@@ -58,7 +59,7 @@ export type TurnEndReason =
   | 'cancelled'
   /** The host restarted (or crashed) with the turn still open. */
   | 'interrupted'
-  /** A configured limit (step budget, turn deadline) closed the turn. */
+  /** Legacy terminal reason retained so existing durable session logs remain readable. */
   | 'limit'
 
 /** Durable classification of why a turn failed. */
@@ -120,6 +121,52 @@ export type SessionAppendedEvent = DistributiveOmit<SessionEvent, 'seq' | 'times
  * real ones: their content says the outcome is unknown, and the `recovery`
  * flag keeps them distinguishable from original tool output.
  */
+/**
+ * A snapshot of the durable per-session model preference.
+ *
+ * `hasEvent` distinguishes a legacy log from a session that explicitly
+ * configured or cleared a preference. In `session/model` events, omitted
+ * fields leave the preceding value unchanged; `null` is an explicit clear and
+ * remains `null` here as the session-owned blank (it never re-inherits a
+ * workspace value).
+ */
+export interface SessionModel {
+  readonly hasEvent: boolean
+  readonly provider?: string | null
+  readonly model?: string | null
+  readonly thinkingLevel?: string | null
+}
+
+/**
+ * Project per-field, last-wins model preferences from the immutable log.
+ *
+ * The returned object is a fresh snapshot. No event means `{ hasEvent: false }`;
+ * an event with only omitted fields is still `{ hasEvent: true }`, which
+ * preserves the distinction needed by callers resolving workspace defaults.
+ */
+export function deriveSessionModel(events: readonly SessionEvent[]): SessionModel {
+  let hasEvent = false
+  let provider: string | null | undefined
+  let model: string | null | undefined
+  let thinkingLevel: string | null | undefined
+  for (const event of events) {
+    if (event.type !== 'session/model') continue
+    hasEvent = true
+    if (event.provider !== undefined) provider = event.provider
+    if (event.model !== undefined) model = event.model
+    if (event.thinkingLevel !== undefined) thinkingLevel = event.thinkingLevel
+  }
+  return {
+    hasEvent,
+    ...(provider !== undefined ? { provider } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
+  }
+}
+
+/** Alias kept for the name used in the plan. */
+export const sessionModelOf = deriveSessionModel
+
 export function deriveMessages(events: readonly SessionEvent[], attachments?: AttachmentLookup): ModelMessage[] {
   const messages: ModelMessage[] = []
   for (const event of events) {
@@ -149,6 +196,7 @@ export function deriveMessages(events: readonly SessionEvent[], attachments?: At
       case 'input/queued':
       case 'session/title':
       case 'session/project':
+      case 'session/model':
       case 'session/child-meta':
       case 'agent/child-spawn':
       case 'agent/child-result':

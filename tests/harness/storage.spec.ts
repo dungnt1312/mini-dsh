@@ -341,6 +341,28 @@ describe('sessions service over files', () => {
     void kernel.stop()
   })
 
+  it('legacy limit records remain closed and readable after restart', async () => {
+    const id = 'session-legacy-limit' as SessionId
+    const raw =
+      line(1, { type: 'turn/start', turnId: 't1' }) +
+      line(2, { type: 'step/start', turnId: 't1', stepId: 's1' }) +
+      line(3, { type: 'user/message', turnId: 't1', content: 'old limited turn' }) +
+      line(4, { type: 'turn/error', turnId: 't1', kind: 'limit', message: 'turn deadline exceeded' }) +
+      line(5, { type: 'turn/end', turnId: 't1', reason: 'limit' })
+    await fs.mkdir(path.dirname(logPath(id)), { recursive: true })
+    await fs.writeFile(logPath(id), raw, 'utf8')
+
+    const { kernel, sessions } = await service(dataDir)
+    await sessions.boot()
+    const session = await sessions.load(id)
+    const ends = session.events.filter((event) => event.type === 'turn/end')
+    expect(ends).toHaveLength(1)
+    expect(ends[0]?.type === 'turn/end' && ends[0].reason).toBe('limit')
+    expect(session.events.some((event) => event.type === 'turn/end' && event.reason === 'interrupted')).toBe(false)
+    expect(session.events.some((event) => event.type === 'turn/error' && event.kind === 'limit')).toBe(true)
+    void kernel.stop()
+  })
+
   it('queued inputs stay pending across a restart and are never auto-executed', async () => {
     const id = 'session-queue' as SessionId
     const raw =

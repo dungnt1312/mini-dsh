@@ -35,7 +35,7 @@ Inline styles are limited to runtime values (spinner size, context budget percen
 
 ## Composition
 
-- `App.tsx` keeps routing, server-backed state, navigation generations and send/stop/approval/retry logic, and composes `Sidebar`, `ChatHeader` (with `ModelMenu`), `Transcript`, `TaskStatus`, `ApprovalBar`, `Composer`, `ContextSheet`, `SettingsModal`, `FolderPickerModal` and `ConfirmDialog`.
+- `App.tsx` keeps routing, server-backed state, navigation generations and send/stop/approval/retry logic, and composes `Sidebar`, `ChatHeader` (with the folder `ScopeControl`), `Transcript`, `TaskStatus`, `ApprovalBar`, `Composer` (with `ModelMenu`), `Workbench`, `SettingsModal`, `FolderPickerModal` and `ConfirmDialog`.
 - `Transcript` renders `groupBlocks(items)`: consecutive tool/delegation/audit rows share one activity block; `completed` markers and a bare `failed` after a detailed failure card are dropped.
 - `Composer` owns the textarea and the scope, mode, thinking (`ThinkingMenu`) and permission (`PolicyPopover`) chips (`composer-chip.ts`). The model picker lives in the header.
 - Settings keeps its request contracts: provider draft seeding, dirty-leave confirmation, blank stored-key omission, activation, test/sync/delete; Skills/Memory 409 require explicit Reload or Overwrite; Hooks raw JSON is validated whole and kept verbatim when invalid.
@@ -44,7 +44,7 @@ Inline styles are limited to runtime values (spinner size, context budget percen
 
 - No backend or REST/SSE contract changes for presentation work.
 - No fixed-position composer, measured dock geometry, or elements pinned over the transcript.
-- No file tree, editor, diff viewer, terminal, attachments or rerun action.
+- No mutable file editor, diff editor, terminal or rerun action. The Workbench file browser/viewer is read-only and attachment references never imply permission or execution.
 - No invented terminal outcome during reconnect and no automatic resend/replay.
 - No duplicate transcript projection or mutation of durable events.
 - No silent Settings conflict overwrite or provider draft loss.

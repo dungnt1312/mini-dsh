@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import CopyButton from '../components/common/CopyButton.tsx'
 import { ApprovalBar } from '../components/chat/ApprovalBar.tsx'
 import { Composer } from '../components/composer/Composer.tsx'
+import { ScopeControl } from '../components/layout/ScopeControl.tsx'
 import { PolicyPopover } from '../components/composer/PolicyPopover.tsx'
 import { ToastHost, useToast } from '../components/common/Toast.tsx'
 import { ToolCard, AssistantMessage, DelegationCard, AuditLine, UserBubble } from '../components/chat/MessageParts.tsx'
@@ -332,6 +333,15 @@ describe('transcript truthfulness', () => {
     expect(host.querySelector('button[aria-label="Reuse in composer"]')).toBeNull()
     expect(host.textContent).toContain('Queued')
   })
+  it('renders skill and file chips inline in a user message', async () => {
+    await mount(<UserBubble item={{ kind: 'user', content: 'Use the review skill: check @web/lib/api.ts now' }} />)
+    const chips = Array.from(host.querySelectorAll('[data-chip-kind]'))
+    expect(chips.map((chip) => [chip.getAttribute('data-chip-kind'), chip.textContent, chip.getAttribute('title')])).toEqual([
+      ['command', '/review', 'Skill: review'],
+      ['mention', 'api.ts', 'Project file: web/lib/api.ts'],
+    ])
+    expect(host.querySelector('p')?.textContent).toBe('/review check api.ts now')
+  })
 })
 
 describe('projection of delegation, hook and approval events', () => {
@@ -418,6 +428,31 @@ describe('context compaction + budget bar', () => {
     expect(document.body.textContent).not.toContain('Compact this conversation?')
     expect(compactSession).not.toHaveBeenCalled()
   })
+  it('shows loading and unavailable instead of workspace defaults for unresolved conversations', async () => {
+    const meta = { provider: 'workspace-provider', model: 'workspace-model', models: [], providers: [], workspace: { id: 'w1', name: 'W', archived: false }, projects: [] }
+    await mount(<ToastHost><ContextPanel meta={meta} sessionControlsStatus="loading" stream="open" sessionId="s1" sessionFolder={null} eventCount={0} /></ToastHost>)
+    expect(host.textContent).toContain('Loading…')
+    expect(host.textContent).not.toContain('workspace-provider')
+    await mount(<ToastHost><ContextPanel meta={meta} sessionControlsStatus="unavailable" stream="open" sessionId="s1" sessionFolder={null} eventCount={0} /></ToastHost>)
+    expect(host.textContent).toContain('Unavailable')
+    expect(host.textContent).not.toContain('workspace-model')
+  })
+  it('uses live global defaults rather than cached legacy-global session controls', async () => {
+    await mount(<ToastHost><ContextPanel
+      meta={null}
+      globalDefaults={{ provider: 'new-provider', model: 'new-model' }}
+      sessionModel={{ provider: 'old-provider', model: 'old-model', thinkingLevel: null, source: 'global' }}
+      stream="open"
+      sessionId="s1"
+      sessionFolder={null}
+      eventCount={0}
+    /></ToastHost>)
+    expect(host.textContent).toContain('new-provider')
+    expect(host.textContent).toContain('new-model')
+    expect(host.textContent).not.toContain('old-provider')
+    expect(host.textContent).not.toContain('old-model')
+  })
+
   it('renders the workspace mode row in effective controls', async () => {
     await mount(<ToastHost><ContextPanel meta={null} stream="open" sessionId={null} sessionFolder={null} eventCount={0} modeLabel="Plan" /></ToastHost>)
     expect([...host.querySelectorAll('dt')].some(term => term.textContent === 'mode')).toBe(true)
@@ -530,15 +565,95 @@ describe('sidebar sections + live rows + workspace management', () => {
     expect(host.textContent).toContain('working with model')
     expect(host.textContent).toContain('2 queued')
   })
-  it('adds stable suffixes only when visible conversation titles collide', async () => {
-    const duplicateSessions = [
-      { id: 'alpha-9wxy', title: 'Same title', ...base },
-      { id: 'beta-1234', title: 'Same title', ...base },
-      { id: 'unique-5678', title: 'A different title', ...base },
+  it('collapses any project group on toggle, including the one holding the open conversation', async () => {
+    await mount(<SessionList sessions={[...sessions]} projects={[project]} current="s1" filter="" liveRunning={false} onSelect={() => {}} onRename={() => {}} onDeleteRequest={() => {}} onNewInProject={() => {}} />)
+    expect(host.textContent).toContain('Auth refactor')
+    await act(async () => button('Acme').click())
+    expect(host.textContent).not.toContain('Auth refactor')
+    await act(async () => button('Acme').click())
+    expect(host.textContent).toContain('Auth refactor')
+  })
+  it('sorts conversations alphabetically from the sidebar sort menu', async () => {
+    const base = { updatedAt: Date.now(), eventCount: 3, folder: null }
+    const list = [
+      { id: 'o1', title: 'Beta build', status: 'idle' as const, pendingInputs: 0, ...base },
+      { id: 'o2', title: 'Alpha spec', status: 'idle' as const, pendingInputs: 0, ...base },
+      { id: 'o3', title: 'Gamma notes', status: 'idle' as const, pendingInputs: 0, ...base },
     ]
-    await mount(<SessionList sessions={duplicateSessions} projects={[]} current={null} filter="" liveRunning={false} onSelect={() => {}} onRename={() => {}} onDeleteRequest={() => {}} />)
-    expect([...host.querySelectorAll('[title^="Conversation ID:"]')].map((node) => node.textContent)).toEqual(['#9wxy', '#1234'])
-    expect(host.querySelector('[title="Conversation ID: unique-5678"]')).toBeNull()
+    await mount(<ToastHost><Sidebar {...sidebarProps([{ id: 'w1', name: 'Acme', archived: false, createdAt: 1 }], 'w1')} sessions={list} /></ToastHost>)
+    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Sort and filter conversations"]')!.click())
+    await act(async () => bodyButton('Title A–Z').click())
+    const text = host.textContent ?? ''
+    expect(text.indexOf('Alpha spec')).toBeGreaterThanOrEqual(0)
+    expect(text.indexOf('Alpha spec')).toBeLessThan(text.indexOf('Beta build'))
+    expect(text.indexOf('Beta build')).toBeLessThan(text.indexOf('Gamma notes'))
+  })
+  it('filters to running conversations and notes when none remain', async () => {
+    const base = { updatedAt: Date.now(), eventCount: 3, folder: null }
+    const list = [
+      { id: 'f1', title: 'Busy turn', status: 'running' as const, activity: 'model' as const, pendingInputs: 0, ...base },
+      { id: 'f2', title: 'Quiet turn', status: 'idle' as const, pendingInputs: 0, ...base },
+    ]
+    const props = sidebarProps([{ id: 'w1', name: 'Acme', archived: false, createdAt: 1 }], 'w1')
+    await mount(<ToastHost><Sidebar {...props} sessions={list} /></ToastHost>)
+    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Sort and filter conversations"]')!.click())
+    await act(async () => [...document.body.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.includes('Running only'))!.click())
+    expect(host.textContent).toContain('Busy turn')
+    expect(host.textContent).not.toContain('Quiet turn')
+    await mount(<ToastHost><Sidebar {...props} sessions={[list[1]!]} /></ToastHost>)
+    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Sort and filter conversations"]')!.click())
+    await act(async () => [...document.body.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.includes('Running only'))!.click())
+    expect(host.textContent).toContain('No running conversations')
+  })
+  it('reorders project folders by drag: an edge line previews, the drop reports the order', async () => {
+    const projectA = { id: 'pa', name: 'Alpha', workspaceId: 'w1', path: 'C:/a', createdAt: 1 }
+    const projectB = { id: 'pb', name: 'Beta', workspaceId: 'w1', path: 'C:/b', createdAt: 2 }
+    const dragSessions = [
+      { id: 'd1', title: 'One', projectId: 'pa', status: 'idle' as const, pendingInputs: 0, updatedAt: Date.now(), eventCount: 3, folder: null },
+      { id: 'd2', title: 'Two', projectId: 'pb', status: 'idle' as const, pendingInputs: 0, updatedAt: Date.now(), eventCount: 3, folder: null },
+    ]
+    const onReorder = vi.fn()
+    await mount(<SessionList sessions={dragSessions} projects={[projectA, projectB]} current={null} filter="" liveRunning={false} onSelect={() => {}} onRename={() => {}} onDeleteRequest={() => {}} onReorder={onReorder} />)
+    const headers = () => [...host.querySelectorAll<HTMLElement>('[draggable="true"]')]
+    expect(headers()).toHaveLength(2)
+    const fire = (element: HTMLElement, type: string, clientY = 0) => {
+      const event = new Event(type, { bubbles: true, cancelable: true })
+      Object.defineProperty(event, 'dataTransfer', { value: { setData: vi.fn(), dropEffect: 'none', effectAllowed: 'all' } })
+      Object.defineProperty(event, 'clientY', { value: clientY })
+      element.dispatchEvent(event)
+    }
+    await act(async () => fire(headers()[0]!, 'dragstart'))
+    // Hovering the lower half of the second header shows the below-edge line.
+    await act(async () => fire(headers()[1]!, 'dragover', 100))
+    expect(host.querySelector('.bg-primary.absolute')).not.toBeNull()
+    // Rows hold still during the drag (moving them cancels native DnD);
+    // the drop commits once at the hovered edge.
+    expect((host.textContent ?? '').indexOf('Alpha')).toBeLessThan((host.textContent ?? '').indexOf('Beta'))
+    await act(async () => fire(headers()[1]!, 'drop'))
+    expect(onReorder).toHaveBeenCalledTimes(1)
+    expect(onReorder).toHaveBeenCalledWith(['pb', 'pa'])
+    // Cancelling the drag (dragend without drop) reports nothing.
+    await mount(<SessionList sessions={dragSessions} projects={[projectA, projectB]} current={null} filter="" liveRunning={false} onSelect={() => {}} onRename={() => {}} onDeleteRequest={() => {}} onReorder={onReorder} />)
+    await act(async () => fire(host.querySelectorAll<HTMLElement>('[draggable="true"]')[0]!, 'dragstart'))
+    await act(async () => fire(host.querySelectorAll<HTMLElement>('[draggable="true"]')[1]!, 'dragover', 100))
+    await act(async () => fire(host.querySelectorAll<HTMLElement>('[draggable="true"]')[0]!, 'dragend'))
+    expect(onReorder).toHaveBeenCalledTimes(1)
+  })
+  it('emphasizes conversation titles and shows a compact relative age per row', async () => {
+    const now = Date.now()
+    const rows = [
+      { id: 't1', title: 'Minutes old', status: 'idle' as const, pendingInputs: 0, updatedAt: now - 5 * 60_000, eventCount: 3, folder: null },
+      { id: 't2', title: 'Hours old', status: 'idle' as const, pendingInputs: 0, updatedAt: now - 3 * 3_600_000, eventCount: 3, folder: null },
+      { id: 't3', title: 'Weeks old', status: 'idle' as const, pendingInputs: 0, updatedAt: now - 14 * 86_400_000, eventCount: 3, folder: null },
+    ]
+    await mount(<SessionList sessions={rows} projects={[]} current={null} filter="" liveRunning={false} onSelect={() => {}} onRename={() => {}} onDeleteRequest={() => {}} />)
+    expect(host.textContent).toContain('5m')
+    expect(host.textContent).toContain('3h')
+    expect(host.textContent).toContain('2w')
+    // The title carries the row's weight; the age stays quiet at the end.
+    const title = [...host.querySelectorAll('span.font-medium')].find((span) => span.textContent === 'Minutes old')!
+    expect(title).toBeTruthy()
+    expect(title.closest('button')?.textContent).toContain('5m')
   })
   it('offers per-project quick-new and filters by title', async () => {
     const onNewInProject = vi.fn()
@@ -612,6 +727,9 @@ describe('global feedback', () => {
     await act(async () => probe.notify?.('Broken input.', 'bad'))
     expect(host.querySelector('svg.text-bad')).not.toBeNull()
     await act(async () => probe.notify?.('Plain information.', 'info'))
+    expect(host.querySelectorAll('[role="status"]')).toHaveLength(2)
+    expect(host.querySelectorAll('[role="alert"]')).toHaveLength(1)
+    expect(host.querySelectorAll('[role="alert"] [role="alert"]')).toHaveLength(0)
     expect(host.querySelectorAll('button[aria-label="Dismiss notification"]')).toHaveLength(3)
   })
   it('keeps the notification toggle honest: enabled only after granted permission', async () => {
@@ -634,20 +752,20 @@ describe('global feedback', () => {
   })
 })
 
-describe('no-modal new-chat flow (composer scope picker)', () => {
+describe('no-modal new-chat flow (header scope picker)', () => {
   const options = [
     { id: null, name: 'Chat only', path: 'No project folder — chat without file or shell tools' },
     { id: 'p1', name: 'Acme', path: 'C:/acme' },
   ]
   const scopeTrigger = () => host.querySelector<HTMLButtonElement>('button[aria-label^="Conversation scope"]')
   it('renders the picker trigger with the selected label in draft mode', async () => {
-    await mount(<ToastHost><Composer {...composerBase} connected running={false} draft={emptyDraft} scopePicker={{ value: 'p1', options, onChange: () => {}, onPickFolder: () => {} }} /></ToastHost>)
+    await mount(<ScopeControl scope={null} picker={{ value: 'p1', options, onChange: () => {}, onPickFolder: () => {} }} />)
     expect(scopeTrigger()?.textContent).toContain('Acme')
     expect(scopeTrigger()?.getAttribute('aria-haspopup')).toBe('menu')
   })
   it('lists projects with paths and reports the changed scope', async () => {
     const onChange = vi.fn()
-    await mount(<ToastHost><Composer {...composerBase} connected running={false} draft={emptyDraft} scopePicker={{ value: null, options, onChange, onPickFolder: () => {} }} /></ToastHost>)
+    await mount(<ScopeControl scope={null} picker={{ value: null, options, onChange, onPickFolder: () => {} }} />)
     await act(async () => scopeTrigger()!.click())
     const rows = [...document.body.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')]
     expect(rows).toHaveLength(2)
@@ -658,7 +776,7 @@ describe('no-modal new-chat flow (composer scope picker)', () => {
   it('switches to Chat only with null and opens the folder picker from the footer', async () => {
     const onChange = vi.fn()
     const onPickFolder = vi.fn()
-    await mount(<ToastHost><Composer {...composerBase} connected running={false} draft={emptyDraft} scopePicker={{ value: 'p1', options, onChange, onPickFolder }} /></ToastHost>)
+    await mount(<ScopeControl scope={null} picker={{ value: 'p1', options, onChange, onPickFolder }} />)
     await act(async () => scopeTrigger()!.click())
     const chatOnly = [...document.body.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find(b => b.textContent?.includes('Chat only'))!
     await act(async () => chatOnly.click())
@@ -669,7 +787,7 @@ describe('no-modal new-chat flow (composer scope picker)', () => {
     expect(onPickFolder).toHaveBeenCalledTimes(1)
   })
   it('falls back to the read-only scope display once a conversation is open', async () => {
-    await mount(<ToastHost><Composer {...composerBase} scope="C:/acme" connected running={false} draft={emptyDraft} /></ToastHost>)
+    await mount(<ScopeControl scope="C:/acme" />)
     expect(scopeTrigger()).toBeNull()
     expect(host.querySelector('[title="C:/acme"]')?.textContent).toContain('acme')
   })

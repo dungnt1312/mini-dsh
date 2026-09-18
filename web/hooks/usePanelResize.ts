@@ -4,15 +4,16 @@ const KEY_STEP = 16
 const KEY_STEP_LARGE = 64
 
 /**
- * Pointer + keyboard resizing for a panel docked on the right edge. Dragging
- * left widens it. Returns props for a `role="separator"` handle; the caller
- * owns clamping and persistence through `onChange`.
+ * Pointer + keyboard resizing for a panel docked on either edge. The `side`
+ * decides which drag/arrow direction widens it. The caller owns clamping and
+ * persistence through `onChange`.
  */
-export function usePanelResize({ width, min, max, defaultWidth, onChange }: {
+export function usePanelResize({ width, min, max, defaultWidth, side = 'right', onChange }: {
   readonly width: number
   readonly min: number
   readonly max: number
   readonly defaultWidth: number
+  readonly side?: 'left' | 'right'
   readonly onChange: (width: number) => void
 }) {
   const drag = useRef<{ readonly startX: number; readonly startWidth: number; readonly userSelect: string } | null>(null)
@@ -26,7 +27,8 @@ export function usePanelResize({ width, min, max, defaultWidth, onChange }: {
   }
   const onPointerMove = (event: PointerEvent<HTMLDivElement>): void => {
     if (drag.current === null) return
-    onChange(clamp(drag.current.startWidth + (drag.current.startX - event.clientX)))
+    const delta = side === 'left' ? event.clientX - drag.current.startX : drag.current.startX - event.clientX
+    onChange(clamp(drag.current.startWidth + delta))
   }
   const end = (event: PointerEvent<HTMLDivElement>): void => {
     if (drag.current === null) return
@@ -36,10 +38,10 @@ export function usePanelResize({ width, min, max, defaultWidth, onChange }: {
   }
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
     const step = event.shiftKey ? KEY_STEP_LARGE : KEY_STEP
-    const next = event.key === 'ArrowLeft' ? width + step
-      : event.key === 'ArrowRight' ? width - step
-        : event.key === 'Home' ? max
-          : event.key === 'End' ? min
+    const next = event.key === 'ArrowLeft' ? width + (side === 'left' ? -step : step)
+      : event.key === 'ArrowRight' ? width + (side === 'left' ? step : -step)
+        : event.key === 'Home' ? (side === 'left' ? min : max)
+          : event.key === 'End' ? (side === 'left' ? max : min)
             : null
     if (next === null) return
     event.preventDefault()

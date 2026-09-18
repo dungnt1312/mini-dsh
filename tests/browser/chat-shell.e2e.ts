@@ -96,6 +96,7 @@ async function fixture(page: Page, options: Options = {}): Promise<{ readonly po
       thinkingLevel: null,
     })
     if (path === '/api/workspaces/w/mode') return json(route, { modes: [{ id: 'chat', name: 'Chat', source: 'bundled' }, { id: 'full-access', name: 'Full access', source: 'bundled' }], selected: 'chat', revision: 1 })
+    if (path === '/api/workspaces/w/skills') return json(route, [])
     if (path === '/api/workspaces/w/projects/p/files') return json(route, new URL(request.url()).searchParams.get('path') === 'src'
       ? { path: 'src', entries: [{ name: 'step-8.ts', path: 'src/step-8.ts', kind: 'file', size: 120 }] }
       : { path: '', entries: [{ name: 'src', path: 'src', kind: 'dir' }, { name: 'package.json', path: 'package.json', kind: 'file', size: 480 }] })
@@ -202,6 +203,22 @@ test('sidebar collapses on desktop and becomes a focus-trapped drawer on mobile'
   await drawer.getByRole('button', { name: 'Plan a refactor', exact: true }).click()
   await expect(drawer).toHaveCount(0)
   await expect(page).toHaveURL('/workspaces/w/sessions/s2')
+})
+
+test('sidebar width resizes by keyboard and persists', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await fixture(page)
+  const separator = page.getByRole('separator', { name: 'Resize sidebar' })
+  const nav = page.getByRole('navigation', { name: 'Conversations and projects' })
+  await expect(separator).toHaveAttribute('aria-valuenow', '280')
+  await separator.focus()
+  await page.keyboard.press('Shift+ArrowRight')
+  await expect(separator).toHaveAttribute('aria-valuenow', '344')
+  await expect.poll(async () => Math.round((await nav.boundingBox())?.width ?? 0)).toBe(344)
+
+  await page.reload()
+  await expect(page.locator('[data-composer-input]')).toBeVisible()
+  await expect(page.getByRole('separator', { name: 'Resize sidebar' })).toHaveAttribute('aria-valuenow', '344')
 })
 
 test('workbench docks beside the chat, browses project files and opens them as tabs', async ({ page }) => {

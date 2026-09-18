@@ -9,13 +9,34 @@ import { WorkspacePopover } from './WorkspacePopover.tsx'
 import { useHotkeys } from '../../hooks/useHotkeys.ts'
 import { cn } from '../../lib/cn.ts'
 import type { ThemePreference } from '../../lib/theme.ts'
-import type { ProjectRow, SessionListing, WorkspaceRow } from '../../lib/types.ts'
+import type { ProjectRow, SessionListing, SessionSort, WorkspaceRow } from '../../lib/types.ts'
 
 const THEME_OPTIONS: readonly { readonly value: ThemePreference; readonly label: string; readonly icon: 'monitor' | 'sun' | 'moon' }[] = [
   { value: 'system', label: 'System', icon: 'monitor' },
   { value: 'light', label: 'Light', icon: 'sun' },
   { value: 'dark', label: 'Dark', icon: 'moon' },
 ]
+
+const SORT_OPTIONS: readonly { readonly value: SessionSort; readonly label: string }[] = [
+  { value: 'recent', label: 'Recent activity' },
+  { value: 'oldest', label: 'Oldest activity' },
+  { value: 'title', label: 'Title A–Z' },
+]
+
+/** Recency default keeps the server's listing order; the rest sort explicitly. */
+function orderedSessions(sessions: readonly SessionListing[], sort: SessionSort, runningOnly: boolean, current: string | null, liveRunning: boolean): readonly SessionListing[] {
+  const visible = runningOnly
+    ? sessions.filter((session) => (session.status ?? 'idle') === 'running' || (session.id === current && liveRunning))
+    : sessions
+  const sorted = [...visible]
+  sorted.sort((a, b) => {
+    if (sort === 'title') return (a.title || 'New conversation').localeCompare(b.title || 'New conversation')
+    const ta = a.updatedAt ?? 0
+    const tb = b.updatedAt ?? 0
+    return sort === 'oldest' ? ta - tb : tb - ta
+  })
+  return sorted
+}
 
 const rowClass = 'flex min-h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-sm text-fg hover:bg-hover disabled:pointer-events-none disabled:opacity-40'
 
@@ -36,6 +57,7 @@ export interface SidebarProps {
   readonly onSelect: (id: string) => void
   readonly onNew: () => void
   readonly onNewInProject: (projectId: string) => void
+  readonly onReorderProjects?: (orderedIds: readonly string[]) => void
   readonly onRename: (id: string, title: string) => void
   readonly onDeleteRequest: (session: SessionListing) => void
   readonly onOpenSettings: () => void
@@ -56,9 +78,13 @@ export function Sidebar(props: SidebarProps) {
   const { sessions, projects, current, filter, running, workspaces, activeWorkspaceId, onFilter, onSelect, onNew, onNewInProject, onRename, onDeleteRequest, onClose } = props
   const searchRef = useRef<HTMLInputElement | null>(null)
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
+  const [sort, setSort] = useState<SessionSort>('recent')
+  const [runningOnly, setRunningOnly] = useState(false)
   const active = workspaces.find((row) => row.id === activeWorkspaceId) ?? null
   const archived = active?.archived === true
   const approvals = active?.approvals ?? 0
+  const listed = orderedSessions(sessions, sort, runningOnly, current, running)
+  const sortAdjusted = runningOnly || sort !== 'recent'
 
   useHotkeys([{ key: 'k', mod: true, onPress: () => searchRef.current?.focus() }])
 
@@ -98,19 +124,54 @@ export function Sidebar(props: SidebarProps) {
             </span>
           </p>
         ) : null}
+        <div className="mt-1 flex h-8 shrink-0 items-center justify-between px-2">
+          <span className="px-2.5 text-xs font-medium text-fg-faint">Conversations</span>
+          <Menu
+            label="Sort and filter conversations"
+            side="bottom"
+            align="end"
+            panelClassName="w-60"
+            triggerClassName={cn('flex size-8 items-center justify-center rounded-lg hover:bg-hover', sortAdjusted ? 'text-fg' : 'text-fg-muted hover:text-fg')}
+            trigger={() => <Icon name="funnel" size={15} />}
+          >
+            {(close) => (
+              <>
+                <div className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-fg-faint">Sort</div>
+                {SORT_OPTIONS.map((option) => (
+                  <button key={option.value} type="button" role="menuitemradio" aria-checked={sort === option.value} className={menuItemClass} onClick={() => { setSort(option.value); close() }}>
+                    <span className="flex-1">{option.label}</span>
+                    {sort === option.value ? <Icon name="check" size={15} /> : null}
+                  </button>
+                ))}
+                <div className="my-1 h-px bg-line" />
+                <div className="px-2.5 pb-1 text-xs font-medium text-fg-faint">Filter</div>
+                <button type="button" role="menuitemcheckbox" aria-checked={runningOnly} className={menuItemClass} onClick={() => setRunningOnly((value) => !value)}>
+                  <span className="flex flex-1 flex-col">
+                    <span>Running only</span>
+                    <span className="text-xs text-fg-faint">Conversations with an active turn</span>
+                  </span>
+                  {runningOnly ? <Icon name="check" size={15} /> : null}
+                </button>
+              </>
+            )}
+          </Menu>
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3 pt-1">
         <SessionList
-          sessions={sessions}
+          sessions={listed}
           projects={projects}
           current={current}
           filter={filter}
           liveRunning={running}
+          sort={sort}
+          {...(runningOnly && filter.trim() === '' ? { emptyLabel: 'No running conversations' } : {})}
           onSelect={onSelect}
           onRename={onRename}
           onDeleteRequest={onDeleteRequest}
           onNewInProject={onNewInProject}
+          {...(props.onReorderProjects !== undefined ? { onReorder: props.onReorderProjects } : {})}
         />
       </div>
 

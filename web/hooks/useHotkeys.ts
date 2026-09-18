@@ -11,9 +11,8 @@ interface Hotkey {
 export function useHotkeys(keys: readonly Hotkey[]): void {
   useEffect(() => {
     const listener = (event: KeyboardEvent): void => {
-      if (event.target instanceof HTMLInputElement && event.target.type === 'text') return
-      if (event.target instanceof HTMLTextAreaElement) return
-      if (event.target instanceof HTMLSelectElement) return
+      const target = event.target
+      if (target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select, [contenteditable="true"]') !== null)) return
       for (const candidate of keys) {
         const modMatches = candidate.mod === true
           ? (event.ctrlKey || event.metaKey)

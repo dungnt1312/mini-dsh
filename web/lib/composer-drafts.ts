@@ -1,16 +1,10 @@
 /**
  * Unsent composer drafts, kept per workspace+session so a reload (or a crash)
- * never costs typed work. Only the draft content is stored: `sending` and
- * `error` belong to the request that was in flight, and replaying them after a
- * reload would claim a state the server never confirmed.
- *
- * Drafts now carry chips, so the stored shape is the segment list. Drafts
- * written by the earlier string-only version are read as a single text
- * segment rather than discarded.
- *
- * Storage is best-effort — every caller must work when it is unavailable.
+ * never costs typed work. Storage is best-effort — every caller must work when
+ * it is unavailable.
  */
-import { emptyDraft, normalizeDraft, textDraft, type DraftSegment, type RichDraft } from './composer-draft.ts'
+import { emptyDraft, normalizeDraft, textDraft, type AttachmentRef, type DraftSegment, type RichDraft } from './composer-draft.ts'
+import { isSkillName, parseMessageText } from './inline-chips.ts'
 
 export const DRAFTS_STORAGE_KEY = 'mini-dsh.drafts.v1'
 /** Newest drafts kept; older conversations drop out rather than grow forever. */
@@ -20,7 +14,18 @@ export const MAX_DRAFT_CHARS = 20_000
 
 export type StoredDrafts = Readonly<Record<string, RichDraft>>
 
-function parseSegment(raw: unknown): DraftSegment | null {
+function parseAttachment(raw: unknown): AttachmentRef | null {
+  if (raw === null || typeof raw !== 'object') return null
+  const ref = raw as Record<string, unknown>
+  if (
+    typeof ref['id'] !== 'string' || !/^[0-9a-f]{64}$/.test(ref['id']) ||
+    typeof ref['name'] !== 'string' || typeof ref['mediaType'] !== 'string' ||
+    typeof ref['bytes'] !== 'number' || !Number.isFinite(ref['bytes']) || ref['bytes'] < 0
+  ) return null
+  return { id: ref['id'], name: ref['name'], mediaType: ref['mediaType'], bytes: ref['bytes'] }
+}
+
+function parseSegment(raw: unknown): DraftSegment | AttachmentRef | null {
   if (raw === null || typeof raw !== 'object') return null
   const row = raw as Record<string, unknown>
   if (row['kind'] === 'text' && typeof row['text'] === 'string') {
@@ -29,15 +34,14 @@ function parseSegment(raw: unknown): DraftSegment | null {
   if (row['kind'] === 'mention' && typeof row['path'] === 'string' && row['path'] !== '') {
     return { kind: 'mention', path: row['path'] }
   }
-  if (row['kind'] === 'attachment' && row['ref'] !== null && typeof row['ref'] === 'object') {
-    const ref = row['ref'] as Record<string, unknown>
-    if (
-      typeof ref['id'] === 'string' && /^[0-9a-f]{64}$/.test(ref['id']) &&
-      typeof ref['name'] === 'string' && typeof ref['mediaType'] === 'string' && typeof ref['bytes'] === 'number'
-    ) {
-      return { kind: 'attachment', ref: { id: ref['id'], name: ref['name'], mediaType: ref['mediaType'], bytes: ref['bytes'] } }
-    }
+  if (row['kind'] === 'command') {
+    if (typeof row['name'] === 'string' && isSkillName(row['name'])) return { kind: 'command', name: row['name'] }
+    // Legacy command chips stored their wire text instead of the skill name.
+    const legacy = typeof row['text'] === 'string' ? parseMessageText(row['text']) : []
+    return legacy.length === 1 && legacy[0]?.kind === 'command' ? legacy[0] : null
   }
+  // Legacy drafts stored attachment chips among inline editor segments.
+  if (row['kind'] === 'attachment') return parseAttachment(row['ref'])
   return null
 }
 
@@ -45,14 +49,25 @@ function parseDraft(raw: unknown): RichDraft {
   // A draft written before chips existed was a bare string.
   if (typeof raw === 'string') return textDraft(raw.slice(0, MAX_DRAFT_CHARS))
   if (raw === null || typeof raw !== 'object') return emptyDraft
-  const segments = (raw as Record<string, unknown>)['segments']
-  if (!Array.isArray(segments)) return emptyDraft
-  const parsed: DraftSegment[] = []
-  for (const entry of segments as unknown[]) {
-    const segment = parseSegment(entry)
-    if (segment !== null) parsed.push(segment)
+  const row = raw as Record<string, unknown>
+  const rawSegments = row['segments']
+  if (!Array.isArray(rawSegments)) return emptyDraft
+
+  const segments: DraftSegment[] = []
+  const attachments: AttachmentRef[] = []
+  for (const entry of rawSegments) {
+    const parsed = parseSegment(entry)
+    if (parsed === null) continue
+    if ('kind' in parsed) segments.push(parsed)
+    else attachments.push(parsed)
   }
-  return normalizeDraft(parsed)
+  if (Array.isArray(row['attachments'])) {
+    for (const entry of row['attachments']) {
+      const attachment = parseAttachment(entry)
+      if (attachment !== null) attachments.push(attachment)
+    }
+  }
+  return normalizeDraft(segments, attachments)
 }
 
 export function parseDrafts(raw: string | null): StoredDrafts {
@@ -63,7 +78,7 @@ export function parseDrafts(raw: string | null): StoredDrafts {
     const drafts: Record<string, RichDraft> = {}
     for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
       const draft = parseDraft(value)
-      if (draft.segments.length > 0) drafts[key] = draft
+      if (draft.segments.length > 0 || draft.attachments.length > 0) drafts[key] = draft
     }
     return drafts
   } catch {
@@ -74,8 +89,8 @@ export function parseDrafts(raw: string | null): StoredDrafts {
 /** Drop empty drafts and keep only the newest {@link MAX_STORED_DRAFTS} keys. */
 export function serializeDrafts(drafts: StoredDrafts): string {
   const kept = Object.entries(drafts)
-    .map(([key, draft]) => [key, normalizeDraft(draft.segments)] as const)
-    .filter(([, draft]) => draft.segments.length > 0)
+    .map(([key, draft]) => [key, normalizeDraft(draft.segments, draft.attachments)] as const)
+    .filter(([, draft]) => draft.segments.length > 0 || draft.attachments.length > 0)
     .slice(-MAX_STORED_DRAFTS)
   return JSON.stringify(Object.fromEntries(kept))
 }

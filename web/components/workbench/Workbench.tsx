@@ -6,6 +6,7 @@ import { ContextPanel, type ContextPanelProps } from '../layout/ContextPanel.tsx
 import { FileBrowser } from './FileBrowser.tsx'
 import { FileViewer } from './FileViewer.tsx'
 import { baseName } from '../../lib/project-paths.ts'
+import { fileStyle } from '../../lib/file-icons.ts'
 import { cn } from '../../lib/cn.ts'
 import type { WorkbenchFiles } from '../../hooks/useWorkbenchFiles.ts'
 import type { SseEvent } from '../../lib/types.ts'
@@ -81,12 +82,13 @@ export function Workbench({ workspaceId, project, view, onView, files, context, 
           <ViewTab active={!showFile && view === 'context'} icon="info" label="Context" onClick={() => selectView('context')} />
           <ViewTab active={!showFile && view === 'artifacts'} icon="layers" label="Artifacts" onClick={() => selectView('artifacts')} />
           {files.openFiles.length > 0 ? <span className="mx-1 h-5 w-px shrink-0 bg-line" aria-hidden="true" /> : null}
-          {files.openFiles.map((path) => {
-            const active = files.activeFile === path
-            return (
-              <span key={path} className={cn('group flex h-8 shrink-0 items-center rounded-lg', active ? 'bg-muted' : 'hover:bg-hover')}>
-                <button type="button" aria-pressed={active} title={path} onClick={() => files.openFile(path)} className={cn('flex h-full items-center gap-1.5 pl-2.5 pr-1 text-[13px]', active ? 'text-fg' : 'text-fg-muted hover:text-fg')}>
-                  <Icon name="fileText" size={14} />
+            {files.openFiles.map((path) => {
+              const active = files.activeFile === path
+              const icon = fileStyle(path)
+              return (
+                <span key={path} className={cn('group flex h-8 shrink-0 items-center rounded-lg', active ? 'bg-muted' : 'hover:bg-hover')}>
+                  <button type="button" aria-pressed={active} title={path} onClick={() => files.openFile(path)} className={cn('flex h-full items-center gap-1.5 pl-2.5 pr-1 text-[13px]', active ? 'text-fg' : 'text-fg-muted hover:text-fg')}>
+                    <Icon name={icon.name} size={14} className={icon.className} />
                   <span className="max-w-[10rem] truncate">{baseName(path)}</span>
                 </button>
                 <button type="button" aria-label={`Close ${path}`} title="Close" onClick={() => files.closeFile(path)} className="mr-1 flex size-5 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-fg">

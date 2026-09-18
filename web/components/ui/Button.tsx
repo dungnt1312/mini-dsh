@@ -13,7 +13,7 @@ const buttonStyles = cva(
         ghost: 'text-fg hover:bg-hover',
         outline: 'border border-line-strong text-fg hover:bg-hover',
         success: 'bg-primary text-primary-fg hover:opacity-85',
-        danger: 'bg-bad text-white hover:opacity-90 dark:text-[#1a1a1a]',
+        danger: 'bg-bad text-bad-fg hover:opacity-90',
         'outline-danger': 'border border-line-strong text-bad hover:bg-bad-soft',
       },
       size: { sm: 'h-8 px-3 text-[13px]', md: 'h-9 px-4 text-sm' },

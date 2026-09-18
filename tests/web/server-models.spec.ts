@@ -146,7 +146,9 @@ describe('workspace thinking control', () => {
     await post(base, `/api/workspaces/${wsId}/sessions/${id}/messages`, { content: 'three' })
     await settle(base, wsId, id)
 
-    expect(seen.map((entry) => entry.thinkingLevel)).toEqual(['xhigh', 'xhigh', undefined])
+    // The session snapshots its workspace defaults at creation, so clearing
+    // the workspace default affects future sessions rather than this one.
+    expect(seen.map((entry) => entry.thinkingLevel)).toEqual(['xhigh', 'xhigh', 'xhigh'])
     expect(seen.every((entry) => entry.model === 'gpt-5.6')).toBe(true)
   }, 30_000)
 
@@ -172,8 +174,11 @@ describe('workspace thinking control', () => {
     // The live override outranks the configured default.
     await put(base, `/api/workspaces/${wsId}/thinking`, { level: 'max' })
     await put(base, `/api/workspaces/${wsId}/model`, { model: 'gpt-5.6', provider: 'gateway' })
-    await post(base, `/api/workspaces/${wsId}/sessions/${id}/messages`, { content: 'again' })
-    await settle(base, wsId, id)
+    // Defaults are copied to new sessions; this existing conversation retains
+    // glm-4.7 and its configured thinking default.
+    const next = (await (await post(base, `/api/workspaces/${wsId}/sessions`)).json()) as { id: string }
+    await post(base, `/api/workspaces/${wsId}/sessions/${next.id}/messages`, { content: 'again' })
+    await settle(base, wsId, next.id)
     expect(endpoint.bodies[1]?.['reasoning_effort']).toBe('max')
   }, 30_000)
 

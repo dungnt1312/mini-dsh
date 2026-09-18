@@ -9,7 +9,10 @@ import type { ModelSettings } from '../../lib/types.ts'
  * plus the levels the model documents — `Off` only when the provider can
  * really disable thinking. The chip shows the level the next request carries.
  */
-export function ThinkingMenu({ model, value, settings, onSelect }: {
+export function ThinkingMenu({ menuLabel = 'Default thinking level for new conversations', disabled = false, model, value, settings, onSelect }: {
+  /** Accessible control label identifies conversation scope or global default. */
+  readonly menuLabel?: string
+  readonly disabled?: boolean
   readonly model: string | null
   /** Workspace override; null = the model's configured default. */
   readonly value: string | null
@@ -37,7 +40,8 @@ export function ThinkingMenu({ model, value, settings, onSelect }: {
 
   return (
     <Menu
-      label="Workspace thinking level (next request)"
+      label={menuLabel}
+      disabled={disabled}
       side="top"
       triggerClassName={composerChipClass}
       trigger={() => (
