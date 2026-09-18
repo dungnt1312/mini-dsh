@@ -1,19 +1,23 @@
 import { cva } from 'class-variance-authority'
-import type { ReactNode } from 'react'
+import type { HTMLAttributes, ReactNode } from 'react'
 import { cn } from '../../lib/cn.ts'
 
-const badgeStyles = cva('ui-badge inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium', {
+const badgeStyles = cva('inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium leading-4', {
   variants: {
     tone: {
-      gray: 'ui-badge-gray bg-surface-muted text-ink-muted',
-      blue: 'ui-badge-blue bg-accent-soft text-accent',
-      green: 'ui-badge-green bg-success-soft text-success',
-      amber: 'ui-badge-amber bg-warning-soft text-warning',
+      gray: 'bg-muted text-fg-muted',
+      blue: 'bg-muted text-link',
+      green: 'bg-ok-soft text-ok',
+      amber: 'bg-warn-soft text-warn',
     },
   },
   defaultVariants: { tone: 'gray' },
 })
 
-export function Badge({ tone = 'gray', children }: { readonly tone?: 'gray' | 'blue' | 'green' | 'amber'; readonly children: ReactNode }) {
-  return <span className={cn(badgeStyles({ tone }))}>{children}</span>
+export function Badge({ tone = 'gray', children, className, ...rest }: {
+  readonly tone?: 'gray' | 'blue' | 'green' | 'amber'
+  readonly children: ReactNode
+  readonly className?: string
+} & HTMLAttributes<HTMLSpanElement>) {
+  return <span className={cn(badgeStyles({ tone }), className)} {...rest}>{children}</span>
 }

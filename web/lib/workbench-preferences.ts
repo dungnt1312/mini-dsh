@@ -3,22 +3,23 @@ export interface WorkbenchPreferencesV1 {
   readonly rightWidth: number
   readonly leftCollapsed: boolean
   readonly rightCollapsed: boolean
-  readonly inspectorTab: 'context' | 'artifacts'
+  /** Selected fixed workbench view; opened file tabs are transient. */
+  readonly inspectorTab: 'files' | 'context' | 'artifacts'
 }
 
 export const WORKBENCH_STORAGE_KEY = 'mini-dsh.workbench.v1'
 
 export const WORKBENCH_DEFAULTS: WorkbenchPreferencesV1 = {
   leftWidth: 280,
-  rightWidth: 336,
+  rightWidth: 560,
   leftCollapsed: false,
   rightCollapsed: false,
-  inspectorTab: 'context',
+  inspectorTab: 'files',
 }
 
 export const PANEL_LIMITS = {
   left: { min: 232, max: 420, default: 280 },
-  right: { min: 280, max: 520, default: 336 },
+  right: { min: 360, max: 1100, default: 560 },
 } as const
 
 export function clampPanelWidth(side: 'left' | 'right', value: number): number {
@@ -28,7 +29,7 @@ export function clampPanelWidth(side: 'left' | 'right', value: number): number {
 }
 
 function isInspectorTab(value: unknown): value is WorkbenchPreferencesV1['inspectorTab'] {
-  return value === 'context' || value === 'artifacts'
+  return value === 'files' || value === 'context' || value === 'artifacts'
 }
 
 export function parseWorkbenchPreferences(raw: string | null): WorkbenchPreferencesV1 {

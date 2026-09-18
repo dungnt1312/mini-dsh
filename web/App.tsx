@@ -1,5 +1,6 @@
 import { modeLabel } from './lib/copy.ts'
 import { Generation, composerKey, emptyComposer, acceptedDraft, validConversationScope, type ComposerState } from './lib/interaction.ts'
+import { persistDrafts, readDrafts } from './lib/composer-drafts.ts'
 import { parseRoute, routePath, sessionRoute, workspaceRoute, type AppRoute } from './lib/route.ts'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -12,8 +13,10 @@ import {
   fetchWorkspaceMeta,
   listProjects,
   listSessionsIn,
+  listSkills,
   listWorkspaces,
   renameSessionIn,
+  searchProjectFiles,
   sendMessageIn,
   stopSessionIn,
   setMode,
@@ -24,43 +27,55 @@ import {
 } from './lib/api.ts'
 import { decodeModelChoice, activeModelValue, modelOptions } from './lib/providers.ts'
 import { isTurnRunning, projectItems } from './lib/project.ts'
-import { latestWorkbenchItem } from './components/chat/workbench-projector.ts'
 import { useSessionStream } from './hooks/useSessionStream.ts'
 import { useApprovalNotify } from './hooks/useApprovalNotify.ts'
 import { useWorkbenchPreferences } from './hooks/useWorkbenchPreferences.ts'
 import { useHotkeys } from './hooks/useHotkeys.ts'
+import { useMediaQuery } from './hooks/useMediaQuery.ts'
+import { useTheme } from './hooks/useTheme.ts'
 import { useToast } from './components/common/Toast.tsx'
+import Icon from './components/common/Icon.tsx'
+import { Spinner } from './components/common/Spinner.tsx'
 import { Button } from './components/ui/Button.tsx'
+import { Sheet } from './components/ui/Sheet.tsx'
 import { Sidebar } from './components/layout/Sidebar.tsx'
-import { TopBar } from './components/layout/TopBar.tsx'
-import { InspectorPanel } from './components/layout/InspectorPanel.tsx'
-import { WorkbenchShell, useWorkbenchDocked } from './components/layout/WorkbenchShell.tsx'
+import { ChatHeader } from './components/layout/ChatHeader.tsx'
+import { Workbench } from './components/workbench/Workbench.tsx'
+import { useWorkbenchFiles } from './hooks/useWorkbenchFiles.ts'
+import { usePanelResize } from './hooks/usePanelResize.ts'
+import { toProjectRelative } from './lib/project-paths.ts'
+import { PANEL_LIMITS } from './lib/workbench-preferences.ts'
 import { SettingsModal } from './components/settings/SettingsModal.tsx'
 import { TaskStatus } from './components/chat/TaskStatus.tsx'
 import { Transcript } from './components/chat/Transcript.tsx'
-import { WorkbenchSurface } from './components/chat/WorkbenchSurface.tsx'
 import { ApprovalBar } from './components/chat/ApprovalBar.tsx'
-import { Composer, ConversationDock } from './components/composer/Composer.tsx'
+import { Composer } from './components/composer/Composer.tsx'
+import { ModelMenu } from './components/composer/ModelMenu.tsx'
 import { FolderPickerModal } from './components/composer/FolderPickerModal.tsx'
 import ConfirmDialog from './components/common/ConfirmDialog.tsx'
 import type { ContextManifestView } from './lib/api.ts'
-import type { ProjectRow, SessionListing, WorkspaceMeta, WorkspaceRow } from './lib/types.ts'
+import type { CompletionItem } from './lib/composer-completion.ts'
+import type { ProjectRow, SessionListing, SkillRow, WorkspaceMeta, WorkspaceRow } from './lib/types.ts'
 
-const SUGGESTIONS: readonly string[] = [
-  'List the files in this project',
-  'Explain the project architecture',
-  'Find the tool pipeline and explain how it works',
-]
+/** The sidebar docks beside the conversation at this width; below it is a drawer. */
+const SIDEBAR_DOCK_QUERY = '(min-width: 768px)'
+/** The workbench docks beside the chat at this width; below it is a sheet. */
+const WORKBENCH_DOCK_QUERY = '(min-width: 1280px)'
+
+function focusComposer(): void {
+  requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('[data-composer-input]')?.focus())
+}
 
 /**
- * The web client: a workspace shell around a stateless chat pane. All chat
- * state derives from the session event stream — the UI holds no model state
- * of its own. The active workspace is tab/navigation state: switching it
- * never touches a running Turn (execution scope is fixed server-side), and
- * the model selector writes the ACTIVE workspace's control, not a global.
+ * The web client: a sidebar of conversations around a stateless chat pane.
+ * All chat state derives from the session event stream — the UI holds no
+ * model state of its own. The active workspace is tab/navigation state:
+ * switching it never touches a running Turn (execution scope is fixed
+ * server-side), and the model selector writes the ACTIVE workspace's control.
  */
 export function App() {
   const toast = useToast()
+  const theme = useTheme()
   const initialRoute = useRef<AppRoute | null>(parseRoute(window.location.pathname))
   const routeRef = useRef<AppRoute | null>(initialRoute.current)
   const [workspaces, setWorkspaces] = useState<readonly WorkspaceRow[]>([])
@@ -79,7 +94,8 @@ export function App() {
     setCurrent(null)
     setFilter('')
     if (activeWs !== null) navigate(workspaceRoute(activeWs))
-    requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.composer-input')?.focus())
+    if (!sidebarDocked) setSidebarOpen(false)
+    focusComposer()
   }
   function newInProject(projectId: string): void {
     // This is navigation too: a late creation must not replace this new draft.
@@ -87,10 +103,10 @@ export function App() {
     setDraftProjectState(projectId)
     setCurrent(null)
     if (activeWs !== null) navigate(workspaceRoute(activeWs))
-    requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.composer-input')?.focus())
+    if (!sidebarDocked) setSidebarOpen(false)
+    focusComposer()
   }
   const [newWorkspaceName, setNewWorkspaceName] = useState('')
-  const [wsSignal, setWsSignal] = useState(0)
   const activeWorkspace = workspaces.find((row) => row.id === activeWs) ?? null
 
   // Draft scope: validate against registered projects; '' in storage = chat only.
@@ -118,13 +134,17 @@ export function App() {
 
   const [current, setCurrent] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
-  const [composers, setComposersState] = useState<Record<string, ComposerState>>({})
+  // Unsent drafts survive a reload; `sending`/`error` describe a request that
+  // is gone, so only the text comes back.
+  const [composers, setComposersState] = useState<Record<string, ComposerState>>(() =>
+    Object.fromEntries(Object.entries(readDrafts()).map(([scope, draft]) => [scope, { ...emptyComposer, draft }])))
   const composersRef = useRef(composers)
   composersRef.current = composers
   const setComposers = useCallback((update: (all: Record<string, ComposerState>) => Record<string, ComposerState>) => {
     const next = update(composersRef.current)
     composersRef.current = next
     setComposersState(next)
+    persistDrafts(Object.fromEntries(Object.entries(next).map(([scope, state]) => [scope, state.draft])))
   }, [])
   const key = composerKey(activeWs, current)
   const composer = composers[key] ?? emptyComposer
@@ -132,12 +152,17 @@ export function App() {
   const updateComposer = (scope: string, update: (state: ComposerState) => ComposerState) => setComposers((all) => ({ ...all, [scope]: update(all[scope] ?? emptyComposer) }))
   const setDraft = (draft: string) => updateComposer(key, (state) => ({ ...state, draft, revision: state.revision + 1 }))
   const [meta, setMeta] = useState<WorkspaceMeta | null>(null)
+  // Skill catalog for the composer's `/` menu. A failure just leaves the menu
+  // empty — it never interrupts a conversation.
+  const [skills, setSkills] = useState<readonly SkillRow[]>([])
   const [modeSelection, setModeSelection] = useState<{ modes: readonly { value: string; label: string }[]; selected: string | null }>({ modes: [], selected: null })
   const { preferences, patchPreferences } = useWorkbenchPreferences()
-  const leftDocked = useWorkbenchDocked(1024)
-  const rightDocked = useWorkbenchDocked(1280)
-  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 1024 ? !preferences.leftCollapsed : false)
-  const [envOpen, setEnvOpen] = useState(() => window.innerWidth >= 1280 ? !preferences.rightCollapsed : false)
+  const sidebarDocked = useMediaQuery(SIDEBAR_DOCK_QUERY)
+  const [sidebarOpen, setSidebarOpen] = useState(() => sidebarDocked && !preferences.leftCollapsed)
+  const workbenchDocked = useMediaQuery(WORKBENCH_DOCK_QUERY)
+  // Docked, the workbench remembers whether it was open; as a sheet it starts closed.
+  const [workbenchOpen, setWorkbenchOpen] = useState(() => workbenchDocked && !preferences.rightCollapsed)
+  const [workbenchExpanded, setWorkbenchExpanded] = useState(false)
   const inspectorTab = preferences.inspectorTab
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsSection, setSettingsSection] = useState<'providers' | 'projects' | 'skills' | 'memory' | 'agents' | 'mcp' | 'hooks' | 'secrets'>('providers')
@@ -161,22 +186,34 @@ export function App() {
   const controls = useRef(new Generation())
 
   useEffect(() => {
-    // A docked panel becoming a drawer must not suddenly cover the conversation.
-    // Drawer state is opened only by its explicit trigger on compact layouts.
-    setSidebarOpen(leftDocked ? !preferences.leftCollapsed : false)
-  }, [leftDocked, preferences.leftCollapsed])
-  useEffect(() => {
-    setEnvOpen(rightDocked ? !preferences.rightCollapsed : false)
-  }, [rightDocked, preferences.rightCollapsed])
+    // A docked sidebar becoming a drawer must not suddenly cover the conversation.
+    setSidebarOpen(sidebarDocked ? !preferences.leftCollapsed : false)
+  }, [sidebarDocked, preferences.leftCollapsed])
 
   const onLeftOpenChange = useCallback((open: boolean) => {
     setSidebarOpen(open)
-    if (leftDocked) patchPreferences({ leftCollapsed: !open })
-  }, [leftDocked, patchPreferences])
-  const onRightOpenChange = useCallback((open: boolean) => {
-    setEnvOpen(open)
-    if (rightDocked) patchPreferences({ rightCollapsed: !open })
-  }, [rightDocked, patchPreferences])
+    // Only the docked state is a remembered preference; drawers are transient.
+    if (sidebarDocked) patchPreferences({ leftCollapsed: !open })
+  }, [sidebarDocked, patchPreferences])
+
+  useEffect(() => {
+    setWorkbenchOpen(workbenchDocked ? !preferences.rightCollapsed : false)
+    // A sheet has no "full width" mode to keep.
+    if (!workbenchDocked) setWorkbenchExpanded(false)
+  }, [workbenchDocked, preferences.rightCollapsed])
+
+  const onWorkbenchOpenChange = useCallback((open: boolean) => {
+    setWorkbenchOpen(open)
+    if (!open) setWorkbenchExpanded(false)
+    if (workbenchDocked) patchPreferences({ rightCollapsed: !open })
+  }, [workbenchDocked, patchPreferences])
+  const workbenchResize = usePanelResize({
+    width: preferences.rightWidth,
+    min: PANEL_LIMITS.right.min,
+    max: PANEL_LIMITS.right.max,
+    defaultWidth: PANEL_LIMITS.right.default,
+    onChange: (rightWidth) => patchPreferences({ rightWidth }),
+  })
 
   // A route-selected session becomes streamable only after the current
   // workspace listing has confirmed membership. This prevents foreign or stale
@@ -185,7 +222,6 @@ export function App() {
   const { events, approvals, stream, error: streamError, dismissApproval } = useSessionStream(activeWs, validatedCurrent)
   const notify = useApprovalNotify(approvals, activeWorkspace?.name)
   const projectedItems = useMemo(() => projectItems(events), [events])
-  const workbenchItem = useMemo(() => latestWorkbenchItem(projectedItems), [projectedItems])
   const running = useMemo(() => isTurnRunning(events), [events])
   const currentSession = useMemo(() => sessions.find((session) => session.id === current) ?? null, [sessions, current])
   const modelValue = useMemo(() => activeModelValue(meta), [meta])
@@ -205,6 +241,19 @@ export function App() {
     () => projects.find((project) => project.id === currentSession?.projectId) ?? null,
     [projects, currentSession],
   )
+  // Files browse the open conversation's project, or the draft's chosen project.
+  const workbenchProject = current !== null ? currentProject : projects.find((project) => project.id === effectiveDraftProject) ?? null
+  const workbenchFiles = useWorkbenchFiles(activeWs !== null && workbenchProject !== null ? `${activeWs}:${workbenchProject.id}` : null)
+  const openWorkbenchFile = workbenchFiles.openFile
+  const openRecordedPath = useCallback((reference: string): (() => void) | null => {
+    if (workbenchProject === null) return null
+    const relative = toProjectRelative(workbenchProject.path, reference)
+    if (relative === null) return null
+    return () => {
+      openWorkbenchFile(relative)
+      onWorkbenchOpenChange(true)
+    }
+  }, [workbenchProject, openWorkbenchFile, onWorkbenchOpenChange])
   const draftProjectName = useMemo(
     () => projects.find((project) => project.id === effectiveDraftProject)?.name,
     [projects, effectiveDraftProject],
@@ -404,10 +453,21 @@ export function App() {
     return () => { cancelled = true }
   }, [activeWs, navigate, toast])
 
+  // Skill catalog for the composer's `/` menu, per workspace.
+  useEffect(() => {
+    setSkills([])
+    if (activeWs === null) return
+    let cancelled = false
+    void listSkills(activeWs)
+      .then((rows) => { if (!cancelled && workspaceRef.current === activeWs) setSkills(rows) })
+      .catch(() => { /* an unavailable catalog only closes the menu */ })
+    return () => { cancelled = true }
+  }, [activeWs])
+
   // Inspector: refresh the last request's manifest when the conversation settles.
   useEffect(() => {
     setManifest(null)
-    if (!envOpen || inspectorTab !== 'context' || activeWs === null || current === null || running) return
+    if (!workbenchOpen || inspectorTab !== 'context' || workbenchFiles.activeFile !== null || activeWs === null || current === null || running) return
     let cancelled = false
     const timer = setTimeout(() => {
       void fetchManifest(activeWs, current).then(
@@ -423,7 +483,7 @@ export function App() {
       cancelled = true
       clearTimeout(timer)
     }
-  }, [envOpen, inspectorTab, activeWs, current, running, events.length, compactNonce])
+  }, [workbenchOpen, inspectorTab, workbenchFiles.activeFile, activeWs, current, running, events.length, compactNonce])
 
   useEffect(() => {
     if (streamError === null) return
@@ -444,8 +504,8 @@ export function App() {
     navigation.current.next()
     setCurrent(id)
     navigate(sessionRoute(activeWs, id))
-    if (window.innerWidth < 1024) onLeftOpenChange(false)
-  }, [activeWs, navigate, onLeftOpenChange])
+    if (!sidebarDocked) setSidebarOpen(false)
+  }, [activeWs, navigate, sidebarDocked])
 
   const send = useCallback(async () => {
     if (sendingRef.current.has(key) || draft.trim() === '' || modelValue === null || activeWs === null) return
@@ -635,8 +695,8 @@ export function App() {
     setPendingDelete(null)
     setActiveWs(id)
     navigate(workspaceRoute(id))
-    if (window.innerWidth < 1024) onLeftOpenChange(false)
-  }, [navigate])
+    if (!sidebarDocked) setSidebarOpen(false)
+  }, [navigate, sidebarDocked])
 
   const addWorkspace = useCallback(async () => {
     const name = newWorkspaceName.trim()
@@ -662,11 +722,18 @@ export function App() {
   ])
 
 
-  const topBar = (
-    <TopBar
-      stream={stream}
-      sidebarOpen={sidebarOpen}
-      envOpen={envOpen}
+  const openSettings = (section: typeof settingsSection = 'providers'): void => {
+    setSettingsSection(section)
+    setSettingsOpen(true)
+  }
+
+  const sidebar = (
+    <Sidebar
+      sessions={sessions}
+      projects={projects}
+      current={current}
+      filter={filter}
+      running={running}
       workspaces={workspaces}
       activeWorkspaceId={activeWs}
       newWorkspaceName={newWorkspaceName}
@@ -674,47 +741,211 @@ export function App() {
       onSelectWorkspace={switchWorkspace}
       onCreateWorkspace={() => void addWorkspace()}
       onWorkspacesChanged={async () => { await refreshWorkspaces() }}
-      openSignal={wsSignal}
-      onToggleSidebar={() => onLeftOpenChange(!sidebarOpen)}
-      onToggleEnv={() => onRightOpenChange(!envOpen)}
-      onOpenSettings={() => { setSettingsSection('providers'); setSettingsOpen(true) }}
+      onFilter={setFilter}
+      onSelect={openSession}
+      onNew={beginConversation}
+      onNewInProject={newInProject}
+      onRename={(id, title) => void rename(id, title)}
+      onDeleteRequest={setPendingDelete}
+      onOpenSettings={() => openSettings()}
+      notifyEnabled={notify.enabled}
+      notifyBlocked={notify.blocked}
+      onToggleNotify={notify.toggle}
+      theme={theme.preference}
+      onTheme={theme.setPreference}
+      onClose={closeSidebar}
     />
   )
-  const navigationPanel = (
-    <Sidebar sessions={sessions} projects={projects} current={current} filter={filter} stream={stream} provider={meta?.provider ?? null} running={running}
-      workspaceArchived={activeWorkspace?.archived === true} open={sidebarOpen} onFilter={setFilter} onSelect={openSession} onNew={beginConversation}
-      onNewInProject={newInProject} onOpenWorkspaces={() => setWsSignal((n) => n + 1)} notifyEnabled={notify.enabled} notifyBlocked={notify.blocked}
-      onToggleNotify={notify.toggle} onRename={(id, title) => void rename(id, title)} onDeleteRequest={setPendingDelete} onClose={closeSidebar} hosted />
-  )
-  const conversation = (
-    <main className="chat">
-      {current !== null ? <TaskStatus events={events} pending={approvals.length} sending={sending} connected={stream === 'open'} /> : null}
-      <div className="chat-area">
-        {events.length === 0 ? (
-          <div className="empty"><div className="empty-mark" aria-hidden="true">⌬</div><p className="empty-title">What can I help with?</p>
-            <p className="empty-sub">{draftProjectName !== undefined ? `Working in ${draftProjectName}. Pick another folder from the chip under the input.` : 'Pick a project folder from the chip under the input for file and shell tools, or keep Chat only.'}</p>
-            {modelValue === null ? <Button variant="primary" size="sm" onClick={() => setSettingsOpen(true)}>Configure provider</Button> : null}
-            <div className="suggestions">{(draftProjectName !== undefined ? [`Explain ${draftProjectName}`, 'Find TODOs / bugs', `Plan a change in ${draftProjectName}`] : ['Explain how to register a project and get started', 'Help me plan a feature']).map((suggestion) => <Button key={suggestion} variant="outline" size="sm" disabled={modelValue === null} onClick={() => setDraft(suggestion)}>{suggestion}</Button>)}</div>
-          </div>
-        ) : <><WorkbenchSurface item={workbenchItem} workspaceId={activeWs} onOpenChild={openSession} /><Transcript items={projectedItems} {...(modelValue !== null && meta?.model !== undefined && meta.model !== '' ? { modelLabel: meta.model } : {})} workspaceId={activeWs} onReuse={(text) => { setDraft(text); requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.composer-input')?.focus()) }} onOpenChild={openSession} onRetry={() => void retryLast()} onOpenSettings={() => setSettingsOpen(true)} /></>}
-      </div>
-      <div className="conversation-dock-anchor">
-        <ConversationDock
-          approvals={<ApprovalBar key={key} approvals={approvals} scope={currentProject?.path ?? 'No project attached'} onAnswer={answer} {...(activeWorkspace !== null ? { workspaceName: activeWorkspace.name } : {})} onAlwaysAllow={alwaysAllow} />}
-          sendError={sendError ? <div className="send-error" role="alert"><strong>Send not confirmed. Your draft has been kept.</strong><p>Check the conversation before sending again to avoid duplicate work.</p><details><summary>Error details</summary><pre>{sendError}</pre></details><Button size="sm" onClick={() => setSettingsOpen(true)}>Check provider</Button></div> : null}
-          composer={<Composer scope={currentProject?.path ?? null} {...(current === null ? { scopePicker: { value: effectiveDraftProject, options: scopeOptions, onChange: changeDraftProject, onPickFolder: () => setFolderPickerOpen(true) } } : {})} policy={meta?.policy} workspaceId={activeWs} onPolicySaved={() => void refreshMeta()} onManageModels={() => { setSettingsSection('providers'); setSettingsOpen(true) }} sending={sending} connected={stream === 'open' || current === null} running={running} draft={draft} onDraft={setDraft} onSend={() => void send()} onStop={() => void stop()} modelValue={modelValue} {...(modelLabel !== null ? { modelLabel } : {})} modelOptions={availableModelOptions} providers={meta?.providers ?? []} onModel={(value) => void selectModel(value)} thinkingValue={meta?.thinkingLevel ?? null} {...(activeModelSettings !== undefined ? { modelSettings: activeModelSettings } : {})} onThinking={(level) => void selectThinking(level)} modes={modeSelection.modes} modeValue={modeSelection.selected} onMode={(value) => void selectMode(value)} />}
-        />
-      </div>
-    </main>
-  )
-  const inspector = <InspectorPanel tab={inspectorTab} onTabChange={(tab) => patchPreferences({ inspectorTab: tab })} onClose={() => onRightOpenChange(false)} events={events} context={{ meta, stream, sessionId: current, sessionFolder: currentProject?.path ?? null, eventCount: events.length, manifest, workspaceId: activeWs, running, modeLabel: envModeLabel, onCompacted: () => setCompactNonce((nonce) => nonce + 1), onOpenSettingsTab: (tab) => { setSettingsSection(tab); setSettingsOpen(true) } }} />
 
+  const modelControl = modelValue !== null && availableModelOptions.length > 0 ? (
+    <ModelMenu
+      modelLabel={modelLabel ?? modelValue}
+      modelValue={modelValue}
+      options={availableModelOptions}
+      providers={meta?.providers ?? []}
+      {...(activeModelSettings !== undefined ? { modelSettings: activeModelSettings } : {})}
+      onModel={(value) => void selectModel(value)}
+      onManage={() => openSettings()}
+    />
+  ) : meta !== null ? (
+    <button type="button" onClick={() => openSettings()} className="flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-[17px] font-medium text-fg hover:bg-hover">
+      {modelLabel ?? 'Configure a model'}
+      <Icon name="chevron" size={16} className="text-fg-faint" />
+    </button>
+  ) : null
+
+  /** `@` candidates from the conversation's project; no project, no menu. */
+  const searchFiles = useCallback(async (query: string): Promise<readonly CompletionItem[]> => {
+    if (activeWs === null || workbenchProject === null) return []
+    const found = await searchProjectFiles(activeWs, workbenchProject.id, query, 12)
+    return found.matches.map((match) => {
+      const folder = match.path.slice(0, Math.max(0, match.path.length - match.name.length - 1))
+      return { id: match.path, insert: match.path, label: match.name, ...(folder !== '' ? { detail: folder } : {}) }
+    })
+  }, [activeWs, workbenchProject])
+
+  /** ArrowUp on an empty composer edits the newest own message again. */
+  const recallLast = useCallback((): string | null => {
+    const lastUser = [...projectedItems].reverse().find((item) => item.kind === 'user')
+    return lastUser !== undefined && lastUser.kind === 'user' ? lastUser.content : null
+  }, [projectedItems])
+
+  const composerNode = (
+    <Composer
+      scope={currentProject?.path ?? null}
+      {...(current === null ? { scopePicker: { value: effectiveDraftProject, options: scopeOptions, onChange: changeDraftProject, onPickFolder: () => setFolderPickerOpen(true) } } : {})}
+      policy={meta?.policy}
+      workspaceId={activeWs}
+      onPolicySaved={() => void refreshMeta()}
+      sending={sending}
+      connected={stream === 'open' || current === null}
+      running={running}
+      draft={draft}
+      onDraft={setDraft}
+      onSend={() => void send()}
+      onStop={() => void stop()}
+      modelValue={modelValue}
+      thinkingValue={meta?.thinkingLevel ?? null}
+      {...(activeModelSettings !== undefined ? { modelSettings: activeModelSettings } : {})}
+      onThinking={(level) => void selectThinking(level)}
+      modes={modeSelection.modes}
+      modeValue={modeSelection.selected}
+      onMode={(value) => void selectMode(value)}
+      {...(workbenchProject !== null ? { onSearchFiles: searchFiles } : {})}
+      skills={skills}
+      onRecallLast={recallLast}
+      autoFocus={current === null}
+    />
+  )
+
+  const sendErrorNotice = sendError ? (
+    <div className="flex flex-col gap-2 rounded-2xl border border-line bg-bad-soft p-3.5 text-sm" role="alert">
+      <strong className="font-semibold text-bad">Send not confirmed. Your draft has been kept.</strong>
+      <p className="m-0 text-fg-muted">Check the conversation before sending again to avoid duplicate work.</p>
+      <details className="text-xs text-fg-muted">
+        <summary>Error details</summary>
+        <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words">{sendError}</pre>
+      </details>
+      <Button size="sm" variant="outline" className="self-start" onClick={() => openSettings()}>Check provider</Button>
+    </div>
+  ) : null
+
+  const workbench = (
+    <Workbench
+      workspaceId={activeWs}
+      project={workbenchProject}
+      view={inspectorTab}
+      onView={(view) => patchPreferences({ inspectorTab: view })}
+      files={workbenchFiles}
+      events={events}
+      expanded={workbenchExpanded}
+      {...(workbenchDocked ? { onToggleExpand: () => setWorkbenchExpanded((expanded) => !expanded) } : {})}
+      onClose={() => onWorkbenchOpenChange(false)}
+      openPath={openRecordedPath}
+      context={{ meta, stream, sessionId: current, sessionFolder: currentProject?.path ?? null, eventCount: events.length, manifest, workspaceId: activeWs, running, modeLabel: envModeLabel, onCompacted: () => setCompactNonce((nonce) => nonce + 1), onOpenSettingsTab: (tab) => openSettings(tab) }}
+    />
+  )
+
+  const suggestions = draftProjectName !== undefined
+    ? [`Explain ${draftProjectName}`, 'Find TODOs and likely bugs', `Plan a change in ${draftProjectName}`]
+    : ['Explain how to register a project and get started', 'Help me plan a feature']
   return (
     <>
-      <WorkbenchShell topBar={topBar} navigation={navigationPanel} conversation={conversation} inspector={inspector} leftOpen={sidebarOpen} rightOpen={envOpen} leftWidth={preferences.leftWidth} rightWidth={preferences.rightWidth}
-        onLeftOpenChange={onLeftOpenChange}
-        onRightOpenChange={onRightOpenChange}
-        onLeftWidthChange={(leftWidth) => patchPreferences({ leftWidth })} onRightWidthChange={(rightWidth) => patchPreferences({ rightWidth })} />
+      <div className="flex h-dvh overflow-hidden bg-bg text-fg">
+        {sidebarDocked && sidebarOpen ? <aside className="h-full w-[260px] shrink-0 border-r border-line dark:border-transparent">{sidebar}</aside> : null}
+        {!sidebarDocked ? <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen} side="left" label="Conversation navigation">{sidebar}</Sheet> : null}
+
+        {/* Full-width workbench hides (but keeps mounted) the chat so drafts and scroll survive. */}
+        <main className={`min-w-0 flex-1 flex-col ${workbenchDocked && workbenchOpen && workbenchExpanded ? 'hidden' : 'flex'}`}>
+          <ChatHeader
+            sidebarVisible={sidebarDocked && sidebarOpen}
+            stream={stream}
+            workbenchOpen={workbenchOpen}
+            modelControl={modelControl}
+            title={currentSession?.title}
+            onOpenSidebar={() => onLeftOpenChange(true)}
+            onNew={beginConversation}
+            onToggleWorkbench={() => onWorkbenchOpenChange(!workbenchOpen)}
+          />
+
+          {current === null ? (
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 sm:px-6">
+              <div className="m-auto flex w-full max-w-3xl flex-col gap-5 pb-[8dvh] pt-6">
+                <div className="flex flex-col items-center gap-2 text-center">
+                  <h1 className="m-0 text-[28px] font-medium tracking-tight">What can I help with?</h1>
+                  <p className="m-0 max-w-xl text-sm text-fg-muted">
+                    {draftProjectName !== undefined
+                      ? `Working in ${draftProjectName}. Pick another folder from the chip in the input.`
+                      : 'Pick a project folder from the chip in the input for file and shell tools, or keep Chat only.'}
+                  </p>
+                </div>
+                {sendErrorNotice}
+                {composerNode}
+                <div className="flex flex-wrap justify-center gap-2">
+                  {modelValue === null ? <Button variant="primary" size="sm" onClick={() => openSettings()}>Configure provider</Button> : null}
+                  {suggestions.map((suggestion) => (
+                    <Button key={suggestion} variant="outline" size="sm" className="text-fg-muted" disabled={modelValue === null} onClick={() => { setDraft(suggestion); focusComposer() }}>
+                      {suggestion}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <>
+              {events.length === 0 ? (
+                <div className="flex flex-1 items-center justify-center gap-2 text-sm text-fg-muted" role="status" aria-live="polite">
+                  <Spinner size={14} />Loading conversation…
+                </div>
+              ) : (
+                <Transcript
+                  key={current}
+                  conversationId={current}
+                  items={projectedItems}
+                  {...(modelValue !== null && meta?.model !== undefined && meta.model !== '' ? { modelLabel: meta.model } : {})}
+                  workspaceId={activeWs}
+                  onReuse={(text) => { setDraft(text); focusComposer() }}
+                  onOpenChild={openSession}
+                  onRetry={() => void retryLast()}
+                  onOpenSettings={() => openSettings()}
+                  openPath={openRecordedPath}
+                />
+              )}
+              <section aria-label="Conversation composer" className="shrink-0 px-3 pb-3 sm:px-6 sm:pb-4">
+                <div className="mx-auto flex w-full max-w-3xl flex-col gap-2">
+                  <TaskStatus events={events} pending={approvals.length} sending={sending} connected={stream !== 'reconnecting'} />
+                  <ApprovalBar key={key} approvals={approvals} scope={currentProject?.path ?? 'No project attached'} onAnswer={answer} {...(activeWorkspace !== null ? { workspaceName: activeWorkspace.name } : {})} onAlwaysAllow={alwaysAllow} />
+                  {sendErrorNotice}
+                  {composerNode}
+                </div>
+              </section>
+            </>
+          )}
+        </main>
+
+        {workbenchDocked && workbenchOpen ? (
+          <>
+            {!workbenchExpanded ? (
+              <div
+                {...workbenchResize}
+                aria-label="Resize workbench"
+                className="group relative w-px shrink-0 cursor-col-resize bg-line outline-none focus-visible:bg-link"
+              >
+                <span aria-hidden="true" className="absolute inset-y-0 -left-1.5 -right-1.5 group-hover:bg-line/60" />
+              </div>
+            ) : null}
+            <aside className="h-full min-w-0 shrink-0" style={workbenchExpanded ? { flex: '1 1 0%' } : { width: preferences.rightWidth, maxWidth: '60vw' }}>
+              {workbench}
+            </aside>
+          </>
+        ) : null}
+      </div>
+
+      {!workbenchDocked ? (
+        <Sheet open={workbenchOpen} onOpenChange={onWorkbenchOpenChange} side="right" label="Workbench" className="w-[min(720px,100vw)]">
+          {workbench}
+        </Sheet>
+      ) : null}
       <SettingsModal
         initialTab={settingsSection}
         workspaceName={activeWorkspace?.name}

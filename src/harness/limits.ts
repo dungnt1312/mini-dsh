@@ -4,7 +4,7 @@
  * magic numbers through the loop.
  */
 export interface HarnessLimits {
-  /** Model requests one turn may spend before it closes as `limit`. */
+  /** Model requests one turn may spend before it closes as `limit`. Set to Infinity for unbounded (real limit is turnDeadlineMs). */
   readonly maxSteps: number
   /** Wall-clock budget for one turn, including tools and approvals. */
   readonly turnDeadlineMs: number
@@ -23,7 +23,7 @@ export interface HarnessLimits {
 }
 
 export const DEFAULT_LIMITS: HarnessLimits = {
-  maxSteps: 32,
+  maxSteps: Infinity, // unbounded tool loop - real safety net is turnDeadlineMs (10 min)
   turnDeadlineMs: 10 * 60_000,
   streamInactivityMs: 120_000,
   toolTimeoutMs: 30_000,

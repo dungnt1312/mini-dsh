@@ -1,44 +1,8 @@
 import { useState, type ComponentProps } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import hljs from 'highlight.js/lib/core'
-import typescript from 'highlight.js/lib/languages/typescript'
-import javascript from 'highlight.js/lib/languages/javascript'
-import bash from 'highlight.js/lib/languages/bash'
-import json from 'highlight.js/lib/languages/json'
-import yaml from 'highlight.js/lib/languages/yaml'
-import css from 'highlight.js/lib/languages/css'
-import markdown from 'highlight.js/lib/languages/markdown'
-import xml from 'highlight.js/lib/languages/xml'
-
-hljs.registerLanguage('typescript', typescript)
-hljs.registerLanguage('javascript', javascript)
-hljs.registerLanguage('bash', bash)
-hljs.registerLanguage('json', json)
-hljs.registerLanguage('yaml', yaml)
-hljs.registerLanguage('css', css)
-hljs.registerLanguage('markdown', markdown)
-hljs.registerLanguage('xml', xml)
-
-/** Escape text that survives a language miss; never inject raw HTML. */
-function escapeHtml(text: string): string {
-  return text
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-}
-
-/** Highlight when the language is known; fall back to escaped plain text. */
-function highlight(code: string, language: string): string {
-  if (hljs.getLanguage(language) !== undefined) {
-    try {
-      return hljs.highlight(code, { language }).value
-    } catch {
-      return escapeHtml(code)
-    }
-  }
-  return escapeHtml(code)
-}
+import Icon from './components/common/Icon.tsx'
+import { highlight } from './lib/highlight.ts'
 
 /** Fenced code block with a language chip and a copy button. */
 function CodeBlock({ lang, code }: { readonly lang: string; readonly code: string }) {
@@ -58,7 +22,8 @@ function CodeBlock({ lang, code }: { readonly lang: string; readonly code: strin
             })
           }}
         >
-          {copied ? 'copied' : 'copy'}
+          <Icon name={copied ? 'check' : 'copy'} size={13} />
+          {copied ? 'Copied' : 'Copy code'}
         </button>
       </div>
       <pre className="codeblock-pre"><code dangerouslySetInnerHTML={{ __html: html }} /></pre>

@@ -55,7 +55,7 @@ function ProjectsPanelContent({ workspaceId, projects, onChanged, sessionCounts 
     } catch (cause) { setError(String(cause)) }
     finally { lock.current = false; setBusy(false) }
   }
-  return <div className="manage-panel flex min-w-0 flex-col gap-8 text-ink">
+  return <div className="manage-panel">
     <section className="manage-section"><h2>Registered projects</h2><p className="manage-hint">A project is a filesystem root in this workspace. Registration never changes the scope of an existing conversation.</p>
       {projects.length ? <ul className="manage-list">{projects.map(project => {
         const count = sessionCounts[project.id] ?? 0

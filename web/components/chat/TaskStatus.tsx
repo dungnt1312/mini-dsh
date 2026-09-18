@@ -1,17 +1,44 @@
+import Icon from '../common/Icon.tsx'
+import { Spinner } from '../common/Spinner.tsx'
 import { taskPhase, type TaskPhase } from '../../lib/project.ts'
 import type { SseEvent } from '../../lib/types.ts'
+
 const LABELS: Record<TaskPhase, string> = { idle: 'Ready', preparing: 'Preparing · submitting or queued', running: 'Working', waiting: 'Approval required', completed: 'Completed', failed: 'Failed', interrupted: 'Interrupted', cancelled: 'Stopped', rejected: 'Request rejected', empty: 'Ended without a response', limit: 'Turn limit reached' }
+
+/**
+ * Slim lifecycle line above the composer. Durable phase and connection loss
+ * are reported separately: a dropped stream never implies work stopped.
+ */
 export function TaskStatus({ events, pending, sending, connected }: { readonly events: readonly SseEvent[]; readonly pending: number; readonly sending: boolean; readonly connected: boolean }) {
   const phase = taskPhase(events, pending, sending)
-  const recover = ['interrupted', 'cancelled', 'limit', 'empty'].includes(phase)
-  // Failed and rejected turns render as one consolidated card inside the
-  // transcript itself (see StatusLine) — a second banner would be duplication.
-  if (phase === 'idle' || phase === 'completed' || phase === 'failed' || phase === 'rejected') return null
-  return <section className={`task-status task-status-${phase}`} aria-label="Work status">
-    <strong role="status">{LABELS[phase]}</strong>
-    {phase === 'preparing' ? <p>The request is submitting or queued. Queued input does not run automatically after a restart.</p> : null}
-    {!connected ? <p>Event connection unavailable. State may be out of date; a lost connection does not mean work has stopped.</p> : null}
-    {recover ? <details><summary>Before continuing</summary><p>Inspect tool results and actual changes before continuing. Tools may already have run; nothing is replayed automatically.</p></details> : null}
-    {events.some((event) => event.recovery === true) ? <p>A recovered tool outcome may be unknown. Inspect the file or target system before requesting another action.</p> : null}
-  </section>
+  const recover = phase === 'interrupted' || phase === 'cancelled' || phase === 'limit' || phase === 'empty'
+  const recovered = events.some((event) => event.recovery === true)
+  // Failed and rejected turns render as one card inside the transcript itself.
+  const showPhase = !(phase === 'idle' || phase === 'completed' || phase === 'failed' || phase === 'rejected')
+  if (!showPhase && connected) return null
+  const busy = phase === 'running' || phase === 'preparing'
+  return (
+    <section aria-label="Work status" role="status" aria-live="polite" className="flex flex-col gap-1 px-1 text-[13px] text-fg-muted">
+      {showPhase ? (
+        <div className="flex flex-wrap items-center gap-2">
+          {busy ? <Spinner size={12} /> : <Icon name={phase === 'waiting' ? 'shield' : 'info'} size={14} className={phase === 'waiting' ? 'text-warn' : undefined} />}
+          <strong className={busy ? 'font-medium text-shimmer' : 'font-medium text-fg'}>{LABELS[phase]}</strong>
+          {phase === 'preparing' ? <span>Queued input does not run automatically after a restart.</span> : null}
+          {recover ? (
+            <details className="w-full">
+              <summary className="text-xs">Before continuing</summary>
+              <p className="m-0 mt-1 text-xs">Inspect tool results and actual changes before continuing. Tools may already have run; nothing is replayed automatically.</p>
+            </details>
+          ) : null}
+        </div>
+      ) : null}
+      {!connected ? (
+        <p className="m-0 flex items-center gap-2 text-warn">
+          <Icon name="alertTriangle" size={14} />
+          Event connection unavailable. State may be out of date; a lost connection does not mean work has stopped.
+        </p>
+      ) : null}
+      {showPhase && recovered ? <p className="m-0 text-xs">A recovered tool outcome may be unknown. Inspect the file or target system before requesting another action.</p> : null}
+    </section>
+  )
 }

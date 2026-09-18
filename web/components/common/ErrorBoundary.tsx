@@ -4,11 +4,7 @@ import { Button } from '../ui/Button.tsx'
 
 interface State { readonly error: Error | null }
 
-/**
- * App-level crash boundary (spec: Global states): a neutral card on the
- * 760px axis — amber in the icon only, "the data is safe" wording, reload
- * plus collapsed raw diagnostics. No full-red screens.
- */
+/** App-level crash boundary: calm card, "the data is safe" wording, reload plus raw diagnostics. */
 export class ErrorBoundary extends Component<{ readonly children: ReactNode }, State> {
   state: State = { error: null }
 
@@ -23,15 +19,15 @@ export class ErrorBoundary extends Component<{ readonly children: ReactNode }, S
   render(): ReactNode {
     if (this.state.error === null) return this.props.children
     return (
-      <div className="error-boundary" role="alert">
-        <div className="error-boundary-card">
-          <Icon name="alertTriangle" size={18} className="error-boundary-icon" />
-          <strong>Something broke in the interface</strong>
-          <p>The conversation data is safe on the server. Reload to continue.</p>
+      <div className="flex h-dvh items-center justify-center bg-bg p-4 text-fg" role="alert">
+        <div className="flex w-full max-w-md flex-col items-start gap-3 rounded-2xl border border-line p-6">
+          <Icon name="alertTriangle" size={20} className="text-warn" />
+          <strong className="text-base">Something broke in the interface</strong>
+          <p className="m-0 text-sm text-fg-muted">The conversation data is safe on the server. Reload to continue.</p>
           <Button variant="primary" size="sm" onClick={() => window.location.reload()}>Reload</Button>
-          <details>
+          <details className="w-full text-xs text-fg-muted">
             <summary>Details</summary>
-            <pre>{this.state.error.message}</pre>
+            <pre className="mt-2 overflow-auto whitespace-pre-wrap">{this.state.error.message}</pre>
           </details>
         </div>
       </div>

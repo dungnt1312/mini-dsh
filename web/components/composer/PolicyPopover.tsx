@@ -7,6 +7,7 @@ import { useToast } from '../common/Toast.tsx'
 import { Button } from '../ui/Button.tsx'
 import { Menu } from '../ui/Menu.tsx'
 import { Segmented } from '../ui/Segmented.tsx'
+import { composerChipClass } from './composer-chip.ts'
 
 const MODES: readonly PolicyMode[] = ['allow', 'ask', 'deny']
 const SEGMENTS = MODES.map((mode) => ({ value: mode, label: mode[0]?.toUpperCase() + mode.slice(1) }))
@@ -27,16 +28,11 @@ function samePolicy(a: Record<string, string>, b: Record<string, string>): boole
 }
 
 /**
- * The ONLY permission-policy editor (spec: Composer v2): segmented
- * Allow/Ask/Deny per override plus a `*` wildcard row, staged in a local
- * draft — an 8px amber dot marks unsaved changes on the ⓘ trigger. Save
- * PUTs the whole workspace policy (a live control: next tool gate).
+ * The only permission-policy editor: Allow/Ask/Deny per tool override plus a
+ * `*` wildcard row, staged in a local draft. Save PUTs the whole workspace
+ * policy (a live control: next tool gate).
  */
-export function PolicyPopover({
-  policy,
-  workspaceId,
-  onSaved,
-}: {
+export function PolicyPopover({ policy, workspaceId, onSaved }: {
   readonly policy?: Record<string, string> | undefined
   readonly workspaceId: string | null
   readonly onSaved?: () => void
@@ -51,7 +47,6 @@ export function PolicyPopover({
   useEffect(() => {
     setDraft(clean(policy))
     setError(null)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [policy])
 
   const dirty = !samePolicy(draft, saved)
@@ -64,7 +59,6 @@ export function PolicyPopover({
     setError(null)
     try {
       await setPolicy(workspaceId, draft)
-      setDraft((current) => ({ ...current }))
       onSaved?.()
       toast.notify('Policy updated — applies at the next tool gate.', 'ok')
       close()
@@ -77,119 +71,87 @@ export function PolicyPopover({
 
   const addTool = (): void => {
     const tool = adding.trim()
-    if (tool === '' || draft[tool] !== undefined) {
-      setAdding('')
+    if (tool === '') return
+    if (draft[tool] !== undefined) {
+      setError(`"${tool}" already has an override.`)
       return
     }
+    setError(null)
     setDraft((current) => ({ ...current, [tool]: 'ask' }))
     setAdding('')
   }
 
+  const remove = (tool: string): void => setDraft((current) => {
+    const next = { ...current }
+    delete next[tool]
+    return next
+  })
+
   const title = workspaceId === null
     ? 'Permission policy (no workspace context)'
-    : dirty
-      ? 'Permission policy — unsaved changes'
-      : 'Workspace controls and permissions'
+    : dirty ? 'Permission policy — unsaved changes' : 'Workspace controls and permissions'
 
   return (
     <Menu
       label={title}
+      side="top"
       panelRole="dialog"
-      panelClassName="policy-pop"
-      panelWidth={340}
-      triggerClassName={`composer-policy-trigger ui-icon-btn ui-icon-btn-sm ui-icon-btn-ghost${dirty ? ' policy-dirty' : ''}`}
+      panelClassName="w-[min(360px,calc(100vw-24px))] p-3"
+      triggerClassName={composerChipClass}
       trigger={() => (
         <>
-          <Icon name="info" size={13} />
-          {dirty ? <span className="policy-dot" aria-hidden="true" /> : null}
+          <Icon name="shield" size={15} />
+          <span className="max-sm:sr-only">Permissions</span>
+          {dirty ? <span className="size-1.5 rounded-full bg-warn" aria-hidden="true" /> : null}
+          {dirty ? <span className="sr-only">Unsaved changes</span> : null}
         </>
       )}
     >
       {(close) => (
-        <>
-          <div className="policy-pop-head">
-            <strong>Permission policy</strong>
-            <span className="policy-live">⚡ live</span>
+        <div className="flex flex-col gap-3">
+          <div>
+            <strong className="text-sm font-semibold">Permission policy</strong>
+            <p className="m-0 text-xs text-fg-muted">Applies at the next tool gate. Overrides win over the mode&apos;s defaults.</p>
           </div>
-          <p className="policy-pop-sub">Applies at the next tool gate. Overrides win over the mode&apos;s defaults.</p>
-          <div className="policy-row">
-            <span className="policy-tool">
-              <code>*</code>
-              <span className="policy-tool-hint">{hasWildcard ? 'everything else' : 'everything else — mode default'}</span>
-            </span>
-            <Segmented
-              label="Default permission for every tool"
-              value={hasWildcard ? (draft['*'] as PolicyMode) : null}
-              options={SEGMENTS}
-              onChange={(mode) => setDraft((current) => ({ ...current, '*': mode }))}
-            />
-          </div>
-          {overrides.map((tool) => (
-            <div className="policy-row" key={tool}>
-              <span className="policy-tool">
-                <code>{tool}</code>
-              </span>
-              <span className="policy-row-controls">
-                <Segmented
-                  label={`Permission for ${tool}`}
-                  value={(draft[tool] as PolicyMode) ?? null}
-                  options={SEGMENTS}
-                  onChange={(mode) => setDraft((current) => ({ ...current, [tool]: mode }))}
-                />
-                <button
-                  type="button"
-                  className="policy-remove"
-                  aria-label={`Remove the ${tool} override (back to mode default)`}
-                  title="Back to mode default"
-                  onClick={() => setDraft((current) => {
-                    const next = { ...current }
-                    delete next[tool]
-                    return next
-                  })}
-                >
-                  <Icon name="close" size={11} />
-                </button>
-              </span>
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="min-w-0 text-[13px]"><code>*</code> <span className="text-fg-faint">{hasWildcard ? 'everything else' : 'everything else — mode default'}</span></span>
+              <Segmented label="Default permission for every tool" value={hasWildcard ? (draft['*'] as PolicyMode) : null} options={SEGMENTS} onChange={(mode) => setDraft((current) => ({ ...current, '*': mode }))} />
             </div>
-          ))}
-          {hasWildcard ? (
-            <button
-              type="button"
-              className="policy-remove policy-wildcard-remove"
-              onClick={() => setDraft((current) => {
-                const next = { ...current }
-                delete next['*']
-                return next
-              })}
-            >
-              Remove the wildcard override — everything back to the mode default
-            </button>
-          ) : null}
-          <div className="policy-add">
+            {overrides.map((tool) => (
+              <div className="flex items-center justify-between gap-2" key={tool}>
+                <code className="min-w-0 truncate text-[13px]" title={tool}>{tool}</code>
+                <span className="flex items-center gap-1">
+                  <Segmented label={`Permission for ${tool}`} value={(draft[tool] as PolicyMode) ?? null} options={SEGMENTS} onChange={(mode) => setDraft((current) => ({ ...current, [tool]: mode }))} />
+                  <button type="button" className="flex size-7 items-center justify-center rounded-md text-fg-faint hover:bg-hover hover:text-fg" aria-label={`Remove the ${tool} override (back to mode default)`} title="Back to mode default" onClick={() => remove(tool)}>
+                    <Icon name="close" size={13} />
+                  </button>
+                </span>
+              </div>
+            ))}
+            {hasWildcard ? (
+              <button type="button" className="self-start text-xs text-fg-muted underline-offset-2 hover:underline" onClick={() => remove('*')}>
+                Remove the wildcard override — everything back to the mode default
+              </button>
+            ) : null}
+          </div>
+          <div className="flex gap-2">
             <input
-              className="filter-input"
+              className="filter-input h-8"
               value={adding}
               placeholder="Add a tool override…"
               aria-label="Tool name for a new override"
               onChange={(event) => setAdding(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault()
-                  addTool()
-                }
-              }}
+              onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addTool() } }}
             />
             <Button size="sm" onClick={addTool} disabled={adding.trim() === ''}>Add</Button>
           </div>
           {error !== null ? <ErrorNotice raw={error} /> : null}
-          <hr className="policy-divider" />
-          <div className="policy-foot">
+          <div className="flex justify-end gap-2 border-t border-line pt-3">
             <Button size="sm" variant="ghost" onClick={() => { setDraft(saved); setError(null) }} disabled={!dirty || saving}>Reset</Button>
-            <Button size="sm" variant="primary" onClick={() => void save(close)} disabled={workspaceId === null || !dirty || saving}>
-              {saving ? 'Saving…' : 'Save'}
-            </Button>
+            <Button size="sm" variant="primary" onClick={() => void save(close)} disabled={workspaceId === null || !dirty || saving}>{saving ? 'Saving…' : 'Save'}</Button>
           </div>
-        </>
+        </div>
       )}
     </Menu>
   )

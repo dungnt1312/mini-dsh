@@ -1,26 +1,29 @@
 import { cva } from 'class-variance-authority'
-import type { ButtonHTMLAttributes, ReactNode } from 'react'
+import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react'
 import { cn } from '../../lib/cn.ts'
 
-const iconButtonStyles = cva('ui-icon-btn inline-flex items-center justify-center rounded-control transition-colors disabled:pointer-events-none disabled:opacity-50', {
-  variants: {
-    variant: {
-      ghost: 'ui-icon-btn-ghost hover:bg-surface-muted',
-      outline: 'ui-icon-btn-outline border border-border hover:bg-surface-muted',
-      tinted: 'ui-icon-btn-tinted bg-accent-soft text-accent hover:bg-accent-soft/80',
-      solid: 'ui-icon-btn-solid bg-accent text-accent-ink hover:bg-accent-hover',
+const iconButtonStyles = cva(
+  'inline-flex shrink-0 items-center justify-center rounded-lg text-fg-muted transition-colors hover:text-fg disabled:pointer-events-none disabled:opacity-40',
+  {
+    variants: {
+      variant: {
+        ghost: 'hover:bg-hover',
+        outline: 'border border-line hover:bg-hover',
+        tinted: 'bg-muted text-fg hover:bg-hover',
+        solid: 'bg-primary text-primary-fg hover:text-primary-fg hover:opacity-85',
+      },
+      size: { sm: 'size-8', md: 'size-9' },
     },
-    size: { sm: 'ui-icon-btn-sm size-8', md: 'ui-icon-btn-md size-10' },
+    defaultVariants: { variant: 'ghost', size: 'sm' },
   },
-  defaultVariants: { variant: 'ghost', size: 'sm' },
-})
+)
 
-export function IconButton({ label, variant = 'ghost', size = 'sm', className, children, ...rest }: {
+export const IconButton = forwardRef<HTMLButtonElement, {
   readonly label: string
   readonly variant?: 'ghost' | 'outline' | 'tinted' | 'solid'
   readonly size?: 'sm' | 'md'
   readonly className?: string
   readonly children?: ReactNode
-} & ButtonHTMLAttributes<HTMLButtonElement>) {
-  return <button type="button" title={label} aria-label={label} className={cn(iconButtonStyles({ variant, size }), className)} {...rest}>{children}</button>
-}
+} & ButtonHTMLAttributes<HTMLButtonElement>>(function IconButton({ label, variant = 'ghost', size = 'sm', className, children, ...rest }, ref) {
+  return <button ref={ref} type="button" title={label} aria-label={label} className={cn(iconButtonStyles({ variant, size }), className)} {...rest}>{children}</button>
+})

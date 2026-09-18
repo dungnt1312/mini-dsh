@@ -204,7 +204,7 @@ function AgentsPanelContent({ workspaceId, rootSessionId, onOpenChild }: { reado
   }
 
   return (
-    <div className="manage-panel flex min-w-0 flex-col gap-8 text-ink">
+    <div className="manage-panel">
       <Notice kind="info" text="One level of delegation: only the root can spawn children. Up to 3 children run concurrently, with 8 per turn." />
 
       <section className="manage-section">
@@ -458,7 +458,7 @@ function McpPanelContent({ workspaceId }: { readonly workspaceId: string | null 
   }
 
   return (
-    <div className="manage-panel flex min-w-0 flex-col gap-8 text-ink">
+    <div className="manage-panel">
       <IsolationNote />
       <Notice kind="info" text="MCP tools default to ask. requiresUserInteraction always requires approval and cannot become allow. allowedTools filters exposure; it does not grant permission." />
 
@@ -674,7 +674,7 @@ function HooksPanelContent({ workspaceId }: { readonly workspaceId: string | nul
   }
 
   return (
-    <div className="manage-panel flex min-w-0 flex-col gap-8 text-ink">
+    <div className="manage-panel">
       <IsolationNote />
       <Notice kind="info" text="PreToolUse can block or rewrite arguments; rewrites are logged and pass every gate again. PostToolUse validates output. UserPromptSubmit injects context. Every execution is audited with argument and result hashes." />
       {HOOK_EVENTS.map((entry) => {
@@ -785,7 +785,7 @@ function SecretsPanelContent({ workspaceId }: { readonly workspaceId: string | n
   if (workspaceId === null) return <Notice kind="info" text="Choose a workspace first." />
 
   return (
-    <div className="manage-panel flex min-w-0 flex-col gap-8 text-ink">
+    <div className="manage-panel">
       <Notice kind="info" text="Secrets are encrypted at rest with AES-256-GCM. The master key requires user-scoped ACL/chmod permissions and fails closed if they cannot be set. Only key names are displayed." />
       <section className="manage-section">
         <div className="manage-section-head">
@@ -988,7 +988,7 @@ function SkillsPanelContent({ workspaceId }: { readonly workspaceId: string | nu
   }
 
   return (
-    <div className="manage-panel flex min-w-0 flex-col gap-8 text-ink">
+    <div className="manage-panel">
       <Notice kind="info" text="Skills are SKILL.md instruction packages the model can load by name. Bundled rows are read-only; workspace rows are yours." />
       {editing === null ? (
         <section className="manage-section">
@@ -1208,7 +1208,7 @@ function MemoryPanelContent({ workspaceId }: { readonly workspaceId: string | nu
   }
 
   return (
-    <div className="manage-panel flex min-w-0 flex-col gap-8 text-ink">
+    <div className="manage-panel">
       <Notice kind="info" text="Memory entries are scoped to this workspace and surfaced to the model by relevance. Pinned entries always load." />
       {creating ? (
         <section className="manage-section">

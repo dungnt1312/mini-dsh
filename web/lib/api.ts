@@ -234,6 +234,58 @@ export function listDirs(path?: string): Promise<FolderListing> {
   return fetch(`/api/fs/dirs${query}`).then((r) => json<FolderListing>(r))
 }
 
+/** One entry of a read-only project listing; `path` is root-relative with `/`. */
+export interface ProjectEntry {
+  readonly name: string
+  readonly path: string
+  readonly kind: 'dir' | 'file'
+  readonly size?: number
+}
+
+export interface ProjectListing {
+  readonly path: string
+  readonly entries: readonly ProjectEntry[]
+}
+
+export interface ProjectFileView {
+  readonly path: string
+  readonly size: number
+  readonly binary: boolean
+  readonly truncated: boolean
+  readonly content: string
+}
+
+const projectBase = (workspaceId: string, projectId: string): string =>
+  `/api/workspaces/${encodeURIComponent(workspaceId)}/projects/${encodeURIComponent(projectId)}`
+
+export function listProjectFiles(workspaceId: string, projectId: string, path: string): Promise<ProjectListing> {
+  return fetch(`${projectBase(workspaceId, projectId)}/files?path=${encodeURIComponent(path)}`).then((r) => json<ProjectListing>(r))
+}
+
+export function readProjectFile(workspaceId: string, projectId: string, path: string): Promise<ProjectFileView> {
+  return fetch(`${projectBase(workspaceId, projectId)}/file?path=${encodeURIComponent(path)}`).then((r) => json<ProjectFileView>(r))
+}
+
+/** One `@` mention candidate: a file name and its root-relative path. */
+export interface ProjectMatch {
+  readonly name: string
+  readonly path: string
+  readonly score: number
+}
+
+export interface ProjectSearchResult {
+  readonly query: string
+  readonly matches: readonly ProjectMatch[]
+  /** The walk hit its budget, so more files may match than are listed. */
+  readonly truncated: boolean
+}
+
+/** Bounded file-name search under a project root (composer mentions). */
+export function searchProjectFiles(workspaceId: string, projectId: string, query: string, limit?: number): Promise<ProjectSearchResult> {
+  const cap = limit !== undefined ? `&limit=${limit}` : ''
+  return fetch(`${projectBase(workspaceId, projectId)}/search?q=${encodeURIComponent(query)}${cap}`).then((r) => json<ProjectSearchResult>(r))
+}
+
 /** Per-workspace controls + project list. */
 export function fetchWorkspaceMeta(workspaceId: string): Promise<WorkspaceMeta> {
   return fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/meta`).then((r) => json<WorkspaceMeta>(r))

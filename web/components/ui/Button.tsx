@@ -4,20 +4,23 @@ import { cn } from '../../lib/cn.ts'
 
 export type ButtonVariant = 'primary' | 'ghost' | 'outline' | 'success' | 'danger' | 'outline-danger'
 
-const buttonStyles = cva('ui-btn inline-flex items-center justify-center rounded-control font-medium transition-colors disabled:pointer-events-none disabled:opacity-50', {
-  variants: {
-    variant: {
-      primary: 'ui-btn-primary bg-accent text-accent-ink hover:bg-accent-hover',
-      ghost: 'ui-btn-ghost hover:bg-surface-muted',
-      outline: 'ui-btn-outline border border-border hover:bg-surface-muted',
-      success: 'ui-btn-success bg-success text-white hover:brightness-95',
-      danger: 'ui-btn-danger bg-danger text-white hover:brightness-95',
-      'outline-danger': 'ui-btn-outline-danger border border-danger text-danger hover:bg-danger-soft',
+const buttonStyles = cva(
+  'inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-full font-medium transition-colors disabled:pointer-events-none disabled:opacity-40',
+  {
+    variants: {
+      variant: {
+        primary: 'bg-primary text-primary-fg hover:opacity-85',
+        ghost: 'text-fg hover:bg-hover',
+        outline: 'border border-line-strong text-fg hover:bg-hover',
+        success: 'bg-primary text-primary-fg hover:opacity-85',
+        danger: 'bg-bad text-white hover:opacity-90 dark:text-[#1a1a1a]',
+        'outline-danger': 'border border-line-strong text-bad hover:bg-bad-soft',
+      },
+      size: { sm: 'h-8 px-3 text-[13px]', md: 'h-9 px-4 text-sm' },
     },
-    size: { sm: 'ui-btn-sm min-h-8 px-2.5 text-xs', md: 'ui-btn-md min-h-9 px-3 text-sm' },
+    defaultVariants: { variant: 'outline', size: 'md' },
   },
-  defaultVariants: { variant: 'outline', size: 'md' },
-})
+)
 
 export function Button({ variant = 'outline', size = 'md', className, children, ...rest }: {
   readonly variant?: ButtonVariant

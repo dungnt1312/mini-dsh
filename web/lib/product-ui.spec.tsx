@@ -1,27 +1,28 @@
-import CopyButton from '../components/common/CopyButton.tsx'
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, useState, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import CopyButton from '../components/common/CopyButton.tsx'
 import { ApprovalBar } from '../components/chat/ApprovalBar.tsx'
-import { Composer, ConversationDock } from '../components/composer/Composer.tsx'
+import { Composer } from '../components/composer/Composer.tsx'
 import { PolicyPopover } from '../components/composer/PolicyPopover.tsx'
-import { ToastHost } from '../components/common/Toast.tsx'
+import { ToastHost, useToast } from '../components/common/Toast.tsx'
 import { ToolCard, AssistantMessage, DelegationCard, AuditLine, UserBubble } from '../components/chat/MessageParts.tsx'
-import { WorkbenchSurface } from '../components/chat/WorkbenchSurface.tsx'
+import { groupBlocks } from '../components/chat/Transcript.tsx'
 import { modeLabel, errorSummary } from './copy.ts'
 import { budgetTone, formatTime } from './format.ts'
 import { projectItems } from './project.ts'
-import { setPolicy, compactSession, fetchHooks, saveHooks, renameWorkspace } from './api.ts'
+import { setPolicy, compactSession, fetchHooks, saveHooks, renameWorkspace, listProjectFiles, readProjectFile } from './api.ts'
 import { ContextPanel } from '../components/layout/ContextPanel.tsx'
-import { InspectorPanel } from '../components/layout/InspectorPanel.tsx'
+import { Workbench } from '../components/workbench/Workbench.tsx'
+import { closeFileTab, useWorkbenchFiles } from '../hooks/useWorkbenchFiles.ts'
+import { Sidebar, type SidebarProps } from '../components/layout/Sidebar.tsx'
 import { HooksPanel } from '../components/settings/ManagementPanels.tsx'
-import { TopBar } from '../components/layout/TopBar.tsx'
 import { SessionList } from '../components/session/SessionList.tsx'
 import { WorkspacePopover } from '../components/layout/WorkspacePopover.tsx'
 import { ErrorBoundary } from '../components/common/ErrorBoundary.tsx'
-import { useToast } from '../components/common/Toast.tsx'
 import { useApprovalNotify } from '../hooks/useApprovalNotify.ts'
+import type { SseEvent } from './types.ts'
 
 vi.mock('./api.ts', () => ({
   setPolicy: vi.fn(async () => ({ policy: {} })),
@@ -40,30 +41,37 @@ vi.mock('./api.ts', () => ({
   createMemory: vi.fn(async () => ({ id: 'm', title: 'm', pinned: false, createdAt: 0, updatedAt: 0, body: 'b', hash: 'h' })),
   updateMemory: vi.fn(async () => ({ id: 'm', title: 'm', pinned: false, createdAt: 0, updatedAt: 0, body: 'b', hash: 'h2' })),
   deleteMemory: vi.fn(async () => ({ forgotten: true })),
+  listProjectFiles: vi.fn(async (_ws: string, _project: string, folder: string) => folder === ''
+    ? { path: '', entries: [{ name: 'src', path: 'src', kind: 'dir' }, { name: 'README.md', path: 'README.md', kind: 'file', size: 12 }] }
+    : { path: folder, entries: [{ name: 'index.ts', path: 'src/index.ts', kind: 'file', size: 26 }] }),
+  readProjectFile: vi.fn(async (_ws: string, _project: string, path: string) => ({ path, size: 26, binary: false, truncated: false, content: 'export const answer = 42\n<raw>\n' })),
 }))
 
-// Inspector content uses responsive primitives that need matchMedia in jsdom.
+// Responsive primitives need matchMedia in jsdom.
 if (typeof window !== 'undefined' && window.matchMedia === undefined) {
   Object.defineProperty(window, 'matchMedia', {
     writable: true,
-    value: (query: string) => ({
-      matches: false,
-      media: query,
-      onchange: null,
-      addEventListener: () => {},
-      removeEventListener: () => {},
-      addListener: () => {},
-      removeListener: () => {},
-      dispatchEvent: () => false,
-    }),
+    value: (query: string) => ({ matches: false, media: query, onchange: null, addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {}, dispatchEvent: () => false }),
   })
 }
 let root: Root | undefined
 let host: HTMLDivElement
-;(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true
+;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 async function mount(view: ReactNode) { host = document.createElement('div'); document.body.append(host); root = createRoot(host); await act(async () => root!.render(view)) }
 afterEach(async () => { vi.clearAllMocks(); if (root) await act(async () => root!.unmount()); host?.remove(); root = undefined })
 function button(text: string) { return [...host.querySelectorAll('button')].find(b => b.textContent?.includes(text))! }
+function bodyButton(text: string) { return [...document.body.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent === text)! }
+function setInput(element: HTMLInputElement | HTMLTextAreaElement, value: string) {
+  const proto = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+  Object.getOwnPropertyDescriptor(proto, 'value')!.set!.call(element, value)
+  element.dispatchEvent(new Event('input', { bubbles: true }))
+}
+function WorkbenchProbe({ view, events, project = null }: { readonly view: 'files' | 'context' | 'artifacts'; readonly events: readonly SseEvent[]; readonly project?: { id: string; name: string; path: string } | null }) {
+  const files = useWorkbenchFiles(project?.id ?? null)
+  return <Workbench workspaceId="w1" project={project} view={view} onView={() => {}} files={files} events={events} expanded={false} onClose={() => {}} context={{ meta: null, stream: 'open', sessionId: 's1', sessionFolder: null, eventCount: events.length }} />
+}
+const composerBase = { onDraft: () => {}, onSend: () => {}, onStop: () => {}, modelValue: 'p/m', modes: [], modeValue: null, onMode: () => {} }
+
 describe('mounted production controls', () => {
   it('accepts synchronous approval callbacks through the public contract', async () => {
     const answer = vi.fn()
@@ -85,8 +93,8 @@ describe('mounted production controls', () => {
     expect(host.querySelector('.error-notice pre')?.textContent).toContain('approval 404 resolved')
   })
   it('IME and Shift+Enter do not send; Enter sends only an eligible draft', async () => {
-    const send = vi.fn(); const stop = vi.fn()
-    await mount(<ToastHost><Composer connected running={false} draft="Dữ liệu giữ nguyên" onDraft={() => {}} onSend={send} onStop={stop} modelValue="p/m" modelOptions={[]} onModel={() => {}} modes={[]} modeValue={null} onMode={() => {}} /></ToastHost>)
+    const send = vi.fn()
+    await mount(<ToastHost><Composer {...composerBase} connected running={false} draft="Dữ liệu giữ nguyên" onSend={send} /></ToastHost>)
     const input = host.querySelector('textarea')!
     await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true })); input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true })) })
     expect(send).not.toHaveBeenCalled()
@@ -94,78 +102,62 @@ describe('mounted production controls', () => {
     expect(send).toHaveBeenCalledTimes(1)
     expect(input.value).toBe('Dữ liệu giữ nguyên')
   })
-  it('while running the send morphs into Queue and Enter still submits (queueing)', async () => {
+  it('while running with a draft the send becomes Queue next to Stop and Enter still submits', async () => {
     const send = vi.fn()
-    await mount(<ToastHost><Composer connected running draft="follow-up" onDraft={() => {}} onSend={send} onStop={() => {}} modelValue="p/m" modelOptions={[]} onModel={() => {}} modes={[]} modeValue={null} onMode={() => {}} /></ToastHost>)
-    const queue = host.querySelector('button[aria-label="Queue message"]') as HTMLButtonElement
-    expect(queue).not.toBeNull()
-    expect(queue.disabled).toBe(false)
+    await mount(<ToastHost><Composer {...composerBase} connected running draft="follow-up" onSend={send} /></ToastHost>)
+    const queue = host.querySelector<HTMLButtonElement>('button[aria-label="Queue message"]')
+    expect(queue?.disabled).toBe(false)
     expect(host.querySelector('button[aria-label="Stop work"]')).not.toBeNull()
     const input = host.querySelector('textarea')!
-    expect((input as HTMLTextAreaElement).placeholder).toBe('Keep typing to queue a follow-up…')
+    expect(input.placeholder).toBe('Queue a follow-up…')
     await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
     expect(send).toHaveBeenCalledTimes(1)
     expect(host.querySelector('button[aria-label="Send"]')).toBeNull()
   })
+  it('while running with an empty draft only Stop is offered', async () => {
+    await mount(<ToastHost><Composer {...composerBase} connected running draft="" /></ToastHost>)
+    expect(host.querySelector('button[aria-label="Stop work"]')).not.toBeNull()
+    expect(host.querySelector('button[aria-label="Queue message"]')).toBeNull()
+  })
   it('keeps reconnecting drafts editable and does not imply stopped work', async () => {
     const draft = 'draft survives reconnect'
-    await mount(<ToastHost><Composer connected={false} running draft={draft} onDraft={() => {}} onSend={() => {}} onStop={() => {}} modelValue="p/m" modelOptions={[]} onModel={() => {}} modes={[]} modeValue={null} onMode={() => {}} /></ToastHost>)
+    await mount(<ToastHost><Composer {...composerBase} connected={false} running draft={draft} /></ToastHost>)
     const input = host.querySelector<HTMLTextAreaElement>('textarea')!
     expect(input.disabled).toBe(false)
     expect(input.value).toBe(draft)
-    expect(input.placeholder).toBe('Keep typing to queue a follow-up…')
     expect(host.querySelector('button[aria-label="Stop work"]')).not.toBeNull()
     expect(host.querySelector<HTMLButtonElement>('button[aria-label="Queue message"]')?.disabled).toBe(true)
-  })
-  it('attaches measured clearance when the transcript mounts after the dock effect', async () => {
-    await mount(<div className="chat"><ConversationDock approvals={null} sendError={null} composer={<div style={{ height: 80 }}>composer</div>} /></div>)
-    const chat = host.querySelector<HTMLElement>('.chat')!
-    expect(chat.querySelector('.transcript')).toBeNull()
-    const transcript = document.createElement('div')
-    transcript.className = 'transcript'
-    await act(async () => { chat.prepend(transcript); await new Promise((resolve) => setTimeout(resolve, 0)) })
-    expect(Number.parseFloat(transcript.style.paddingBottom)).toBeGreaterThan(0)
-  })
-  it('orders approval, send error, and composer inside the measured conversation dock', async () => {
-    await mount(
-      <ConversationDock
-        approvals={<div data-dock-item="approval">approval</div>}
-        sendError={<div data-dock-item="error">error</div>}
-        composer={<div data-dock-item="composer">composer</div>}
-      />,
-    )
-    const dock = host.querySelector<HTMLElement>('[data-conversation-dock]')!
-    expect([...dock.querySelectorAll('[data-dock-item]')].map((node) => node.getAttribute('data-dock-item'))).toEqual(['approval', 'error', 'composer'])
-    expect(dock.className).toContain('conversation-dock')
   })
   it('tool disclosure preserves exact arguments and external output', async () => {
     await mount(<ToolCard item={{ kind: 'tool', call: { id: 'c', name: 'custom_tool', args: { path: 'C:/Dự án', secretName: 'NO_TRANSLATION' } }, result: { ok: false, output: 'lỗi từ công cụ <raw>' } }} />)
     expect(host.querySelector('pre')).toBeNull()
+    expect(host.textContent).toContain('Failed')
     await act(async () => host.querySelector('button')!.click())
     expect(host.querySelector('button')?.getAttribute('aria-expanded')).toBe('true')
     expect(host.textContent).toContain('lỗi từ công cụ <raw>')
     expect(host.querySelector('pre')?.textContent).toContain('C:/Dự án')
   })
-  it('elevated workbench presents the existing recovered tool with exact disclosures', async () => {
-    await mount(<WorkbenchSurface item={{ kind: 'tool', call: { id: 'c', name: 'Bash', args: { command: 'printf <raw>' } }, result: { ok: true, output: 'recorded <output>' }, recovered: true }} workspaceId="w1" onOpenChild={() => {}} />)
-    expect(host.querySelector('[data-workbench-surface]')?.textContent).toContain('Outcome unknown — the host restarted before this result was recorded.')
-    expect(host.querySelector('pre')?.textContent).toContain('printf <raw>')
-    expect(host.textContent).toContain('recorded <output>')
-  })
-  it('elevated running tool does not synthesize an output disclosure', async () => {
-    await mount(<WorkbenchSurface item={{ kind: 'tool', call: { id: 'c', name: 'Bash', args: { command: 'npm test' } } }} workspaceId="w1" onOpenChild={() => {}} />)
-    expect(host.textContent).toContain('Running')
-    expect(host.textContent).not.toContain('Output')
-    expect(host.querySelectorAll('pre')).toHaveLength(1)
-  })
-  it('elevated delegation opens the existing child conversation callback', async () => {
-    const onOpenChild = vi.fn()
-    await mount(<WorkbenchSurface item={{ kind: 'delegation', childSessionId: 'child-1', definition: 'explorer', objective: 'Map auth', status: 'running' }} workspaceId="w1" onOpenChild={onOpenChild} />)
-    await act(async () => button('Open conversation').click())
-    expect(onOpenChild).toHaveBeenCalledWith('child-1')
+})
+
+describe('transcript grouping', () => {
+  it('packs consecutive activity rows into one block and drops empty markers', () => {
+    const blocks = groupBlocks([
+      { kind: 'user', content: 'go' },
+      { kind: 'tool', call: { id: 'a', name: 'Read', args: {} } },
+      { kind: 'tool', call: { id: 'b', name: 'Bash', args: {} } },
+      { kind: 'audit', icon: 'allow', text: 'Allowed · Bash' },
+      { kind: 'assistant', content: 'done', live: false, thinking: [], thinkingLive: false },
+      { kind: 'status', reason: 'completed' },
+      { kind: 'status', reason: 'provider: 500' },
+      { kind: 'status', reason: 'failed' },
+      { kind: 'status', reason: 'limit' },
+    ])
+    expect(blocks.map((block) => block.kind === 'activity' ? `activity:${block.rows.length}` : block.row.item.kind)).toEqual(['user', 'activity:3', 'assistant', 'status', 'status'])
   })
 })
-describe('presentation ownership', () => {  it('maps only bundled mode labels and preserves custom names even for a familiar ID', () => {
+
+describe('presentation ownership', () => {
+  it('maps only bundled mode labels and preserves custom names even for a familiar ID', () => {
     expect(modeLabel({ id: 'plan', name: 'Kế hoạch', source: 'bundled' })).toBe('Plan')
     expect(modeLabel({ id: 'plan', name: 'Kế hoạch riêng', source: 'workspace' })).toBe('Kế hoạch riêng')
   })
@@ -179,18 +171,17 @@ describe('presentation ownership', () => {  it('maps only bundled mode labels an
   })
 })
 
-
 describe('permission policy popover', () => {
+  const trigger = () => host.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]')!
+  const segment = (group: string, label: string) => [...document.body.querySelectorAll<HTMLButtonElement>(`[role="group"][aria-label="${group}"] button`)].find(b => b.textContent === label)!
   it('stages changes, marks the trigger dirty, and saves the whole workspace policy', async () => {
     const saved = vi.fn()
     await mount(<ToastHost><PolicyPopover policy={{ bash: 'ask' }} workspaceId="w1" onSaved={saved} /></ToastHost>)
-    const trigger = host.querySelector<HTMLButtonElement>('.composer-policy-trigger')!
-    expect(trigger.querySelector('.policy-dot')).toBeNull()
-    await act(async () => trigger.click())
-    const wildcardAllow = [...document.body.querySelectorAll<HTMLButtonElement>('.ui-segment')].find(b => b.textContent === 'Allow')!
-    await act(async () => wildcardAllow.click())
-    expect(host.querySelector('.policy-dot')).not.toBeNull()
-    const save = [...document.body.querySelectorAll<HTMLButtonElement>('.policy-foot button')].find(b => b.textContent === 'Save')!
+    expect(trigger().textContent).not.toContain('Unsaved changes')
+    await act(async () => trigger().click())
+    await act(async () => segment('Default permission for every tool', 'Allow').click())
+    expect(trigger().textContent).toContain('Unsaved changes')
+    const save = bodyButton('Save')
     expect(save.disabled).toBe(false)
     await act(async () => save.click())
     expect(setPolicy).toHaveBeenCalledWith('w1', { '*': 'allow', bash: 'ask' })
@@ -198,25 +189,19 @@ describe('permission policy popover', () => {
   })
   it('keeps staged policy changes after closing and reopening the popover', async () => {
     await mount(<ToastHost><PolicyPopover policy={{ bash: 'ask' }} workspaceId="w1" /></ToastHost>)
-    const trigger = host.querySelector<HTMLButtonElement>('.composer-policy-trigger')!
-    await act(async () => trigger.click())
-    const wildcardAllow = [...document.body.querySelectorAll<HTMLButtonElement>('.ui-segment')].find(b => b.textContent === 'Allow')!
-    await act(async () => wildcardAllow.click())
-    expect(host.querySelector('.policy-dot')).not.toBeNull()
-    await act(async () => document.body.querySelector<HTMLElement>('.policy-pop')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
-    await act(async () => trigger.click())
-    const selectedAllow = [...document.body.querySelectorAll<HTMLButtonElement>('.ui-segment-active')].find(b => b.textContent === 'Allow')
-    expect(selectedAllow).not.toBeUndefined()
-    expect(host.querySelector('.policy-dot')).not.toBeNull()
+    await act(async () => trigger().click())
+    await act(async () => segment('Default permission for every tool', 'Allow').click())
+    await act(async () => document.body.querySelector<HTMLElement>('[role="dialog"]')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    await act(async () => trigger().click())
+    expect(segment('Default permission for every tool', 'Allow').getAttribute('aria-pressed')).toBe('true')
+    expect(trigger().textContent).toContain('Unsaved changes')
   })
   it('keeps the dialog-bound editor honest: Reset restores the saved policy', async () => {
     await mount(<ToastHost><PolicyPopover policy={{ bash: 'ask' }} workspaceId="w1" /></ToastHost>)
-    await act(async () => host.querySelector<HTMLButtonElement>('.composer-policy-trigger')!.click())
-    const deny = [...document.body.querySelectorAll<HTMLButtonElement>('.ui-segment')].find(b => b.textContent === 'Deny')!
-    await act(async () => deny.click())
-    const reset = [...document.body.querySelectorAll<HTMLButtonElement>('.policy-foot button')].find(b => b.textContent === 'Reset')!
-    await act(async () => reset.click())
-    expect(host.querySelector('.policy-dot')).toBeNull()
+    await act(async () => trigger().click())
+    await act(async () => segment('Permission for bash', 'Deny').click())
+    await act(async () => bodyButton('Reset').click())
+    expect(trigger().textContent).not.toContain('Unsaved changes')
     expect(setPolicy).not.toHaveBeenCalled()
   })
 })
@@ -228,8 +213,7 @@ describe('always-allow approval flow', () => {
     await mount(<ApprovalBar approvals={[{ approvalId: 'a', call: { id: 'c', name: 'bash', args: { command: 'ls' } } }]} onAnswer={answer} workspaceName="Acme" onAlwaysAllow={always} />)
     await act(async () => button('Always allow bash…').click())
     expect(document.body.textContent).toContain('Always allow "bash" in Acme?')
-    const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('.confirm-actions button')].find(b => b.textContent === 'Allow always')!
-    await act(async () => confirm.click())
+    await act(async () => bodyButton('Allow always').click())
     expect(always).toHaveBeenCalledWith('bash')
     expect(answer).toHaveBeenCalledWith('a', true)
     expect(document.body.textContent).not.toContain('Always allow "bash" in Acme?')
@@ -240,7 +224,7 @@ describe('always-allow approval flow', () => {
     const answer = vi.fn(async () => undefined)
     await mount(<ApprovalBar approvals={[{ approvalId: 'a', call: { id: 'c', name: 'bash', args: {} } }]} onAnswer={answer} onAlwaysAllow={always} />)
     await act(async () => button('Always allow bash…').click())
-    const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('.confirm-actions button')].find(b => b.textContent === 'Allow always')!
+    const confirm = bodyButton('Allow always')
     await act(async () => { confirm.click(); confirm.click() })
     expect(always).toHaveBeenCalledTimes(1)
     expect(answer).not.toHaveBeenCalled()
@@ -253,15 +237,13 @@ describe('always-allow approval flow', () => {
     const answer = vi.fn(async () => undefined)
     await mount(<ApprovalBar approvals={[{ approvalId: 'a', call: { id: 'c', name: 'bash', args: {} } }]} onAnswer={answer} onAlwaysAllow={always} />)
     await act(async () => button('Always allow bash…').click())
-    const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('.confirm-actions button')].find(b => b.textContent === 'Allow always')!
-    await act(async () => confirm.click())
+    await act(async () => bodyButton('Allow always').click())
     expect(document.body.querySelector('.error-notice')?.textContent).toContain('policy 409 refused')
     expect(document.body.textContent).toContain('Always allow "bash"')
     expect(answer).not.toHaveBeenCalled()
   })
   it('hides Always allow without a workspace context (existing two-action contract)', async () => {
-    const answer = vi.fn(async () => undefined)
-    await mount(<ApprovalBar approvals={[{ approvalId: 'a', call: { id: 'c', name: 'bash', args: {} } }]} onAnswer={answer} />)
+    await mount(<ApprovalBar approvals={[{ approvalId: 'a', call: { id: 'c', name: 'bash', args: {} } }]} onAnswer={vi.fn()} />)
     expect(button('Allow once')).not.toBeNull()
     expect(host.textContent).not.toContain('Always allow')
   })
@@ -296,47 +278,49 @@ describe('transcript truthfulness', () => {
   })
   it('reports the controls that served the message before the workspace fallback', async () => {
     await mount(<AssistantMessage item={assistant({ model: 'deepseek-v3', provider: 'dntproxy' })} modelLabel="workspace-model" />)
-    expect(host.querySelector('.meta-model')?.textContent).toBe('deepseek-v3 · dntproxy')
+    expect(host.textContent).toContain('deepseek-v3 · dntproxy')
+    expect(host.textContent).not.toContain('workspace-model')
     await mount(<AssistantMessage item={assistant()} modelLabel="workspace-model" />)
-    expect(host.querySelector('.meta-model')?.textContent).toBe('workspace-model')
+    expect(host.textContent).toContain('workspace-model')
   })
-  it('renders a recovered tool result as amber unknown, never failed', async () => {
+  it('renders a recovered tool result as unknown, never failed', async () => {
     await mount(<ToolCard item={{ kind: 'tool', call: { id: 'c', name: 'Bash', args: { command: 'npm install' } }, result: { ok: true, output: 'partial output' }, recovered: true }} />)
-    const row = host.querySelector('.tool-row')!
-    expect(row.className).toContain('recovered')
-    expect(row.querySelector('.verdict-recovered')).not.toBeNull()
-    expect(row.querySelector('.verdict-failed')).toBeNull()
+    expect(host.textContent).toContain('Outcome unknown')
+    expect(host.textContent).not.toContain('Failed')
     expect(host.textContent).toContain('recovered')
-    await act(async () => host.querySelector<HTMLButtonElement>('.tool-head')!.click())
-    expect(host.querySelector('.tool-recovery-note')?.textContent).toContain('Outcome unknown')
-    expect(host.querySelector('.tool-recovery-note')?.textContent).not.toContain('partial output')
+    await act(async () => host.querySelector('button')!.click())
+    const note = host.querySelector('[role="note"]')
+    expect(note?.textContent).toContain('Outcome unknown — the host restarted')
+    expect(note?.textContent).not.toContain('partial output')
   })
   it('carries the MCP server chip parsed from the mcp__server__tool call name', async () => {
     await mount(<ToolCard item={{ kind: 'tool', call: { id: 'c', name: 'mcp__docs__search', args: { q: 'x' } }, result: { ok: true, output: 'hit' }, server: 'docs' }} />)
-    expect([...host.querySelectorAll('.ui-code-chip, code')].some(chip => chip.textContent === 'docs')).toBe(true)
+    expect([...host.querySelectorAll('span')].some(chip => chip.textContent === 'docs')).toBe(true)
   })
   it('shows the delegation timeline and opens the child conversation', async () => {
     const onOpen = vi.fn()
     await mount(<DelegationCard item={{ kind: 'delegation', childSessionId: 'child-1', definition: 'explorer', objective: 'Map auth modules', status: 'completed' }} workspaceId={null} onOpen={onOpen} />)
-    expect(host.querySelector('.tool-head')?.textContent).toContain('Delegated to explorer')
-    expect(host.querySelector('.tool-head')?.textContent).toContain('Map auth modules')
-    expect(host.querySelector('.verdict-ok')).not.toBeNull()
-    await act(async () => host.querySelector<HTMLButtonElement>('.tool-head')!.click())
-    expect(host.querySelector('.delegation-label')?.textContent).toContain('Objective')
-    await act(async () => host.querySelector<HTMLButtonElement>('.delegation-open')!.click())
+    const head = host.querySelector('button')!
+    expect(head.textContent).toContain('Delegated to explorer')
+    expect(head.textContent).toContain('Map auth modules')
+    expect(head.textContent).toContain('Succeeded')
+    await act(async () => head.click())
+    expect(host.textContent).toContain('Objective')
+    await act(async () => button('Open conversation').click())
     expect(onOpen).toHaveBeenCalledWith('child-1')
   })
   it('keeps a running delegation silent about its result until settled', async () => {
     await mount(<DelegationCard item={{ kind: 'delegation', childSessionId: 'child-2', definition: 'coder', objective: 'Fix', status: 'running' }} workspaceId={null} onOpen={() => {}} />)
-    expect(host.querySelector('.tool-spin')).not.toBeNull()
-    await act(async () => host.querySelector<HTMLButtonElement>('.tool-head')!.click())
+    expect(host.textContent).toContain('Running')
+    await act(async () => host.querySelector('button')!.click())
     expect(host.textContent).not.toContain('Result (')
   })
-  it('renders audit lines with tone icons and no raw uuid decisions', async () => {
+  it('renders audit lines with a glyph, exact text and duration', async () => {
     await mount(<AuditLine item={{ kind: 'audit', icon: 'block', text: 'hook blocked · PreToolUse · Bash*', durationMs: 120 }} />)
-    expect(host.querySelector('.verdict-recovered')).not.toBeNull()
-    expect(host.querySelector('.audit-text')?.textContent).toBe('hook blocked · PreToolUse · Bash*')
-    expect(host.querySelector('.tool-duration')?.textContent).toBe('120ms')
+    const note = host.querySelector('[role="note"]')!
+    expect(note.querySelector('svg')).not.toBeNull()
+    expect(note.textContent).toContain('hook blocked · PreToolUse · Bash*')
+    expect(note.textContent).toContain('120ms')
   })
   it('offers copy and reuse on real user messages, never on queued twins', async () => {
     const onReuse = vi.fn()
@@ -345,7 +329,7 @@ describe('transcript truthfulness', () => {
     expect(onReuse).toHaveBeenCalledWith('Run the migration')
     await mount(<UserBubble item={{ kind: 'user', content: 'Queued work', queued: true }} onReuse={onReuse} />)
     expect(host.querySelector('button[aria-label="Reuse in composer"]')).toBeNull()
-    expect(host.querySelector('.queued-chip')?.textContent).toBe('Queued')
+    expect(host.textContent).toContain('Queued')
   })
 })
 
@@ -385,7 +369,7 @@ describe('projection of delegation, hook and approval events', () => {
   })
 })
 
-describe('inspector compaction + budget bar', () => {
+describe('context compaction + budget bar', () => {
   const manifest = {
     modeId: 'plan', modeRevision: 3,
     budget: { availableTokens: 128000, usedTokens: 48000, estimated: true },
@@ -402,29 +386,19 @@ describe('inspector compaction + budget bar', () => {
     expect(budgetTone(10, 0)).toBe('bad')
   })
   it('compacts through the confirm dialog and reports the checkpoint outcome', async () => {
-    await mount(
-      <ToastHost>
-        <ContextPanel meta={null} stream="open" sessionId="s1" sessionFolder={null} eventCount={0} manifest={manifest} workspaceId="w1" running={false} />
-      </ToastHost>,
-    )
-    expect(host.querySelector('.budget-bar')).not.toBeNull()
-    expect(host.querySelector('.env-compact')?.textContent).toBe('Compact…')
-    await act(async () => host.querySelector<HTMLButtonElement>('.env-compact')!.click())
+    await mount(<ToastHost><ContextPanel meta={null} stream="open" sessionId="s1" sessionFolder={null} eventCount={0} manifest={manifest} workspaceId="w1" running={false} /></ToastHost>)
+    expect(host.textContent).toContain('~48000/128000 tok (est)')
+    await act(async () => button('Compact…').click())
     expect(document.body.textContent).toContain('Compact this conversation?')
-    const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('.confirm-actions button')].find(b => b.textContent === 'Compact')!
-    await act(async () => confirm.click())
+    await act(async () => bodyButton('Compact').click())
     expect(compactSession).toHaveBeenCalledWith('w1', 's1')
     expect(document.body.textContent).not.toContain('Compact this conversation?')
   })
   it('disables compaction while a turn runs', async () => {
-    await mount(
-      <ToastHost>
-        <ContextPanel meta={null} stream="open" sessionId="s1" sessionFolder={null} eventCount={0} manifest={manifest} workspaceId="w1" running />
-      </ToastHost>,
-    )
-    const button = host.querySelector<HTMLButtonElement>('.env-compact')!
-    expect(button.disabled).toBe(true)
-    expect(button.title).toBe('Stop the turn first')
+    await mount(<ToastHost><ContextPanel meta={null} stream="open" sessionId="s1" sessionFolder={null} eventCount={0} manifest={manifest} workspaceId="w1" running /></ToastHost>)
+    const compact = button('Compact…')
+    expect(compact.disabled).toBe(true)
+    expect(compact.title).toBe('Stop the turn first')
   })
   it('invalidates an open compact confirmation when the turn starts and never executes compaction', async () => {
     function Probe() {
@@ -437,7 +411,7 @@ describe('inspector compaction + budget bar', () => {
       )
     }
     await mount(<Probe />)
-    await act(async () => host.querySelector<HTMLButtonElement>('.env-compact')!.click())
+    await act(async () => button('Compact…').click())
     expect(document.body.textContent).toContain('Compact this conversation?')
     await act(async () => button('Start running').click())
     expect(document.body.textContent).not.toContain('Compact this conversation?')
@@ -445,12 +419,10 @@ describe('inspector compaction + budget bar', () => {
   })
   it('renders the workspace mode row in effective controls', async () => {
     await mount(<ToastHost><ContextPanel meta={null} stream="open" sessionId={null} sessionFolder={null} eventCount={0} modeLabel="Plan" /></ToastHost>)
-    const rows = [...host.querySelectorAll('.env-row')].map(row => row.textContent)
-    expect(rows.some(text => text?.startsWith('mode'))).toBe(true)
+    expect([...host.querySelectorAll('dt')].some(term => term.textContent === 'mode')).toBe(true)
     expect(host.textContent).toContain('Plan')
   })
-  it('renders persisted Radix inspector tabs and exact artifact states from existing events', async () => {
-    const onTabChange = vi.fn()
+  it('renders workbench views and exact artifact states from existing events', async () => {
     const events = [
       { type: 'tool/call', seq: 0, call: { id: 'file', name: 'Read', args: { path: 'C:/repo/README.md' } } },
       { type: 'tool/result', seq: 1, callId: 'file', ok: true, output: '# README' },
@@ -462,9 +434,9 @@ describe('inspector compaction + budget bar', () => {
       { type: 'tool/call', seq: 7, call: { id: 'recovered', name: 'Read', args: { path: 'C:/repo/recovered.ts' } } },
       { type: 'tool/result', seq: 8, callId: 'recovered', ok: true, output: 'partial', recovery: true },
     ] as const
-    await mount(<ToastHost><InspectorPanel tab="artifacts" onTabChange={onTabChange} onClose={() => {}} context={{ meta: null, stream: 'open', sessionId: 's1', sessionFolder: null, eventCount: events.length }} events={events} /></ToastHost>)
-    expect(host.querySelector('[role="tablist"]')).not.toBeNull()
-    expect(host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe('Artifacts')
+    await mount(<ToastHost><WorkbenchProbe view="artifacts" events={events} /></ToastHost>)
+    expect(host.querySelector('[role="toolbar"][aria-label="Workbench views"]')).not.toBeNull()
+    expect(host.querySelector('button[aria-pressed="true"]')?.textContent).toBe('Artifacts')
     const list = host.querySelector('[aria-label="Recorded artifacts"]')!
     expect(list.textContent).toContain('File reference')
     expect(list.textContent).toContain('C:/repo/README.md')
@@ -477,7 +449,7 @@ describe('inspector compaction + budget bar', () => {
     expect(list.textContent).not.toMatch(/file content|diff|changed files|terminal/i)
   })
   it('renders the exact artifacts empty state', async () => {
-    await mount(<ToastHost><InspectorPanel tab="artifacts" onTabChange={() => {}} context={{ meta: null, stream: 'idle', sessionId: null, sessionFolder: null, eventCount: 0 }} events={[]} /></ToastHost>)
+    await mount(<ToastHost><WorkbenchProbe view="artifacts" events={[]} /></ToastHost>)
     expect(host.textContent).toContain('No recorded artifacts for this conversation yet.')
   })
   it('hooks raw editor keeps an invalid document intact and refuses to apply or save it', async () => {
@@ -485,18 +457,13 @@ describe('inspector compaction + budget bar', () => {
     await mount(<ToastHost><HooksPanel workspaceId="ws-1" /></ToastHost>)
     await act(async () => button('Advanced · edit raw JSON').click())
     const raw = host.querySelector<HTMLTextAreaElement>('textarea.manage-code-tall')!
-    const setNativeValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!
-    await act(async () => {
-      setNativeValue.call(raw, '{}')
-      raw.dispatchEvent(new Event('input', { bubbles: true }))
-    })
+    await act(async () => setInput(raw, '{}'))
     await act(async () => button('Apply raw').click())
     expect(host.textContent).toContain('Hooks validation error: version must be 1')
     expect(host.querySelector<HTMLTextAreaElement>('textarea.manage-code-tall')?.value).toBe('{}')
     expect(button('Apply raw')).not.toBeUndefined()
     expect(saveHooks).not.toHaveBeenCalled()
   })
-
   it.each([
     ['unknown top-level key', '{\n  "version": 1,\n  "hooks": {},\n  "extra": true\n}', 'unknown top-level key "extra"'],
     ['unknown binding key', '{"version":1,"hooks":{"PreToolUse":[{"matcher":"*","type":"command","command":"node guard.mjs","onFailure":"deny","extra":true}]}}', 'PreToolUse[0] has unknown key "extra"'],
@@ -505,56 +472,37 @@ describe('inspector compaction + budget bar', () => {
     await mount(<ToastHost><HooksPanel workspaceId="ws-1" /></ToastHost>)
     await act(async () => button('Advanced · edit raw JSON').click())
     const raw = host.querySelector<HTMLTextAreaElement>('textarea.manage-code-tall')!
-    const setNativeValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!
-    await act(async () => {
-      setNativeValue.call(raw, draft)
-      raw.dispatchEvent(new Event('input', { bubbles: true }))
-    })
+    await act(async () => setInput(raw, draft))
     await act(async () => button('Apply raw').click())
     expect(host.textContent).toContain(error)
     expect(host.querySelector<HTMLTextAreaElement>('textarea.manage-code-tall')?.value).toBe(draft)
     expect(button('Apply raw')).not.toBeUndefined()
     expect(saveHooks).not.toHaveBeenCalled()
   })
-
   it('hooks raw editor validates then saves the exact whole document', async () => {
     ;(fetchHooks as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ version: 1, hooks: {} })
     await mount(<ToastHost><HooksPanel workspaceId="ws-1" /></ToastHost>)
     await act(async () => button('Advanced · edit raw JSON').click())
     const raw = host.querySelector<HTMLTextAreaElement>('textarea.manage-code-tall')!
-    const document = { version: 1 as const, hooks: { UserPromptSubmit: [{ matcher: '*', type: 'command' as const, command: 'node prompt.mjs', args: ['--safe'], timeoutMs: 700, onFailure: 'deny' as const }] } }
-    const setNativeValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!
-    await act(async () => {
-      setNativeValue.call(raw, JSON.stringify(document))
-      raw.dispatchEvent(new Event('input', { bubbles: true }))
-    })
+    const doc = { version: 1 as const, hooks: { UserPromptSubmit: [{ matcher: '*', type: 'command' as const, command: 'node prompt.mjs', args: ['--safe'], timeoutMs: 700, onFailure: 'deny' as const }] } }
+    await act(async () => setInput(raw, JSON.stringify(doc)))
     await act(async () => button('Apply raw').click())
     await act(async () => button('Save hooks').click())
-    expect(saveHooks).toHaveBeenCalledWith('ws-1', document)
+    expect(saveHooks).toHaveBeenCalledWith('ws-1', doc)
   })
-
   it('hooks editor lists every event section and saves the edited document', async () => {
     ;(fetchHooks as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       version: 1,
       hooks: { PreToolUse: [{ matcher: 'Bash*', type: 'command' as const, command: 'node guard.mjs', onFailure: 'deny' as const }] },
     })
     await mount(<ToastHost><HooksPanel workspaceId="ws-1" /></ToastHost>)
-    for (const label of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'SessionStart', 'SessionEnd', 'PreCompact']) {
-      expect(host.textContent).toContain(label)
-    }
+    for (const label of ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'SessionStart', 'SessionEnd', 'PreCompact']) expect(host.textContent).toContain(label)
     const matcher = host.querySelector<HTMLInputElement>('.hooks-binding input')!
     expect(matcher.value).toBe('Bash*')
-    const setNativeValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
-    await act(async () => {
-      setNativeValue.call(matcher, 'Bash')
-      matcher.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    const save = [...host.querySelectorAll('button')].find(b => b.textContent === 'Save hooks')!
-    await act(async () => save.click())
+    await act(async () => setInput(matcher, 'Bash'))
+    await act(async () => [...host.querySelectorAll('button')].find(b => b.textContent === 'Save hooks')!.click())
     expect(saveHooks).toHaveBeenCalledWith('ws-1', expect.objectContaining({
-      hooks: expect.objectContaining({
-        PreToolUse: [expect.objectContaining({ matcher: 'Bash', command: 'node guard.mjs' })],
-      }),
+      hooks: expect.objectContaining({ PreToolUse: [expect.objectContaining({ matcher: 'Bash', command: 'node guard.mjs' })] }),
     }))
   })
 })
@@ -567,11 +515,17 @@ describe('sidebar sections + live rows + workspace management', () => {
     { id: 's2', title: 'Crash fix', projectId: 'p1', status: 'idle' as const, pendingInputs: 2, ...base },
     { id: 's3', title: 'Loose chat', status: 'idle' as const, pendingInputs: 0, ...base },
   ] as const
+  const sidebarProps = (workspaces: SidebarProps['workspaces'], active: string): SidebarProps => ({
+    sessions: [], projects: [], current: null, filter: '', running: false, workspaces, activeWorkspaceId: active,
+    newWorkspaceName: '', onNewWorkspaceName: () => {}, onSelectWorkspace: () => {}, onCreateWorkspace: () => {}, onWorkspacesChanged: async () => {},
+    onFilter: () => {}, onSelect: () => {}, onNew: () => {}, onNewInProject: () => {}, onRename: () => {}, onDeleteRequest: () => {}, onOpenSettings: () => {},
+    notifyEnabled: false, notifyBlocked: false, onToggleNotify: () => {}, theme: 'system', onTheme: () => {}, onClose: () => {},
+  })
   it('groups by project with running counts and keeps loose conversations bucketed', async () => {
     await mount(<SessionList sessions={[...sessions]} projects={[project]} current={null} filter="" liveRunning={false} onSelect={() => {}} onRename={() => {}} onDeleteRequest={() => {}} onNewInProject={() => {}} />)
     expect(host.textContent).toContain('Acme')
-    expect(host.querySelector('.project-running')?.textContent).toBe('●1')
-    expect(host.textContent).toContain('CONVERSATIONS')
+    expect(host.textContent).toContain('1running')
+    expect(host.textContent).toContain('Chats')
     expect(host.textContent).toContain('working with model')
     expect(host.textContent).toContain('2 queued')
   })
@@ -582,51 +536,47 @@ describe('sidebar sections + live rows + workspace management', () => {
       { id: 'unique-5678', title: 'A different title', ...base },
     ]
     await mount(<SessionList sessions={duplicateSessions} projects={[]} current={null} filter="" liveRunning={false} onSelect={() => {}} onRename={() => {}} onDeleteRequest={() => {}} />)
-    expect([...host.querySelectorAll('.session-identity')].map((node) => node.textContent)).toEqual(['#9wxy', '#1234'])
-    expect(host.querySelector('.session-identity[title="Conversation ID: unique-5678"]')).toBeNull()
+    expect([...host.querySelectorAll('[title^="Conversation ID:"]')].map((node) => node.textContent)).toEqual(['#9wxy', '#1234'])
+    expect(host.querySelector('[title="Conversation ID: unique-5678"]')).toBeNull()
   })
   it('offers per-project quick-new and filters by title', async () => {
     const onNewInProject = vi.fn()
     await mount(<SessionList sessions={[...sessions]} projects={[project]} current={null} filter="crash" liveRunning={false} onSelect={() => {}} onRename={() => {}} onDeleteRequest={() => {}} onNewInProject={onNewInProject} />)
     expect(host.textContent).toContain('Crash fix')
     expect(host.textContent).not.toContain('Auth refactor')
-    await act(async () => host.querySelector<HTMLButtonElement>('.project-head + * button, .project-head button[aria-label^="New conversation in"]')!.click())
+    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="New conversation in Acme"]')!.click())
     expect(onNewInProject).toHaveBeenCalledWith('p1')
   })
-  it('marks the amber approval badge as the chip’s only attention signal', async () => {
+  it('surfaces pending approvals, not running counts, on the workspace switcher', async () => {
     const workspaces = [
       { id: 'w1', name: 'Acme', archived: false, createdAt: 1, default: true, running: 2, approvals: 1 },
       { id: 'w2', name: 'Lab', archived: true, createdAt: 2, running: 0, approvals: 0 },
     ]
-    await mount(<TopBar stream="open" sidebarOpen workspaces={workspaces} activeWorkspaceId="w1" newWorkspaceName="" onNewWorkspaceName={() => {}} onSelectWorkspace={() => {}} onCreateWorkspace={() => {}} onWorkspacesChanged={async () => {}} onToggleSidebar={() => {}} onToggleEnv={() => {}} onOpenSettings={() => {}} />)
-    const chip = host.querySelector('.topbar-workspace')!
-    expect(chip.textContent).toContain('Acme')
-    expect(chip.querySelector('.ui-badge')?.textContent).toBe('⚠1')
-    expect(chip.textContent).not.toContain('running')
-    await mount(<TopBar stream="open" sidebarOpen workspaces={[workspaces[1]!]} activeWorkspaceId="w2" newWorkspaceName="" onNewWorkspaceName={() => {}} onSelectWorkspace={() => {}} onCreateWorkspace={() => {}} onWorkspacesChanged={async () => {}} onToggleSidebar={() => {}} onToggleEnv={() => {}} onOpenSettings={() => {}} />)
-    expect(host.querySelector('.topbar-workspace')?.textContent).toContain('archived')
+    await mount(<ToastHost><Sidebar {...sidebarProps(workspaces, 'w1')} /></ToastHost>)
+    const switcher = host.querySelector('button[aria-label="Workspace: Acme"]')!
+    expect(switcher.textContent).toContain('1 approval pending')
+    expect(switcher.textContent).not.toContain('running')
+    await mount(<ToastHost><Sidebar {...sidebarProps([workspaces[1]!], 'w2')} /></ToastHost>)
+    expect(host.querySelector('button[aria-label="Workspace: Lab"]')?.textContent).toContain('Archived')
+    expect(host.textContent).toContain('Workspace archived.')
   })
   it('renames a workspace inline through the API', async () => {
     const onChanged = vi.fn(async () => {})
     const workspaces = [{ id: 'w1', name: 'Old', archived: false, createdAt: 1 }]
     await mount(<ToastHost><WorkspacePopover workspaces={workspaces} activeWorkspaceId="w1" onSelect={() => {}} onChanged={onChanged} newWorkspaceName="" onNewWorkspaceName={() => {}} onCreate={() => {}} /></ToastHost>)
-    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Rename Old"]')!.click())
+    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Manage Old"]')!.click())
+    await act(async () => document.body.querySelector<HTMLButtonElement>('button[aria-label="Rename Old"]')!.click())
     const input = host.querySelector<HTMLInputElement>('input[aria-label="Workspace name"]')!
-    const setNative = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
-    await act(async () => {
-      setNative.call(input, 'Renamed')
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    })
+    await act(async () => setInput(input, 'Renamed'))
     await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Save workspace name"]')!.click())
     expect(renameWorkspace).toHaveBeenCalledWith('w1', 'Renamed')
     expect(onChanged).toHaveBeenCalledTimes(1)
   })
-  it('disables Archive in the kebab menu while sessions run', async () => {
+  it('disables Archive in the manage menu while sessions run', async () => {
     const workspaces = [{ id: 'w1', name: 'Busy', archived: false, createdAt: 1, running: 1, approvals: 0 }]
     await mount(<ToastHost><WorkspacePopover workspaces={workspaces} activeWorkspaceId="w1" onSelect={() => {}} onChanged={async () => {}} newWorkspaceName="" onNewWorkspaceName={() => {}} onCreate={() => {}} /></ToastHost>)
     await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Manage Busy"]')!.click())
-    const menu = document.body.querySelector('.ws-menu')!
-    const archive = [...menu.querySelectorAll('button')].find(b => b.textContent === 'Archive') as HTMLButtonElement
+    const archive = bodyButton('Archive')
     expect(archive.disabled).toBe(true)
     expect(archive.title).toBe('Stop running sessions first')
   })
@@ -640,35 +590,33 @@ describe('global feedback', () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
     try {
       await mount(<ErrorBoundary><Boom /></ErrorBoundary>)
-      await act(async () => {}) // let the recovered commit flush
-      expect(host.querySelector('.error-boundary-card')).not.toBeNull()
-      expect(host.textContent).toContain('The conversation data is safe on the server.')
-      expect(host.querySelector('.error-boundary-icon')).not.toBeNull()
+      await act(async () => {})
+      const alert = host.querySelector('[role="alert"]')!
+      expect(alert.textContent).toContain('The conversation data is safe on the server.')
+      expect(alert.querySelector('svg')).not.toBeNull()
       expect(host.textContent).toContain('render exploded')
     } finally {
       spy.mockRestore()
     }
   })
-  it('renders toast variants with their state icon and ttl contract', async () => {
+  it('renders toast variants with their state icon', async () => {
     const probe: { notify?: (text: string, kind?: 'ok' | 'bad' | 'info') => void } = {}
     function Probe(): null {
-      const toast = useToast()
-      probe.notify = toast.notify
+      probe.notify = useToast().notify
       return null
     }
     await mount(<ToastHost><Probe /></ToastHost>)
     await act(async () => probe.notify?.('Saved successfully.', 'ok'))
-    expect(host.querySelector('.toast-icon-ok')).not.toBeNull()
+    expect(host.querySelector('svg.text-ok')).not.toBeNull()
     await act(async () => probe.notify?.('Broken input.', 'bad'))
-    expect(host.querySelector('.toast-icon-bad')).not.toBeNull()
+    expect(host.querySelector('svg.text-bad')).not.toBeNull()
     await act(async () => probe.notify?.('Plain information.', 'info'))
-    expect(host.querySelectorAll('.toast')).toHaveLength(3)
+    expect(host.querySelectorAll('button[aria-label="Dismiss notification"]')).toHaveLength(3)
   })
-  it('keeps the bell notification honest: enabled only after granted permission', async () => {
+  it('keeps the notification toggle honest: enabled only after granted permission', async () => {
     let latest: { enabled: boolean; blocked: boolean; toggle: () => void } | undefined
     function Probe(): null {
-      const notify = useApprovalNotify([], 'Acme')
-      latest = notify
+      latest = useApprovalNotify([], 'Acme')
       return null
     }
     ;(globalThis as any).Notification = { permission: 'denied', requestPermission: async () => 'denied' }
@@ -690,42 +638,39 @@ describe('no-modal new-chat flow (composer scope picker)', () => {
     { id: null, name: 'Chat only', path: 'No project folder — chat without file or shell tools' },
     { id: 'p1', name: 'Acme', path: 'C:/acme' },
   ]
+  const scopeTrigger = () => host.querySelector<HTMLButtonElement>('button[aria-label^="Conversation scope"]')
   it('renders the picker trigger with the selected label in draft mode', async () => {
-    await mount(<ToastHost><Composer connected running={false} draft="" onDraft={() => {}} onSend={() => {}} onStop={() => {}} modelValue="p/m" modelOptions={[]} onModel={() => {}} modes={[]} modeValue={null} onMode={() => {}} scopePicker={{ value: 'p1', options, onChange: () => {}, onPickFolder: () => {} }} /></ToastHost>)
-    const chip = host.querySelector('.scope-chip-picking')!
-    expect(chip.textContent).toContain('Acme')
-    expect(chip.getAttribute('aria-haspopup')).toBe('menu')
+    await mount(<ToastHost><Composer {...composerBase} connected running={false} draft="" scopePicker={{ value: 'p1', options, onChange: () => {}, onPickFolder: () => {} }} /></ToastHost>)
+    expect(scopeTrigger()?.textContent).toContain('Acme')
+    expect(scopeTrigger()?.getAttribute('aria-haspopup')).toBe('menu')
   })
   it('lists projects with paths and reports the changed scope', async () => {
     const onChange = vi.fn()
-    await mount(<ToastHost><Composer connected running={false} draft="" onDraft={() => {}} onSend={() => {}} onStop={() => {}} modelValue="p/m" modelOptions={[]} onModel={() => {}} modes={[]} modeValue={null} onMode={() => {}} scopePicker={{ value: null, options, onChange, onPickFolder: () => {} }} /></ToastHost>)
-    await act(async () => host.querySelector<HTMLButtonElement>('.scope-chip-picking')!.click())
-    const rows = [...document.body.querySelectorAll('.scope-menu .scope-option')]
+    await mount(<ToastHost><Composer {...composerBase} connected running={false} draft="" scopePicker={{ value: null, options, onChange, onPickFolder: () => {} }} /></ToastHost>)
+    await act(async () => scopeTrigger()!.click())
+    const rows = [...document.body.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')]
     expect(rows).toHaveLength(2)
-    expect(document.body.querySelector('.scope-menu')?.textContent).toContain('C:/acme')
-    await act(async () => (rows[1] as HTMLButtonElement).click())
+    expect(rows[1]?.textContent).toContain('C:/acme')
+    await act(async () => rows[1]!.click())
     expect(onChange).toHaveBeenCalledWith('p1')
   })
   it('switches to Chat only with null and opens the folder picker from the footer', async () => {
     const onChange = vi.fn()
     const onPickFolder = vi.fn()
-    await mount(<ToastHost><Composer connected running={false} draft="" onDraft={() => {}} onSend={() => {}} onStop={() => {}} modelValue="p/m" modelOptions={[]} onModel={() => {}} modes={[]} modeValue={null} onMode={() => {}} scopePicker={{ value: 'p1', options, onChange, onPickFolder }} /></ToastHost>)
-    await act(async () => host.querySelector<HTMLButtonElement>('.scope-chip-picking')!.click())
-    const chatOnly = [...document.body.querySelectorAll('.scope-menu .scope-option')].find(b => b.textContent?.includes('Chat only')) as HTMLButtonElement
+    await mount(<ToastHost><Composer {...composerBase} connected running={false} draft="" scopePicker={{ value: 'p1', options, onChange, onPickFolder }} /></ToastHost>)
+    await act(async () => scopeTrigger()!.click())
+    const chatOnly = [...document.body.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find(b => b.textContent?.includes('Chat only'))!
     await act(async () => chatOnly.click())
     expect(onChange).toHaveBeenCalledWith(null)
-    await act(async () => host.querySelector<HTMLButtonElement>('.scope-chip-picking')!.click())
-    // The footer defers to the server-backed folder picker modal.
-    const footer = document.body.querySelector<HTMLButtonElement>('.scope-menu .scope-register-row')!
-    expect(footer.textContent).toContain('Choose folder')
+    await act(async () => scopeTrigger()!.click())
+    const footer = [...document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(b => b.textContent?.includes('Choose folder'))!
     await act(async () => footer.click())
     expect(onPickFolder).toHaveBeenCalledTimes(1)
   })
   it('falls back to the read-only scope display once a conversation is open', async () => {
-    await mount(<ToastHost><Composer scope="C:/acme" connected running={false} draft="" onDraft={() => {}} onSend={() => {}} onStop={() => {}} modelValue="p/m" modelOptions={[]} onModel={() => {}} modes={[]} modeValue={null} onMode={() => {}} /></ToastHost>)
-    expect(host.querySelector('.scope-chip-picking')).toBeNull()
-    expect(host.querySelector('.scope-chip')?.textContent).toContain('acme')
-    expect(host.querySelector('.scope-cta')).toBeNull()
+    await mount(<ToastHost><Composer {...composerBase} scope="C:/acme" connected running={false} draft="" /></ToastHost>)
+    expect(scopeTrigger()).toBeNull()
+    expect(host.querySelector('[title="C:/acme"]')?.textContent).toContain('acme')
   })
 })
 
@@ -747,5 +692,50 @@ describe('mounted clipboard recovery', () => {
       if (original) Object.defineProperty(navigator, 'clipboard', original)
       else Reflect.deleteProperty(navigator, 'clipboard')
     }
+  })
+})
+
+describe('workbench files', () => {
+  const project = { id: 'p1', name: 'Acme', path: 'C:/acme' }
+  it('closing the front tab reveals its neighbour, then the fixed view', () => {
+    const state = { folder: '', openFiles: ['a.ts', 'b.ts', 'c.ts'], activeFile: 'b.ts' }
+    expect(closeFileTab(state, 'b.ts')).toMatchObject({ openFiles: ['a.ts', 'c.ts'], activeFile: 'c.ts' })
+    expect(closeFileTab({ ...state, activeFile: 'c.ts' }, 'c.ts')).toMatchObject({ activeFile: 'b.ts' })
+    expect(closeFileTab({ ...state, activeFile: 'a.ts' }, 'c.ts')).toMatchObject({ activeFile: 'a.ts' })
+    expect(closeFileTab({ folder: '', openFiles: ['a.ts'], activeFile: 'a.ts' }, 'a.ts')).toMatchObject({ openFiles: [], activeFile: null })
+  })
+  it('browses folders, opens a file as a tab with escaped highlighted content, and closes it', async () => {
+    await mount(<ToastHost><WorkbenchProbe view="files" events={[]} project={project} /></ToastHost>)
+    expect(listProjectFiles).toHaveBeenCalledWith('w1', 'p1', '')
+    await act(async () => button('src').click())
+    expect(listProjectFiles).toHaveBeenLastCalledWith('w1', 'p1', 'src')
+    expect(host.querySelector('[aria-current="location"]')?.textContent).toBe('src')
+    await act(async () => button('index.ts').click())
+    expect(readProjectFile).toHaveBeenCalledWith('w1', 'p1', 'src/index.ts')
+    const tab = host.querySelector<HTMLButtonElement>('button[title="src/index.ts"][aria-pressed="true"]')
+    expect(tab?.textContent).toContain('index.ts')
+    const contents = host.querySelector('[aria-label="Contents of src/index.ts"]')!
+    expect(contents.textContent).toContain('export const answer = 42')
+    expect(contents.querySelector('code')?.innerHTML).toContain('&lt;raw&gt;')
+    expect(host.textContent).toContain('C:/acme/src/index.ts')
+    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Close src/index.ts"]')!.click())
+    expect(host.querySelector('button[title="src/index.ts"][aria-pressed]')).toBeNull()
+    expect(host.querySelector('[aria-label="Project files"]')).not.toBeNull()
+  })
+  it('explains a chat-only conversation instead of browsing', async () => {
+    await mount(<ToastHost><WorkbenchProbe view="files" events={[]} /></ToastHost>)
+    expect(host.textContent).toContain('No project folder for this conversation')
+    expect(listProjectFiles).not.toHaveBeenCalled()
+  })
+  it('offers to open a tool path only when the resolver accepts it', async () => {
+    const opened = vi.fn()
+    const item = { kind: 'tool' as const, call: { id: 'c', name: 'Read', args: { path: 'C:/acme/src/index.ts' } }, result: { ok: true, output: 'x' } }
+    await mount(<ToolCard item={item} openPath={() => opened} />)
+    await act(async () => host.querySelector('button')!.click())
+    await act(async () => button('in workbench').click())
+    expect(opened).toHaveBeenCalledTimes(1)
+    await mount(<ToolCard item={item} openPath={() => null} />)
+    await act(async () => host.querySelector('button')!.click())
+    expect(host.textContent).not.toContain('in workbench')
   })
 })

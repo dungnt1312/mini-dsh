@@ -1,33 +1,46 @@
 import * as Popover from '@radix-ui/react-popover'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { cn } from '../../lib/cn.ts'
 
-/** Caller-compatible Radix overlay; callers retain trigger and item markup. */
-export function Menu({ label, trigger, triggerClassName = '', panelClassName = '', panelRole = 'menu', panelWidth, disabled = false, children }: { readonly label: string; readonly trigger: (open: boolean) => ReactNode; readonly triggerClassName?: string; readonly panelClassName?: string; readonly panelRole?: 'menu' | 'dialog'; readonly panelWidth?: number; readonly disabled?: boolean; readonly children: (close: () => void) => ReactNode }) {
+/** Shared row look for menu items rendered inside {@link Menu}. */
+export const menuItemClass = 'flex w-full min-h-9 items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm text-fg outline-none hover:bg-hover focus-visible:bg-hover disabled:pointer-events-none disabled:opacity-40'
+
+/** Popover menu: callers render trigger contents and items; Radix owns portal, focus and dismissal. */
+export function Menu({ label, trigger, triggerClassName, panelClassName, panelRole = 'menu', disabled = false, side = 'bottom', align = 'start', children }: {
+  readonly label: string
+  readonly trigger: (open: boolean) => ReactNode
+  readonly triggerClassName?: string
+  readonly panelClassName?: string
+  readonly panelRole?: 'menu' | 'dialog'
+  readonly disabled?: boolean
+  readonly side?: 'top' | 'bottom' | 'left' | 'right'
+  readonly align?: 'start' | 'center' | 'end'
+  readonly children: (close: () => void) => ReactNode
+}) {
   const [open, setOpen] = useState(false)
-  const drawerPanelRef = useRef<HTMLDivElement | null>(null)
-  const drawerOpen = typeof document !== 'undefined' && document.querySelector('[data-workbench-scrim]') !== null
-  useEffect(() => {
-    if (!open || !drawerOpen) return
-    drawerPanelRef.current?.focus()
-    document.documentElement.dataset.composerMenuOpen = 'true'
-    document.dispatchEvent(new CustomEvent('mini-dsh:composer-menu-open'))
-    const onEscape = (event: KeyboardEvent): void => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      event.stopPropagation()
-      event.stopImmediatePropagation()
-      document.dispatchEvent(new CustomEvent('mini-dsh:composer-menu-escape'))
-      setOpen(false)
-    }
-    const onClose = (): void => setOpen(false)
-    document.addEventListener('keydown', onEscape, true)
-    document.addEventListener('mini-dsh:close-composer-menu', onClose)
-    return () => {
-      document.removeEventListener('keydown', onEscape, true)
-      document.removeEventListener('mini-dsh:close-composer-menu', onClose)
-      window.setTimeout(() => { delete document.documentElement.dataset.composerMenuOpen }, 0)
-    }
-  }, [drawerOpen, open])
-  return <Popover.Root open={open} onOpenChange={setOpen}><Popover.Trigger asChild><button type="button" disabled={disabled} className={triggerClassName} aria-label={label} aria-haspopup={panelRole} onClick={() => { if (drawerOpen) setOpen(true) }}>{trigger(open)}</button></Popover.Trigger>{open && drawerOpen ? <div ref={drawerPanelRef} role={panelRole} aria-label={label} tabIndex={-1} className={cn('ui-menu', panelClassName, 'ui-menu-drawer-exception')} style={panelWidth === undefined ? undefined : { width: panelWidth }} onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setOpen(false) } }}>{children(() => setOpen(false))}</div> : <Popover.Portal><Popover.Content role={panelRole} aria-label={label} className={cn('ui-menu', panelClassName)} style={panelWidth === undefined ? undefined : { width: panelWidth }} sideOffset={6} collisionPadding={8}>{children(() => setOpen(false))}</Popover.Content></Popover.Portal>}</Popover.Root>
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger asChild>
+        <button type="button" disabled={disabled} className={triggerClassName} aria-label={label} aria-haspopup={panelRole}>
+          {trigger(open)}
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          role={panelRole}
+          aria-label={label}
+          side={side}
+          align={align}
+          sideOffset={6}
+          collisionPadding={12}
+          className={cn(
+            'z-50 max-h-[min(70vh,var(--radix-popover-content-available-height))] min-w-52 max-w-[calc(100vw-24px)] overflow-y-auto rounded-2xl border border-line bg-surface p-1.5 text-fg shadow-pop outline-none animate-fade-up',
+            panelClassName,
+          )}
+        >
+          {children(() => setOpen(false))}
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  )
 }

@@ -43,6 +43,7 @@ import { canonicalPolicy } from '../harness/tools/names.ts'
 import { ToolsService } from '../harness/tools/service.ts'
 import { bashTool } from '../capabilities/shell/bash.ts'
 import { fsTools } from '../capabilities/fs/tools.ts'
+import { listProjectEntries, readProjectFile, searchProjectFiles, ProjectFileError } from './project-files.ts'
 import { Kernel } from '../kernel/registry.ts'
 import {
   loadProviders,
@@ -200,7 +201,11 @@ const CONTENT_TYPES: Readonly<Record<string, string>> = {
   '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
+  '.png': 'image/png',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
   '.json': 'application/json; charset=utf-8',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
   '.map': 'application/json',
 }
 
@@ -2562,6 +2567,39 @@ async function handleApi(
       return
     }
 
+    // ── read-only project browsing (workbench Files) ───────────
+    const wsProjectFilesMatch = /^\/api\/workspaces\/([^/]+)\/projects\/([^/]+)\/(files|file|search)$/.exec(pathname)
+    if (wsProjectFilesMatch !== null) {
+      const wsId = decodeURIComponent(wsProjectFilesMatch[1] ?? '') as WorkspaceId
+      requireWorkspace(deps, wsId, false)
+      const project = deps.workspaces.getProject(decodeURIComponent(wsProjectFilesMatch[2] ?? '') as ProjectId, wsId)
+      if (req.method !== 'GET') {
+        send(405, { error: 'method not allowed' })
+        return
+      }
+      try {
+        const target = query.get('path') ?? ''
+        const kind = wsProjectFilesMatch[3]
+        if (kind === 'search') {
+          const rawLimit = Number.parseInt(query.get('limit') ?? '', 10)
+          send(200, await searchProjectFiles(
+            project.path,
+            query.get('q') ?? '',
+            deps.deniedRoots,
+            Number.isNaN(rawLimit) ? undefined : rawLimit,
+          ))
+          return
+        }
+        send(200, kind === 'files'
+          ? await listProjectEntries(project.path, target, deps.deniedRoots)
+          : await readProjectFile(project.path, target, deps.deniedRoots))
+      } catch (error) {
+        if (!(error instanceof ProjectFileError)) throw error
+        send(400, { error: error.message })
+      }
+      return
+    }
+
     const wsProjectMatch = /^\/api\/workspaces\/([^/]+)\/projects\/([^/]+)$/.exec(pathname)
     if (wsProjectMatch !== null) {
       const wsId = decodeURIComponent(wsProjectMatch[1] ?? '') as WorkspaceId
@@ -3348,13 +3386,18 @@ async function serveStatic(res: ServerResponse, pathname: string, staticDir: str
   }
   try {
     const content = await fs.readFile(abs)
-    res.writeHead(200, { 'content-type': CONTENT_TYPES[path.extname(abs)] ?? 'application/octet-stream' })
+    // The shell and the service worker must revalidate so a rebuilt client takes over promptly.
+    const revalidate = relative === 'index.html' || relative === 'sw.js'
+    res.writeHead(200, {
+      'content-type': CONTENT_TYPES[path.extname(abs)] ?? 'application/octet-stream',
+      ...(revalidate ? { 'cache-control': 'no-cache' } : {}),
+    })
     res.end(content)
   } catch {
     // Unknown non-API path: serve the app shell so client-side state stands up.
     try {
       const shell = await fs.readFile(path.join(staticDir, 'index.html'))
-      res.writeHead(200, { 'content-type': CONTENT_TYPES['.html'] ?? 'text/html' })
+      res.writeHead(200, { 'content-type': CONTENT_TYPES['.html'] ?? 'text/html', 'cache-control': 'no-cache' })
       res.end(shell)
     } catch {
       res.writeHead(404, { 'content-type': 'application/json' })

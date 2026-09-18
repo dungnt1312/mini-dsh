@@ -104,7 +104,7 @@ describe('skills + memory tabs', () => {
     const html = renderToStaticMarkup(
       <SettingsModal open workspaceId="ws-1" providers={providers} activeProvider="p1" onDismiss={() => {}} onRefresh={async () => {}} onSelectActive={async () => {}} />,
     )
-    for (const label of ['GLOBAL', 'WORKSPACE', 'Skills', 'Memory']) {
+    for (const label of ['Global', 'Workspace', 'Skills', 'Memory']) {
       expect(html).toContain(label)
     }
   })

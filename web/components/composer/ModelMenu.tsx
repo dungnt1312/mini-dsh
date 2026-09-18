@@ -1,26 +1,17 @@
-import { useEffect, useRef, useState } from 'react'
-import { Menu } from '../ui/Menu.tsx'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import Icon from '../common/Icon.tsx'
+import { Menu } from '../ui/Menu.tsx'
 import { capabilityBadges } from '../../lib/model-info.ts'
 import { decodeModelChoice, type ModelOption } from '../../lib/providers.ts'
+import { cn } from '../../lib/cn.ts'
 import type { ModelSettings, ProviderSummary } from '../../lib/types.ts'
 
 /**
- * Two-pane model picker (dntspace layout): a search field over a provider
- * list on the left and the previewed provider's models on the right, with a
- * `Manage models` footer. Selecting a row writes the exact provider/model
- * pair. Rows carry capability badges from the shared catalog (vision /
- * reasoning), never name guesses.
+ * Header model picker: search over a provider column and the previewed
+ * provider's models, with a Manage models footer. Selecting a row writes the
+ * exact provider/model pair for the workspace's next request.
  */
-export function ModelMenu({
-  modelLabel,
-  modelValue,
-  options,
-  providers,
-  modelSettings,
-  onModel,
-  onManage,
-}: {
+export function ModelMenu({ modelLabel, modelValue, options, providers, modelSettings, onModel, onManage }: {
   readonly modelLabel: string
   readonly modelValue: string | null
   readonly options: readonly ModelOption[]
@@ -39,18 +30,21 @@ export function ModelMenu({
   }
   const enabled = providers.filter((provider) => provider.enabled)
   const activeModelId = activeProvider !== null ? decodeModelChoice(modelValue ?? '')?.model ?? null : null
+  const slash = modelLabel.indexOf('/')
+  const providerName = slash > 0 ? modelLabel.slice(0, slash) : null
+  const modelName = slash > 0 ? modelLabel.slice(slash + 1) : modelLabel
 
   return (
     <Menu
       label="Workspace model (next request)"
-      panelClassName="model-picker-panel"
       panelRole="dialog"
-      panelWidth={470}
-      triggerClassName="ui-select-trigger composer-model-trigger"
-      trigger={() => (
+      panelClassName="w-[min(560px,calc(100vw-24px))] p-0"
+      triggerClassName="flex h-9 min-w-0 items-center gap-1.5 rounded-lg px-2.5 text-[17px] font-medium text-fg hover:bg-hover"
+      trigger={(open) => (
         <>
-          <span className="composer-model-label">{modelLabel}</span>
-          <Icon name="chevron" size={11} className="chevron" />
+          <span className="truncate">{modelName}</span>
+          {providerName !== null ? <span className="hidden truncate text-sm font-normal text-fg-faint sm:inline">{providerName}</span> : null}
+          <Icon name="chevron" size={16} className={cn('shrink-0 text-fg-faint transition-transform', open && 'rotate-180')} />
         </>
       )}
     >
@@ -61,53 +55,28 @@ export function ModelMenu({
           activeProvider={activeProvider}
           activeModelId={activeModelId}
           modelSettings={modelSettings ?? {}}
-          onModel={(value) => {
-            onModel(value)
-            close()
-          }}
-          onManage={() => {
-            close()
-            onManage()
-          }}
+          onModel={(value) => { onModel(value); close() }}
+          onManage={() => { close(); onManage() }}
         />
       )}
     </Menu>
   )
 }
 
-/**
- * The picker body, mounted only while the panel is open — its unmount
- * cleanup resets the search query and provider preview for the next open.
- */
-function PickerPanel({
-  enabled,
-  byProvider,
-  activeProvider,
-  activeModelId,
-  modelSettings,
-  onModel,
-  onManage,
-}: {
+/** Mounted only while open, so search and preview reset on every open. */
+function PickerPanel({ enabled, byProvider, activeProvider, activeModelId, modelSettings, onModel, onManage }: {
   readonly enabled: readonly ProviderSummary[]
   readonly byProvider: ReadonlyMap<string, readonly ModelOption[]>
   readonly activeProvider: string | null
   readonly activeModelId: string | null
-  readonly modelSettings?: Readonly<Record<string, ModelSettings>>
+  readonly modelSettings: Readonly<Record<string, ModelSettings>>
   readonly onModel: (value: string) => void
   readonly onManage: () => void
 }) {
   const [query, setQuery] = useState('')
   const [previewId, setPreviewId] = useState<string | null>(null)
   const searchRef = useRef<HTMLInputElement | null>(null)
-
-  // Reset on close: this component unmounts with the portaled panel.
-  useEffect(() => {
-    searchRef.current?.focus()
-    return () => {
-      setQuery('')
-      setPreviewId(null)
-    }
-  }, [])
+  useEffect(() => { searchRef.current?.focus() }, [])
 
   const q = query.trim().toLowerCase()
   const matches = (option: ModelOption): boolean => q === '' || option.model.toLowerCase().includes(q) || option.label.toLowerCase().includes(q)
@@ -118,25 +87,18 @@ function PickerPanel({
     ?? null
   const previewOptions = preview !== null ? (byProvider.get(preview.id) ?? []).filter(matches) : []
 
-  const previewAt = (index: number): void => {
-    const next = visible[index]
+  const onProviderKey = (event: KeyboardEvent<HTMLDivElement>): void => {
+    if (visible.length === 0 || (event.key !== 'ArrowDown' && event.key !== 'ArrowUp')) return
+    event.preventDefault()
+    const index = visible.findIndex((provider) => provider.id === preview?.id)
+    const next = visible[(index + (event.key === 'ArrowDown' ? 1 : -1) + visible.length) % visible.length]
     if (next !== undefined) setPreviewId(next.id)
-  }
-  const onProviderKey = (event: React.KeyboardEvent<HTMLDivElement>): void => {
-    if (visible.length === 0) return
-    if (event.key === 'ArrowDown') {
-      event.preventDefault()
-      previewAt((visible.findIndex((provider) => provider.id === preview?.id) + 1) % visible.length)
-    } else if (event.key === 'ArrowUp') {
-      event.preventDefault()
-      previewAt((visible.findIndex((provider) => provider.id === preview?.id) - 1 + visible.length) % visible.length)
-    }
   }
 
   return (
-    <div className="model-picker">
-      <div className="model-picker-search">
-        <Icon name="search" size={13} />
+    <div className="flex flex-col">
+      <div className="flex items-center gap-2 border-b border-line px-3">
+        <Icon name="search" size={15} className="text-fg-faint" />
         <input
           ref={searchRef}
           type="search"
@@ -145,83 +107,68 @@ function PickerPanel({
           aria-label="Search models"
           autoComplete="off"
           spellCheck={false}
+          className="h-11 min-w-0 flex-1 bg-transparent text-sm outline-none"
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === 'Escape' && query !== '') {
-              event.preventDefault()
-              event.stopPropagation()
-              setQuery('')
-            }
+            if (event.key === 'Escape' && query !== '') { event.preventDefault(); event.stopPropagation(); setQuery('') }
           }}
         />
       </div>
-      <div className="model-picker-body">
-        <div className="model-picker-provider-list" role="listbox" aria-label="Providers" tabIndex={-1} onKeyDown={onProviderKey}>
-          {enabled.length === 0 ? (
-            <p className="model-picker-empty">No providers</p>
-          ) : visible.length === 0 ? (
-            <p className="model-picker-empty">No matches</p>
-          ) : (
-            visible.map((provider) => {
-              const isActive = provider.id === activeProvider
-              const isPreview = provider.id === preview?.id
-              return (
+      <div className="flex h-[min(360px,55dvh)] min-h-0">
+        <div className="w-[38%] max-w-44 shrink-0 overflow-y-auto border-r border-line p-1.5" role="listbox" aria-label="Providers" tabIndex={-1} onKeyDown={onProviderKey}>
+          {enabled.length === 0 ? <p className="m-0 p-2 text-[13px] text-fg-faint">No providers</p>
+            : visible.length === 0 ? <p className="m-0 p-2 text-[13px] text-fg-faint">No matches</p>
+              : visible.map((provider) => (
                 <button
                   key={provider.id}
                   type="button"
                   role="option"
-                  aria-selected={isPreview}
-                  className={`model-picker-provider ${isActive ? 'is-active' : ''} ${isPreview ? 'is-preview' : ''}`}
+                  aria-selected={provider.id === preview?.id}
                   title={provider.name}
                   onMouseEnter={() => setPreviewId(provider.id)}
                   onFocus={() => setPreviewId(provider.id)}
                   onClick={() => setPreviewId(provider.id)}
+                  className={cn('flex w-full items-center gap-1.5 rounded-lg px-2.5 py-2 text-left text-[13px] text-fg-muted hover:text-fg', provider.id === preview?.id && 'bg-hover text-fg')}
                 >
-                  <span className="model-picker-provider-label">{provider.name}</span>
-                  {isActive ? <Icon name="check" size={12} className="model-picker-provider-check" /> : null}
-                  <Icon name="chevronRight" size={11} className="model-picker-provider-chevron" />
+                  <span className="min-w-0 flex-1 truncate">{provider.name}</span>
+                  {provider.id === activeProvider ? <span className="size-1.5 shrink-0 rounded-full bg-fg" aria-label="Active provider" /> : null}
                 </button>
-              )
-            })
-          )}
+              ))}
         </div>
-        <div className="model-picker-model-pane">
-          <div className="model-picker-model-list" role="listbox" aria-label="Models">
-            {preview !== null ? (
-              <div className="model-picker-heading" title={preview.name}>{preview.name}</div>
-            ) : null}
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="min-h-0 flex-1 overflow-y-auto p-1.5" role="listbox" aria-label="Models">
             {preview === null ? (
-              <p className="model-picker-empty">{query.trim() !== '' ? 'No matching models' : 'No provider selected'}</p>
+              <p className="m-0 p-2 text-[13px] text-fg-faint">{q !== '' ? 'No matching models' : 'No provider selected'}</p>
             ) : previewOptions.length === 0 ? (
-              <p className="model-picker-empty">{query.trim() !== '' ? 'No matching models' : 'No models — sync in Settings'}</p>
-            ) : (
-              previewOptions.map((option) => {
-                const isActive = option.provider === activeProvider && option.model === activeModelId
-                return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    role="option"
-                    aria-selected={isActive}
-                    className={`model-picker-model ${isActive ? 'is-active' : ''}`}
-                    title={option.model}
-                    onClick={() => onModel(option.value)}
-                  >
-                    <span className="model-picker-model-label">{option.model}</span>
-                    <span className="model-picker-model-caps">
-                      {capabilityBadges(option.model, modelSettings?.[option.model]).map((badge) => (
-                        <span key={badge.label} className={`menu-cap menu-cap-${badge.tone}`}>{badge.label}</span>
+              <p className="m-0 p-2 text-[13px] text-fg-faint">{q !== '' ? 'No matching models' : 'No models — sync in Settings'}</p>
+            ) : previewOptions.map((option) => {
+              const active = option.provider === activeProvider && option.model === activeModelId
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="option"
+                  aria-selected={active}
+                  title={option.model}
+                  onClick={() => onModel(option.value)}
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left hover:bg-hover"
+                >
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="break-all text-sm">{option.model}</span>
+                    <span className="flex flex-wrap gap-1">
+                      {capabilityBadges(option.model, modelSettings[option.model]).map((badge) => (
+                        <span key={badge.label} className="rounded bg-muted px-1.5 text-[11px] text-fg-muted">{badge.label}</span>
                       ))}
                     </span>
-                    {isActive ? <Icon name="check" size={12} className="model-picker-model-check" /> : null}
-                  </button>
-                )
-              })
-            )}
+                  </span>
+                  {active ? <Icon name="check" size={16} className="shrink-0" /> : null}
+                </button>
+              )
+            })}
           </div>
-          <button type="button" role="menuitem" className="model-picker-manage" onClick={onManage}>
-            <Icon name="sliders" size={12} />
-            <span>Manage models</span>
+          <button type="button" role="menuitem" onClick={onManage} className="flex items-center gap-2 border-t border-line px-4 py-2.5 text-left text-[13px] text-fg-muted hover:bg-hover hover:text-fg">
+            <Icon name="sliders" size={14} />
+            Manage models
           </button>
         </div>
       </div>

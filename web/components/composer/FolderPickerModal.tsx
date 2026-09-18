@@ -4,6 +4,7 @@ import { Button } from '../ui/Button.tsx'
 import { IconButton } from '../ui/IconButton.tsx'
 import { Modal } from '../ui/Modal.tsx'
 import Icon from '../common/Icon.tsx'
+import { Spinner } from '../common/Spinner.tsx'
 
 /**
  * Server-backed folder picker (spec: no-modal new-chat flow). A browser never
@@ -59,64 +60,60 @@ export function FolderPickerModal({
       onDismiss={onDismiss}
       label="Choose a project folder"
       width="md"
-      className="folder-picker"
+      bodyClassName="flex flex-col gap-3 p-0"
       header={
         <>
-          <span className="folder-picker-title">
-            <strong>Choose a project folder</strong>
-            <small>The folder registers as a project; the conversation is created by your first message.</small>
+          <span className="flex min-w-0 flex-col">
+            <strong className="text-base font-semibold">Choose a project folder</strong>
+            <small className="text-xs text-fg-faint">The folder registers as a project; the conversation is created by your first message.</small>
           </span>
-          <IconButton label="Close folder picker" size="md" onClick={onDismiss}>
-            <Icon name="close" size={15} />
-          </IconButton>
+          <IconButton label="Close folder picker" size="md" onClick={onDismiss}><Icon name="close" size={18} /></IconButton>
         </>
       }
     >
-      <div className="folder-picker-bar">
-        <Button
-          size="sm"
-          variant="ghost"
-          className="folder-picker-up"
-          aria-label="Go to parent folder"
+      <div className="flex items-center gap-2 px-5 pt-4">
+        <IconButton
+          label={listing?.parent ? `Go to parent folder ${listing.parent}` : 'Go to parent folder'}
+          variant="outline"
           disabled={listing?.parent === null || listing === null}
-          title={listing?.parent ?? undefined}
           onClick={() => { if (listing?.parent !== null && listing !== null) void load(listing.parent) }}
         >
-          <Icon name="chevron" size={12} className="icon-flip" />
-        </Button>
-        <span className="folder-picker-path" title={listing?.path ?? undefined}>{listing?.path ?? (loading ? 'Loading…' : '—')}</span>
+          <Icon name="arrowUp" size={16} />
+        </IconButton>
+        <span className="min-w-0 flex-1 truncate rounded-lg bg-muted px-3 py-1.5 font-mono text-xs" title={listing?.path ?? undefined}>{listing?.path ?? (loading ? 'Loading…' : '—')}</span>
       </div>
-      <div className="folder-picker-list" role="list">
+      <div className="folder-picker-list mx-5 h-[min(320px,45dvh)] overflow-y-auto rounded-xl border border-line p-1" role="listbox" aria-label="Folders">
         {error !== null ? (
-          <div className="folder-picker-row folder-picker-error" role="alert">
-            <Icon name="alertTriangle" size={13} />
-            <span>{error}</span>
+          <div className="flex flex-col items-start gap-2 p-3 text-sm text-bad" role="alert">
+            <span className="flex items-center gap-2"><Icon name="alertTriangle" size={15} />{error}</span>
             <Button size="sm" variant="outline" onClick={() => void load(listing?.path)}>Retry</Button>
           </div>
         ) : loading ? (
-          <div className="folder-picker-row folder-picker-muted">Loading…</div>
+          <div className="flex items-center gap-2 p-3 text-sm text-fg-muted"><Spinner size={13} />Loading…</div>
         ) : (listing?.dirs.length ?? 0) === 0 ? (
-          <div className="folder-picker-row folder-picker-muted">No subfolders here.</div>
+          <div className="p-3 text-sm text-fg-muted">No subfolders here.</div>
         ) : listing?.dirs.map((dir) => (
-          <div className="folder-picker-row-wrap" role="listitem" key={dir.path}>
+          <div role="option" aria-selected={false} key={dir.path}>
             <button
               type="button"
-              className="folder-picker-row"
+              className="folder-picker-row flex min-h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-sm hover:bg-hover focus-visible:bg-hover"
               onClick={() => void load(dir.path)}
               onKeyDown={(event) => {
                 if (event.key === 'ArrowDown') { event.preventDefault(); step(1, event.currentTarget) }
                 else if (event.key === 'ArrowUp') { event.preventDefault(); step(-1, event.currentTarget) }
               }}
             >
-              <Icon name="folder" size={13} />
-              <span className="folder-picker-name">{dir.name}</span>
-              <Icon name="chevronRight" size={11} className="folder-picker-go" />
+              <Icon name="folder" size={15} className="text-fg-muted" />
+              <span className="min-w-0 flex-1 truncate">{dir.name}</span>
+              <Icon name="chevronRight" size={14} className="text-fg-faint" />
             </button>
           </div>
         ))}
       </div>
-      <div className="folder-picker-manual">
+      <div className="flex items-center gap-2 px-5">
+        <label className="sr-only" htmlFor="folder-picker-path">Absolute path</label>
         <input
+          id="folder-picker-path"
           className="filter-input"
           value={manualPath}
           placeholder="…or paste an absolute path"
@@ -132,7 +129,7 @@ export function FolderPickerModal({
         />
         <Button size="sm" variant="outline" disabled={manualPath.trim() === ''} onClick={() => void load(manualPath.trim())}>Go</Button>
       </div>
-      <footer className="folder-picker-actions">
+      <footer className="flex justify-end gap-2 border-t border-line px-5 py-3">
         <Button size="sm" variant="ghost" onClick={onDismiss}>Cancel</Button>
         <Button size="sm" variant="primary" disabled={listing === null || loading || error !== null} onClick={() => { if (listing !== null) onConfirm(listing.path) }}>
           Choose this folder

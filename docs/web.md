@@ -29,14 +29,15 @@ UI from it at any time.
 - Drafts, pending-send flags and send errors are keyed by workspace/session in memory. A submitted draft clears only after the server accepts the POST and only if its edit revision is unchanged. Failures remain inline with details and provider guidance; automatic resend is deliberately avoided because a lost response does not prove the request was rejected.
 - Approval questions are deduplicated and reconciled against durable request, decision, tool-result and turn-end events on replay, and removed after a successful answer.
 - Model menus offer search for larger lists, provider grouping, keyboard navigation and full wrapping option labels. Popups portal into document.body with viewport-clamped positioning and scroll/resize updates; Escape belongs to the popup before a drawer or modal.
-- Both rails honor their toggles on desktop; the sidebar starts open at widths above 1024px. Narrow-screen rails have scrims, close controls, Escape handling and keyboard focus boundaries that subscribe to media-query changes. Settings tabs use arrow/Home/End navigation, roving tabindex and linked tabpanels. Provider edits survive tab changes; close/provider changes request discard confirmation, including pending model text.
-- Shared 12/13/14/16px typography tokens apply across shell, transcript, primitives and settings. Expanded tools show all arguments and output; transcript identities are explicit.
+- The sidebar docks at 768px and above (its collapsed state is remembered); below that it is a modal drawer with a scrim, Escape handling, focus containment and focus restoration. Settings tabs use arrow/Home/End navigation, roving tabindex and linked tabpanels. Provider edits survive tab changes; close/provider changes request discard confirmation, including pending model text.
+- Expanded tool rows show all arguments and output; transcript identities are explicit (right-aligned user bubbles, plain assistant prose).
 
 ### Production task workflows
 
-- **New conversation** and Ctrl/Cmd+N open a scope dialog; neither creates a session immediately. Choose an existing project or explicitly choose **Chat only**. Create stays disabled until a valid choice is made, locks during submission, and reports errors without silently falling back to an unbound session. Cancel leaves the existing conversation unchanged.
-- The app bar owns workspace selection. The sidebar groups project filtering, conversation history and search. History filters only affect navigation, never a session's immutable execution project.
-- The inspector starts closed at every viewport size. Context manifests load only while it is open. The main pane shows durable task lifecycle and separately explains event-stream connection loss. Queued/being-submitted inputs show preparing; open turns show running or waiting approval; terminal reasons remain visible. Partial assistant chunks stop appearing live at turn end.
+- **New conversation** and Ctrl/Cmd+N clear the canvas without creating a session. The composer's scope chip picks an existing project, a newly chosen folder, or **Chat only**; the session is created by the first sent message, and a failed first send keeps the draft.
+- The sidebar footer owns workspace selection; the sidebar also groups project history and search. History filters only affect navigation, never a session's immutable execution project.
+- The Context sheet starts closed at every viewport size. Context manifests load only while it is open. The main pane shows durable task lifecycle and separately explains event-stream connection loss. Queued/being-submitted inputs show preparing; open turns show running or waiting approval; terminal reasons remain visible. Partial assistant chunks stop appearing live at turn end.
+- Composer completion inserts text and nothing else: `@` lists files from the conversation's project (bounded search that never follows symlinks or walks hidden/`node_modules` trees) and inserts a root-relative path for the agent's own file tools; `/` at the start of a draft lists workspace skills and inserts an invocation phrase — neither grants a permission, reads a file, or pins a skill by itself. Both menus stay shut without a source, are driven from the textarea (a combobox with `aria-activedescendant`), and Escape closes them until the query changes. ArrowUp on an empty composer brings back the newest own message for editing; unsent drafts survive a reload.
 - Composer context shows the fixed project path or an explicit no-project warning with a new-conversation CTA. “Chat-only” describes absence of a project, not an automatic switch to Chat mode or a promise to disable every tool. Model/mode controls apply to the workspace at the next request/tool gate. Expand scope details to inspect the reported policy; mode and server restrictions still apply.
 - Approval review exposes tool name, target, full escaped JSON arguments, call ID and conversation project. **Allow once** and **Deny** answer only that pending request, not a remembered grant. Buttons lock while submitting; failed submissions remain visible. Durable decisions remain in transcript history, including expiry/invalidation. No UI option widens backend permission scope.
 - Failed, cancelled, limited and interrupted work offers inspection-first recovery guidance. Unknown recovered tool results are explicitly called out. There is no automatic retry or replay control: inspect actual effects, then submit new instructions limited to remaining work.
@@ -112,6 +113,7 @@ tool root. The families, at a glance:
 | `…/:wid/sessions/:id/manifest`, `…/compact` | per-request context manifest; manual compaction into an immutable checkpoint |
 | `PUT …/:wid/model`, `PUT …/:wid/thinking`, `PUT …/:wid/policy`, `PUT …/:wid/mode`, `GET …/:wid/meta` | the live controls (model, thinking level, policy, mode) and workspace meta, all workspace-local |
 | `…/:wid/projects` (+ `/projects/:pid`) | project binding: working folder, ownership, overlap rejection |
+| `GET …/:wid/projects/:pid/(files\|file\|search)` | read-only project browsing: one directory listing, one file body, and a bounded file-name search for composer mentions |
 | `…/:wid/agents/:name` (GET resolve / DELETE), `POST …/:wid/agents/:name` | agent definitions; POST spawns a bounded child with a task packet |
 | `GET …/:wid/agents/children?root=…`, `GET/DELETE …/:wid/children/:childId` (+ `/cancel`) | child list / wait-result / cancel |
 | `…/:wid/mcp` (+ `/:server`, `/:server/(enable\|disable\|reconnect)`, `/mcp/import`) | MCP server lifecycle and imports with provenance |
@@ -362,6 +364,20 @@ identities); `--yolo` makes the default mode `allow`.
 `web-dist/`). Unknown non-API paths fall back to `index.html` so client-side
 state stands up; if the client is not built, a `404` suggests
 `npm run build:web`. Path traversal outside `staticDir` is rejected.
+`index.html`, the shell fallback, and `sw.js` are sent with `cache-control: no-cache`.
+
+### Installable client (PWA)
+
+The built client is an installable PWA: `web/public/manifest.webmanifest` plus
+icons in `web/public/icons/`. `web/pwa/pwa-plugin.ts` emits `web-dist/sw.js` at
+build time from `web/pwa/service-worker.js`, stamped with a content hash and the
+shell file list, so each rebuild replaces the worker and drops old caches. The
+worker never handles `/api/` (REST and SSE stay live); navigations are
+network-first with the cached shell as offline fallback; `/assets/` and
+`/icons/` are cache-first. Registration runs only in production builds
+(`web/pwa/register-service-worker.ts`). Install from the browser address bar
+on `http://127.0.0.1:<port>` — localhost counts as a secure context; any other
+host needs HTTPS.
 
 ## Shutdown
 
@@ -374,45 +390,46 @@ graceful close and a second to an immediate exit.
 
 | Path | Purpose |
 |---|---|
-| `main.tsx` | entry, bundled fonts, providers, and the three production CSS imports |
-| `App.tsx` | routing, server-backed state, durable projections, and shell composition |
-| `components/layout` | `WorkbenchShell`, TopBar, Sidebar, `InspectorPanel`, and `ContextPanel` |
+| `main.tsx` | entry, bundled mono font, providers, and the three production CSS imports |
+| `App.tsx` | routing, server-backed state, send/stop/approval logic, and layout composition |
+| `components/layout` | `Sidebar`, `WorkspacePopover`, `ChatHeader`, `ContextSheet`, `ContextPanel` |
+| `components/session` | project-grouped and time-bucketed conversation list |
+| `components/chat` | `Transcript`, message/tool/delegation rows, thinking, work status, approvals |
+| `components/composer` | `Composer` with scope/mode/thinking/permission chips, `@`/`/` completion popover, header `ModelMenu`, folder picker |
 | `components/artifacts` | pure existing-event artifact projection and read-only Artifacts panel |
+| `components/settings` | Settings dialog, provider editor, and workspace management panels |
 | `components/ui` | Tailwind/CVA primitives with Radix interaction mechanics |
-| `components/session` | project-grouped and unbound conversation navigation |
-| `components/chat` | durable Transcript, status/approval surfaces, and elevated workbench presentation |
-| `components/composer` | fixed center-region composer dock and request controls |
-| `components/settings` | full-height responsive Settings and workspace management panels |
 | `components/common` | icons, copy, confirmation, error, spinner, and toast surfaces |
-| `hooks/` | SSE subscription, drawers, local preferences, and panel resizing |
-| `lib/api.ts` | unchanged REST calls plus `EventSource` subscription |
+| `hooks/` | SSE subscription, theme, media queries, transcript follow, focus restore, preferences |
+| `lib/api.ts` | REST calls plus `EventSource` subscription |
 | `lib/types.ts` | client mirror of existing wire shapes |
 | `lib/project.ts` | durable `projectItems()` and turn-state derivation |
-| `styles/app.css` | Tailwind Warm Studio theme, root rules, and consolidated component selector authority |
+| `styles/app.css` | light/dark tokens, Tailwind theme mapping, base rules, management-panel hooks |
 | `styles/markdown.css` | Markdown and highlight.js selectors |
 | `styles/motion.css` | keyframes, scrollbar styling, and reduced-motion behavior |
 
 `projectItems(events)` remains the transcript contract and is computed once per
-event-array revision. The elevated workbench selects an existing projected tool or
-delegation item; it does not create another durable item. `projectArtifacts(events)`
-is a separate pure projection over existing tool calls/results. It shows only exact
-path/resource references, command records, and recorded tool output. It does not
-fetch file details or claim file existence, file content, diffs, MIME type,
-repository ownership, or rerun capability. Delegation file references are absent
-from this MVP because the durable stream does not expose them.
+event-array revision. `projectArtifacts(events)` is a separate pure projection over
+existing tool calls/results. It shows only exact path/resource references, command
+records, and recorded tool output; it never fetches file details or claims file
+existence, content, diffs, MIME type, repository ownership, or rerun capability.
 
-The Warm Studio shell has a 280px left panel (232–420 range) docked at 1024px and
-above, and a 336px right panel (280–520 range) docked at 1280px and above. Below
-those thresholds the panels use focus-managed Radix Dialog drawers. Width,
-collapse, and active inspector tab are browser-local preferences under
-`mini-dsh.workbench.v1`; they are not server settings. The composer is fixed to
-the measured center region and transcript clearance follows its height.
+The layout follows a ChatGPT-style shell: a 260px sidebar docked at 768px and above
+(a modal drawer below), one centered chat column whose transcript scroller follows
+the tail only while the reader is at the bottom, a composer section in normal flow
+below it, and a right Context sheet that is closed by default. The sidebar collapse
+state and the selected Context/Artifacts tab are browser-local preferences under
+`mini-dsh.workbench.v1`; appearance (System/Light/Dark) is stored under
+`mini-dsh.theme`; unsent composer drafts are kept per workspace+session under
+`mini-dsh.drafts.v1` (text only — never `sending` or an error, which describe a
+request that no longer exists). None of these are server settings. See
+[design guidelines](design-guidelines.md) and [design system](design-system.md).
 
 Context manifest loading is lazy and uses the existing endpoint only while the
-right panel is open, Context is selected, a valid conversation exists, and the
-turn is settled. Artifacts causes no request. Reconnect presentation remains
-separate from durable running truth: drafts stay editable, Stop remains available,
-and the client does not automatically resend or replay.
+sheet is open, Context is selected, a valid conversation exists, and the turn is
+settled. Artifacts causes no request. Reconnect presentation remains separate from
+durable running truth: drafts stay editable, Stop remains available, and the client
+does not automatically resend or replay.
 
 Settings remains a client for the existing provider/workspace APIs. Desktop uses
 grouped tabs and narrow mobile uses a section selector; Providers, Projects,
@@ -420,19 +437,19 @@ Skills, Memory, Agents, MCP, Hooks, and Secrets remain reachable. Dirty provider
 confirmation, blank-key omission, destructive confirmations, whole-document Hooks
 validation/save, and explicit Skills/Memory conflict choices are retained.
 
-Required client verification runs at 320, 375, 768, 1024, 1440, and 1920px:
+Required client verification runs at 320, 375, 768, 1024, 1440, and 1920px in both
+themes:
 
 ```sh
-npm test -- --maxWorkers=1 --no-file-parallelism
+npm test
 npm run typecheck
 npm run build:web
 npm run test:browser
 ```
 
-Browser suites use intercepted, fail-closed fixtures and do not mutate real
-settings. Deterministic visual evidence is written to
-`artifacts/product-ui/warm-studio/`; it is not an approved visual baseline.
-
+Browser suites (`tests/browser/chat-shell.e2e.ts`, `tests/browser/chat-workflows.e2e.ts`)
+use intercepted fixtures and never mutate real settings. Screenshot evidence is
+written to `artifacts/product-ui/chat/`; it is not an approved visual baseline.
 
 ## Reading further
 
@@ -442,14 +459,8 @@ settings. Deterministic visual evidence is written to
   denial surfacing, duplicate-answer 404s, static fallback).
 
 
-## English workbench UI
-
-The web client now uses an English workbench shell. Switch workspaces in the app bar; filter registered projects and conversation history in navigation. Start **New conversation**, select a project or **Chat only**, and use **Manage projects** to open workspace project registration. Project registration and rename use scoped server APIs. Confirmed removal never deletes the folder and returns HTTP 409 while any conversation is bound; it never detaches conversations.
-
-Model and mode controls live in the composer. The optional Context inspector is read-only and closed by default. Settings is full-height and retains Providers, Agents, MCP, Hooks and Secrets, with explicit global/workspace/current-conversation scope. User text, names, paths, IDs, tool output and imported content are never translated.
+## Listing and agent catalog notes
 
 Workspace session listings may include optional `createdAt`/`updatedAt` from existing event-backed summaries. Empty conversations omit these fields; clients must not invent dates. No existing request or approval wire format changed.
-
-See [design guidelines](design-guidelines.md) for geometry, ownership and safety rules. Run `npm run test:browser` for fixture-backed Chromium interactions and screenshots. Visual signoff, native 200% zoom, screen-reader review and long-history performance acceptance remain pending; generated screenshots are not approved baselines.
 
 Agent catalog: `GET /api/workspaces/:id/agents` returns bundled and workspace definitions using the existing definition service. Imported definitions can be selected, inspected, spawned and explicitly deleted. Bundled-role deletion remains prohibited. Management panels reset on workspace/root changes and invalidate stale async state feedback. New providers may omit API keys for keyless endpoints.

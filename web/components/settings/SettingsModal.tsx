@@ -46,8 +46,8 @@ const TABS: readonly { readonly id: SettingsTab; readonly label: string; readonl
 
 /** Spec: nav groups Global / Workspace (11px caps heads). */
 const TAB_GROUPS: readonly { readonly label: string; readonly ids: readonly SettingsTab[] }[] = [
-  { label: 'GLOBAL', ids: ['providers'] },
-  { label: 'WORKSPACE', ids: ['projects', 'skills', 'memory', 'agents', 'mcp', 'hooks', 'secrets'] },
+  { label: 'Global', ids: ['providers'] },
+  { label: 'Workspace', ids: ['projects', 'skills', 'memory', 'agents', 'mcp', 'hooks', 'secrets'] },
 ]
 
 interface Draft {
@@ -188,6 +188,11 @@ export function SettingsModal({
     else action()
   }
   const dismiss = () => leave(onDismiss)
+  const discardDraft = (): void => {
+    setDraft(selected === undefined ? BLANK : draftOf(selected))
+    setModelDraft('')
+    setNotice(null)
+  }
   if (!open) return null
 
   const patch = (next: Partial<Draft>): void => {
@@ -349,392 +354,348 @@ export function SettingsModal({
     setNotice(null)
   }
 
-  const header = (
-    <>
-      <span className="settings-title">
-        <span className="settings-kicker">SETTINGS</span>
-        <strong>{TABS.find((entry) => entry.id === tab)?.label ?? 'Settings'}</strong>
-        <small>{TABS.find((entry) => entry.id === tab)?.hint ?? ''}</small>
-      </span>
-      <IconButton label="Close settings" size="md" onClick={dismiss}>
-        <Icon name="close" size={15} />
-      </IconButton>
-    </>
-  )
+  const activeTab = TABS.find((entry) => entry.id === tab)
+  const tabTrigger = 'flex w-full flex-col items-start rounded-lg px-3 py-2 text-left text-sm text-fg-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-link data-[state=active]:bg-hover data-[state=active]:text-fg'
 
   return (
-    <><Modal open={open} onDismiss={dismiss} label="Settings" className="settings-modal h-dvh w-screen max-w-none rounded-none border-0 bg-surface-raised text-ink" header={header}>
-      <Tabs.Root className="settings-tabs-root min-h-0" value={tab} orientation="vertical" onValueChange={(value) => leave(() => setTab(value as SettingsTab))}>
-        <div className="settings-mobile-navigation border-b border-border bg-surface px-4 py-3">
-          <span className="settings-mobile-label">Settings section</span>
-          <RadixSelect.Root value={tab} onValueChange={(value) => leave(() => setTab(value as SettingsTab))}>
-            <RadixSelect.Trigger className="settings-mobile-trigger flex min-h-11 w-full items-center justify-between rounded-control border border-border-strong bg-surface-raised px-3 text-sm text-ink" aria-label="Settings section">
-              <RadixSelect.Value />
-              <RadixSelect.Icon aria-hidden="true"><Icon name="chevron" size={13} /></RadixSelect.Icon>
-            </RadixSelect.Trigger>
-            <RadixSelect.Portal>
-              <RadixSelect.Content className="settings-mobile-content z-50 max-h-[min(70vh,30rem)] min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-control border border-border bg-surface-raised shadow-raised" position="popper" sideOffset={6} collisionPadding={8}>
-                <RadixSelect.ScrollUpButton className="settings-select-scroll"><Icon name="chevron" size={12} /></RadixSelect.ScrollUpButton>
-                <RadixSelect.Viewport className="settings-mobile-viewport">
-                  {TAB_GROUPS.map(group => (
-                    <RadixSelect.Group key={group.label}>
-                      <RadixSelect.Label className="settings-select-label">{group.label}</RadixSelect.Label>
-                      {group.ids.map(id => {
-                        const entry = TABS.find(item => item.id === id)
-                        return entry === undefined ? null : (
-                          <RadixSelect.Item key={entry.id} value={entry.id} className="settings-select-item relative flex min-h-10 cursor-default select-none items-center rounded-md px-3 pr-9 text-sm outline-none data-[highlighted]:bg-surface-muted data-[state=checked]:text-accent">
-                            <RadixSelect.ItemText>{entry.label}</RadixSelect.ItemText>
-                            <RadixSelect.ItemIndicator><Icon name="check" size={12} /></RadixSelect.ItemIndicator>
-                          </RadixSelect.Item>
-                        )
-                      })}
-                    </RadixSelect.Group>
-                  ))}
-                </RadixSelect.Viewport>
-                <RadixSelect.ScrollDownButton className="settings-select-scroll"><Icon name="chevron" size={12} /></RadixSelect.ScrollDownButton>
-              </RadixSelect.Content>
-            </RadixSelect.Portal>
-          </RadixSelect.Root>
-        </div>
-        <Tabs.List className="settings-tabs border-r border-border bg-surface px-3 py-6" aria-label="Settings sections">
-          {TAB_GROUPS.map(group => (
-            <div key={group.label} className="settings-nav-group">
-              <div className="settings-nav-group-head">{group.label}</div>
-              {group.ids.map((id) => {
-                const entry = TABS.find(item => item.id === id)
-                return entry === undefined ? null : (
-                  <Tabs.Trigger key={entry.id} value={entry.id} className="settings-tab rounded-control px-3 py-2.5 text-left text-sm text-ink-muted outline-none transition-colors hover:bg-surface-muted hover:text-ink focus-visible:ring-2 focus-visible:ring-accent data-[state=active]:bg-accent-soft data-[state=active]:text-accent">
-                    <span>{entry.label}</span>
-                    <small>{entry.hint}</small>
-                  </Tabs.Trigger>
-                )
-              })}
-            </div>
-          ))}
-        </Tabs.List>
-
-        <Tabs.Content key={tab} value={tab} className="settings-tab-panel min-h-0 min-w-0 overflow-y-auto px-6 py-6 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent" tabIndex={0}>
-      <section className="settings-scope" aria-label="Settings scope">
-        <h2>{TABS.find(entry => entry.id === tab)?.label}</h2>
-        <p className="scope-caption">{tab === 'providers' ? 'Global provider configuration' : 'Workspace configuration and services'}<br /><span>Workspace: {workspaceName ?? workspaceId ?? 'Not selected'}</span></p>
-        <details className="settings-scope-details"><summary>Scope and runtime details</summary>
-          <p>{tab === 'providers' ? 'Endpoints, keys, and model lists are stored globally. Activation changes only this workspace. Saving does not verify connectivity. Test connection uses saved configuration, not the draft.' : 'Changes apply only to this workspace. Live service state is separate from saved configuration.'}</p>
-          {tab === 'providers' ? <p>Active workspace model: <code>{activeProvider || 'Not selected'} / {activeModel || 'Not selected'}</code></p> : null}
-          {tab === 'agents' ? <p>Agent definitions belong to the workspace. Child agents belong only to the current conversation.</p> : null}
-        </details>
-      </section>
-      {tab !== 'providers' ? (
-        <div className="settings-panel-body">
-          {tab === 'projects' ? <ProjectsPanel workspaceId={workspaceId} projects={projects} onChanged={onProjectsChanged} sessionCounts={sessionCounts} /> : null}
-          {tab === 'skills' ? <SkillsPanel workspaceId={workspaceId} /> : null}
-          {tab === 'memory' ? <MemoryPanel workspaceId={workspaceId} /> : null}
-          {tab === 'agents' ? <AgentsPanel workspaceId={workspaceId} rootSessionId={rootSessionId ?? null} {...(onOpenChild !== undefined ? { onOpenChild } : {})} /> : null}
-          {tab === 'mcp' ? <McpPanel workspaceId={workspaceId} /> : null}
-          {tab === 'hooks' ? <HooksPanel workspaceId={workspaceId} /> : null}
-          {tab === 'secrets' ? <SecretsPanel workspaceId={workspaceId} /> : null}
-        </div>
-      ) : (
-      <div className="settings-body">
-        <aside className="provider-rail">
-          <div className="provider-rail-head">
-            <span>PROVIDERS<Badge tone="gray">{providers.length}</Badge></span>
-            <IconButton label="Add provider" onClick={() => leave(beginNew)}><Icon name="plus" size={13} /></IconButton>
+    <><Modal open={open} onDismiss={dismiss} label="Settings" width="xl" bodyClassName="flex p-0 overflow-hidden">
+      <Tabs.Root className="flex min-h-0 min-w-0 flex-1 flex-col sm:flex-row" value={tab} orientation="vertical" onValueChange={(value) => leave(() => setTab(value as SettingsTab))}>
+        <aside className="flex shrink-0 flex-col border-line bg-sidebar max-sm:border-b sm:w-56 sm:border-r">
+          <div className="hidden h-14 items-center px-5 sm:flex"><span className="text-[15px] font-semibold">Settings</span></div>
+          <div className="px-4 py-3 sm:hidden">
+            <span className="sr-only">Settings section</span>
+            <RadixSelect.Root value={tab} onValueChange={(value) => leave(() => setTab(value as SettingsTab))}>
+              <RadixSelect.Trigger className="flex h-10 w-full items-center justify-between rounded-lg border border-line bg-bg px-3 text-sm" aria-label="Settings section">
+                <RadixSelect.Value />
+                <RadixSelect.Icon aria-hidden="true"><Icon name="chevron" size={15} /></RadixSelect.Icon>
+              </RadixSelect.Trigger>
+              <RadixSelect.Portal>
+                <RadixSelect.Content className="z-50 max-h-[min(70vh,30rem)] min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-2xl border border-line bg-surface p-1.5 text-fg shadow-pop" position="popper" sideOffset={6} collisionPadding={8}>
+                  <RadixSelect.Viewport>
+                    {TAB_GROUPS.map((group) => (
+                      <RadixSelect.Group key={group.label}>
+                        <RadixSelect.Label className="px-2.5 pb-1 pt-2 text-xs font-medium text-fg-faint">{group.label}</RadixSelect.Label>
+                        {group.ids.map((id) => {
+                          const entry = TABS.find((item) => item.id === id)
+                          return entry === undefined ? null : (
+                            <RadixSelect.Item key={entry.id} value={entry.id} className="relative flex min-h-10 cursor-default select-none items-center justify-between rounded-lg px-2.5 text-sm outline-none data-[highlighted]:bg-hover">
+                              <RadixSelect.ItemText>{entry.label}</RadixSelect.ItemText>
+                              <RadixSelect.ItemIndicator><Icon name="check" size={14} /></RadixSelect.ItemIndicator>
+                            </RadixSelect.Item>
+                          )
+                        })}
+                      </RadixSelect.Group>
+                    ))}
+                  </RadixSelect.Viewport>
+                </RadixSelect.Content>
+              </RadixSelect.Portal>
+            </RadixSelect.Root>
           </div>
-
-          <div className="provider-rail-list">
-            {providers.map((provider) => {
-              const isActive = provider.id === activeProvider
-              return (
-                <button
-                  key={provider.id}
-                  type="button"
-                  className={`provider-row ${provider.id === selectedId ? 'is-selected' : ''}`}
-                  onClick={() => { if (provider.id !== selectedId) leave(() => select(provider)) }}
-                >
-                  <span className={`provider-status ${provider.enabled ? 'is-on' : ''}`} aria-hidden="true" />
-                  <span className="provider-row-text">
-                    <span className="provider-row-name">{provider.name}</span>
-                    <span className="provider-row-sub">
-                      {provider.models.length > 0 ? `${provider.models.length} models` : 'No models'}
-                    </span>
-                  </span>
-                  {isActive ? <Badge tone="green">active</Badge> : null}
-                </button>
-              )
-            })}
-
-            <button
-              type="button"
-              className={`provider-row provider-row-new ${isNew ? 'is-selected' : ''}`}
-              onClick={() => leave(beginNew)}
-            >
-              <Icon name="plus" size={13} />
-              <span className="provider-row-text"><span className="provider-row-name">Add provider</span></span>
-            </button>
-          </div>
-        </aside>
-
-        <div className="provider-editor">
-          <div className="editor-head">
-            <h2>{isNew ? 'Add provider' : selected?.name}</h2>
-            {dirty ? <Badge tone="amber">Unsaved</Badge> : null}
-            {!isNew && selected?.enabled === false ? <Badge tone="gray">disabled</Badge> : null}
-            {selected?.id === activeProvider ? <Badge tone="green">Active in workspace</Badge> : null}
-          </div>
-
-          <div className="editor-grid">
-            <Field label="Name" hint="Shown in the picker. The ID is derived from this name.">
-              <TextInput
-                ref={nameRef}
-                value={draft.name}
-                placeholder="cliproxy1"
-                onChange={(event) => patch({ name: event.target.value })}
-              />
-            </Field>
-
-            <Field
-              label="Base URL"
-              tone={urlLooksWrong ? 'bad' : 'default'}
-              hint={urlLooksWrong ? 'Enter an HTTP or HTTPS URL.' : 'Base endpoint for /chat/completions and /models.'}
-            >
-              <TextInput
-                mono
-                invalid={urlLooksWrong}
-                value={draft.baseUrl}
-                placeholder="https://api.openai.com/v1"
-                leading={<Icon name="globe" size={13} />}
-                onChange={(event) => patch({ baseUrl: event.target.value })}
-              />
-            </Field>
-
-            <Field
-              label="API key"
-              hint={isNew
-                ? 'Optional for keyless endpoints. Stored on the server and never returned to the browser.'
-                : selected?.keyMasked === ''
-                  ? 'This provider has no stored key.'
-                  : `Stored ${selected?.keyMasked ?? ''} · leave blank to keep the current key.`}
-            >
-              <TextInput
-                mono
-                type={showKey ? 'text' : 'password'}
-                value={draft.apiKey}
-                autoComplete="off"
-                placeholder={isNew ? 'sk-…' : 'Keep current key'}
-                leading={<Icon name="key" size={13} />}
-                trailing={
-                  <IconButton
-                    label={showKey ? 'Hide key' : 'Show key'}
-                    onClick={() => setShowKey((prev) => !prev)}
-                  >
-                    <Icon name={showKey ? 'eyeOff' : 'eye'} size={13} />
-                  </IconButton>
-                }
-                onChange={(event) => patch({ apiKey: event.target.value })}
-              />
-            </Field>
-
-            <Switch
-              checked={draft.enabled}
-              label="Enabled"
-              hint="Disabled providers do not appear in the workspace model picker."
-              onChange={(next) => patch({ enabled: next })}
-            />
-          </div>
-
-          <section className="model-section">
-            <div className="model-head">
-              <span className="model-head-title">MODELS<Badge tone="gray">{draft.models.length}</Badge></span>
-              <Button variant="outline" size="sm" disabled={isNew || busy !== null} onClick={() => void sync()}>
-                <Icon name="refresh" size={12} /> {busy === 'sync' ? 'Syncing…' : 'Sync from /models'}
-              </Button>
-            </div>
-
-            {draft.models.length === 0 ? (
-              <p className="model-empty">
-                <Icon name="info" size={13} /> No models yet. Sync from the endpoint or add model IDs below.
-              </p>
-            ) : (
-              <ul className="model-list">
-                {draft.models.map((model) => {
-                  const isDefault = model === draft.defaultModel
-                  const isLive = selected?.id === activeProvider && model === activeModel
-                  const settings = draft.modelSettings[model]
-                  const context = modelContext(model, settings)
-                  const badges = capabilityBadges(model, settings)
-                  const capability = getReasoningCapability(model)
-                  const open = tunedModel === model
-                  const visionValue = settings?.vision === undefined ? 'auto' : settings.vision ? 'yes' : 'no'
-                  return (
-                    <li key={model} className={`model-row ${isDefault ? 'is-default' : ''}`}>
-                      <div className="model-row-main">
-                        <button
-                          type="button"
-                          className="model-pick"
-                          aria-pressed={isDefault}
-                          title={isDefault ? 'Current default' : 'Set as default'}
-                          onClick={() => patch({ defaultModel: model })}
-                        >
-                          <Icon name={isDefault ? 'circleDot' : 'circle'} size={13} />
-                        </button>
-                        <code className="model-name">{model}</code>
-                        {badges.map((badge) => <Badge key={badge.label} tone={badge.tone}>{badge.label}</Badge>)}
-                        <span
-                          className={`model-context ${context.overridden ? 'is-custom' : ''}`}
-                          title={context.overridden
-                            ? `Custom context window: ${context.tokens.toLocaleString()} tokens`
-                            : `Catalog context window: ${context.tokens.toLocaleString()} tokens (leave the override empty to use it)`}
-                        >
-                          {context.label}{context.overridden ? ' · custom' : ''}
-                        </span>
-                        {isDefault ? <Badge tone="blue">default</Badge> : null}
-                        {isLive ? <Badge tone="green">live</Badge> : null}
-                        <span className="model-row-actions">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            disabled={isNew || busy !== null}
-                            onClick={() => void useForChat(model)}
-                          >
-                            Use in workspace
-                          </Button>
-                          <IconButton
-                            label={open ? `Hide ${model} settings` : `Configure ${model} (context, vision, thinking)`}
-                            aria-expanded={open}
-                            className={open ? 'model-tune is-open' : 'model-tune'}
-                            onClick={() => setTunedModel(open ? null : model)}
-                          >
-                            <Icon name="sliders" size={13} />
-                          </IconButton>
-                          <IconButton label={`Remove model ${model}`} onClick={() => dropModel(model)}>
-                            <Icon name="trash" size={13} />
-                          </IconButton>
-                        </span>
-                      </div>
-                      {open ? (
-                        <div className="model-settings-editor">
-                          <Field
-                            label="Context window (tokens)"
-                            hint={`Leave empty for the catalog default (${context.tokens.toLocaleString()}). An explicit value is treated as operator-verified.`}
-                          >
-                            <TextInput
-                              mono
-                              inputMode="numeric"
-                              value={settings?.contextTokens === undefined ? '' : String(settings.contextTokens)}
-                              placeholder={context.tokens.toLocaleString()}
-                              onChange={(event) => {
-                                const raw = event.target.value.trim().replace(/[\s,_.]/g, '')
-                                if (raw === '') { clearModelSetting(model, 'contextTokens'); return }
-                                if (!/^\d+$/.test(raw)) return
-                                const parsed = Number.parseInt(raw, 10)
-                                if (Number.isFinite(parsed) && parsed > 0) setModelSetting(model, { contextTokens: parsed })
-                              }}
-                            />
-                          </Field>
-                          <Field label="Vision" hint="Override only when the catalog value is wrong or unknown for this endpoint.">
-                            <Select
-                              label={`Vision capability for ${model}`}
-                              triggerClassName="model-setting-select"
-                              value={visionValue}
-                              options={[
-                                { value: 'auto', label: `Auto (catalog: ${getModelInfo(model)?.vision === true ? 'yes' : getModelInfo(model)?.vision === false ? 'no' : 'unknown'})` },
-                                { value: 'yes', label: 'Yes — accepts images' },
-                                { value: 'no', label: 'No — text only' },
-                              ]}
-                              onChange={(value) => {
-                                if (value === 'auto') clearModelSetting(model, 'vision')
-                                else if (value === 'yes') setModelSetting(model, { vision: true })
-                                else setModelSetting(model, { vision: false })
-                              }}
-                            />
-                          </Field>
-                          {capability !== null ? (
-                            <Field label="Thinking default" hint="Used when the workspace has no live thinking override.">
-                              <Select
-                                label={`Default thinking level for ${model}`}
-                                triggerClassName="model-setting-select"
-                                value={settings?.thinkingLevel ?? ''}
-                                options={[
-                                  { value: '', label: 'Model default' },
-                                  ...(capability.canDisable ? [{ value: 'off', label: 'Off' }] : []),
-                                  ...capability.levels.map((level) => ({ value: level as string, label: THINKING_LABELS[level] })),
-                                ]}
-                                onChange={(value) => {
-                                  if (value === '') clearModelSetting(model, 'thinkingLevel')
-                                  else setModelSetting(model, { thinkingLevel: value })
-                                }}
-                              />
-                            </Field>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </li>
+          <Tabs.List className="hidden min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-2 pb-4 sm:flex" aria-label="Settings sections">
+            {TAB_GROUPS.map((group) => (
+              <div key={group.label} className="flex flex-col gap-px">
+                <div className="px-3 pb-1 text-xs font-medium text-fg-faint">{group.label}</div>
+                {group.ids.map((id) => {
+                  const entry = TABS.find((item) => item.id === id)
+                  return entry === undefined ? null : (
+                    <Tabs.Trigger key={entry.id} value={entry.id} className={tabTrigger}>
+                      <span>{entry.label}</span>
+                      <small className="text-xs text-fg-faint">{entry.hint}</small>
+                    </Tabs.Trigger>
                   )
                 })}
-              </ul>
+              </div>
+            ))}
+          </Tabs.List>
+        </aside>
+
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-line px-5">
+            <div className="flex min-w-0 items-baseline gap-2">
+              <h2 className="m-0 text-base font-semibold">{activeTab?.label ?? 'Settings'}</h2>
+              <span className="truncate text-[13px] text-fg-faint">{activeTab?.hint ?? ''}</span>
+            </div>
+            <IconButton label="Close settings" size="md" onClick={dismiss}><Icon name="close" size={18} /></IconButton>
+          </header>
+
+          <Tabs.Content key={tab} value={tab} tabIndex={0} className="min-h-0 min-w-0 flex-1 overflow-y-auto px-5 py-5 outline-none">
+            <section className="mb-5 flex flex-col gap-1.5 text-[13px]" aria-label="Settings scope">
+              <p className="m-0 text-fg-muted">
+                {tab === 'providers' ? 'Global provider configuration' : 'Workspace configuration and services'}
+                <span className="text-fg-faint"> · Workspace: {workspaceName ?? workspaceId ?? 'Not selected'}</span>
+              </p>
+              <details className="text-fg-muted">
+                <summary className="text-xs">Scope and runtime details</summary>
+                <div className="mt-2 flex flex-col gap-1.5 rounded-xl bg-muted p-3 text-xs">
+                  <p className="m-0">{tab === 'providers' ? 'Endpoints, keys, and model lists are stored globally. Activation changes only this workspace. Saving does not verify connectivity. Test connection uses saved configuration, not the draft.' : 'Changes apply only to this workspace. Live service state is separate from saved configuration.'}</p>
+                  {tab === 'providers' ? <p className="m-0">Active workspace model: <code>{activeProvider || 'Not selected'} / {activeModel || 'Not selected'}</code></p> : null}
+                  {tab === 'agents' ? <p className="m-0">Agent definitions belong to the workspace. Child agents belong only to the current conversation.</p> : null}
+                </div>
+              </details>
+            </section>
+
+            {tab !== 'providers' ? (
+              <>
+                {tab === 'projects' ? <ProjectsPanel workspaceId={workspaceId} projects={projects} onChanged={onProjectsChanged} sessionCounts={sessionCounts} /> : null}
+                {tab === 'skills' ? <SkillsPanel workspaceId={workspaceId} /> : null}
+                {tab === 'memory' ? <MemoryPanel workspaceId={workspaceId} /> : null}
+                {tab === 'agents' ? <AgentsPanel workspaceId={workspaceId} rootSessionId={rootSessionId ?? null} {...(onOpenChild !== undefined ? { onOpenChild } : {})} /> : null}
+                {tab === 'mcp' ? <McpPanel workspaceId={workspaceId} /> : null}
+                {tab === 'hooks' ? <HooksPanel workspaceId={workspaceId} /> : null}
+                {tab === 'secrets' ? <SecretsPanel workspaceId={workspaceId} /> : null}
+              </>
+            ) : (
+              <div className="grid min-w-0 gap-6 lg:grid-cols-[13rem_minmax(0,1fr)]">
+                <aside className="flex min-w-0 flex-col gap-1">
+                  <div className="flex items-center justify-between px-1">
+                    <span className="flex items-center gap-2 text-xs font-medium text-fg-faint">Providers<Badge>{providers.length}</Badge></span>
+                    <IconButton label="Add provider" onClick={() => leave(beginNew)}><Icon name="plus" size={16} /></IconButton>
+                  </div>
+                  <div className="flex flex-col gap-px" role="listbox" aria-label="Providers">
+                    {providers.map((provider) => {
+                      const isSelected = provider.id === selectedId
+                      return (
+                        <button
+                          key={provider.id}
+                          type="button"
+                          role="option"
+                          aria-selected={isSelected}
+                          onClick={() => { if (!isSelected) leave(() => select(provider)) }}
+                          className={`flex min-h-10 w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left hover:bg-hover ${isSelected ? 'bg-hover' : ''}`}
+                        >
+                          <span className={`size-2 shrink-0 rounded-full ${provider.enabled ? 'bg-ok' : 'bg-line-strong'}`} aria-hidden="true" />
+                          <span className="sr-only">{provider.enabled ? 'Enabled' : 'Disabled'}</span>
+                          <span className="flex min-w-0 flex-1 flex-col">
+                            <span className="truncate text-sm">{provider.name}</span>
+                            <span className="text-xs text-fg-faint">{provider.models.length > 0 ? `${provider.models.length} models` : 'No models'}</span>
+                          </span>
+                          {provider.id === activeProvider ? <Badge tone="green">active</Badge> : null}
+                        </button>
+                      )
+                    })}
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={isNew}
+                      onClick={() => leave(beginNew)}
+                      className={`flex min-h-10 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-sm text-fg-muted hover:bg-hover hover:text-fg ${isNew ? 'bg-hover text-fg' : ''}`}
+                    >
+                      <Icon name="plus" size={15} />Add provider
+                    </button>
+                  </div>
+                </aside>
+
+                <div className="flex min-w-0 flex-col gap-6">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="m-0 mr-1 text-lg font-semibold">{isNew ? 'Add provider' : selected?.name}</h3>
+                    {dirty ? <Badge tone="amber">Unsaved</Badge> : null}
+                    {!isNew && selected?.enabled === false ? <Badge>disabled</Badge> : null}
+                    {selected?.id === activeProvider ? <Badge tone="green">Active in workspace</Badge> : null}
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <Field label="Name" hint="Shown in the picker. The ID is derived from this name.">
+                      <TextInput ref={nameRef} value={draft.name} placeholder="cliproxy1" onChange={(event) => patch({ name: event.target.value })} />
+                    </Field>
+                    <Field label="Base URL" tone={urlLooksWrong ? 'bad' : 'default'} hint={urlLooksWrong ? 'Enter an HTTP or HTTPS URL.' : 'Base endpoint for /chat/completions and /models.'}>
+                      <TextInput mono invalid={urlLooksWrong} value={draft.baseUrl} placeholder="https://api.openai.com/v1" leading={<Icon name="globe" size={15} />} onChange={(event) => patch({ baseUrl: event.target.value })} />
+                    </Field>
+                    <Field
+                      label="API key"
+                      hint={isNew
+                        ? 'Optional for keyless endpoints. Stored on the server and never returned to the browser.'
+                        : selected?.keyMasked === ''
+                          ? 'This provider has no stored key.'
+                          : `Stored ${selected?.keyMasked ?? ''} · leave blank to keep the current key.`}
+                    >
+                      <TextInput
+                        mono
+                        type={showKey ? 'text' : 'password'}
+                        value={draft.apiKey}
+                        autoComplete="off"
+                        placeholder={isNew ? 'sk-…' : 'Keep current key'}
+                        leading={<Icon name="key" size={15} />}
+                        trailing={<IconButton label={showKey ? 'Hide key' : 'Show key'} onClick={() => setShowKey((prev) => !prev)}><Icon name={showKey ? 'eyeOff' : 'eye'} size={15} /></IconButton>}
+                        onChange={(event) => patch({ apiKey: event.target.value })}
+                      />
+                    </Field>
+                    <div className="flex items-center rounded-xl border border-line px-3.5 py-2.5">
+                      <div className="flex-1"><Switch checked={draft.enabled} label="Enabled" hint="Disabled providers do not appear in the workspace model picker." onChange={(next) => patch({ enabled: next })} /></div>
+                    </div>
+                  </div>
+
+                  <section className="flex flex-col gap-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="flex items-center gap-2 text-sm font-semibold">Models<Badge>{draft.models.length}</Badge></span>
+                      <Button variant="outline" size="sm" disabled={isNew || busy !== null} onClick={() => void sync()}>
+                        <Icon name="refresh" size={14} />{busy === 'sync' ? 'Syncing…' : 'Sync from /models'}
+                      </Button>
+                    </div>
+
+                    {draft.models.length === 0 ? (
+                      <p className="m-0 flex items-center gap-2 rounded-xl border border-dashed border-line px-3.5 py-3 text-[13px] text-fg-muted">
+                        <Icon name="info" size={15} />No models yet. Sync from the endpoint or add model IDs below.
+                      </p>
+                    ) : (
+                      <ul className="m-0 flex list-none flex-col divide-y divide-line rounded-xl border border-line p-0">
+                        {draft.models.map((model) => {
+                          const isDefault = model === draft.defaultModel
+                          const isLive = selected?.id === activeProvider && model === activeModel
+                          const settings = draft.modelSettings[model]
+                          const context = modelContext(model, settings)
+                          const badges = capabilityBadges(model, settings)
+                          const capability = getReasoningCapability(model)
+                          const tuning = tunedModel === model
+                          const visionValue = settings?.vision === undefined ? 'auto' : settings.vision ? 'yes' : 'no'
+                          return (
+                            <li key={model} className="flex flex-col">
+                              <div className="group flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2">
+                                <button
+                                  type="button"
+                                  aria-pressed={isDefault}
+                                  aria-label={isDefault ? `${model} is the default model` : `Set ${model} as default`}
+                                  title={isDefault ? 'Current default' : 'Set as default'}
+                                  onClick={() => patch({ defaultModel: model })}
+                                  className={`flex size-7 shrink-0 items-center justify-center rounded-md hover:bg-hover ${isDefault ? 'text-fg' : 'text-fg-faint'}`}
+                                >
+                                  <Icon name={isDefault ? 'circleDot' : 'circle'} size={15} />
+                                </button>
+                                <code className="min-w-0 break-all text-[13px]">{model}</code>
+                                {badges.map((badge) => <Badge key={badge.label} tone={badge.tone}>{badge.label}</Badge>)}
+                                <span
+                                  className={`text-xs ${context.overridden ? 'text-fg' : 'text-fg-faint'}`}
+                                  title={context.overridden
+                                    ? `Custom context window: ${context.tokens.toLocaleString()} tokens`
+                                    : `Catalog context window: ${context.tokens.toLocaleString()} tokens (leave the override empty to use it)`}
+                                >
+                                  {context.label}{context.overridden ? ' · custom' : ''}
+                                </span>
+                                {isDefault ? <Badge tone="blue">default</Badge> : null}
+                                {isLive ? <Badge tone="green">live</Badge> : null}
+                                <span className="ml-auto flex items-center gap-0.5">
+                                  <Button variant="ghost" size="sm" disabled={isNew || busy !== null} onClick={() => void useForChat(model)}>Use in workspace</Button>
+                                  <IconButton
+                                    label={tuning ? `Hide ${model} settings` : `Configure ${model} (context, vision, thinking)`}
+                                    aria-expanded={tuning}
+                                    className={tuning ? 'bg-hover text-fg' : ''}
+                                    onClick={() => setTunedModel(tuning ? null : model)}
+                                  >
+                                    <Icon name="sliders" size={15} />
+                                  </IconButton>
+                                  <IconButton label={`Remove model ${model}`} onClick={() => dropModel(model)}><Icon name="trash" size={15} /></IconButton>
+                                </span>
+                              </div>
+                              {tuning ? (
+                                <div className="grid gap-3 border-t border-line bg-muted/60 p-3 md:grid-cols-3">
+                                  <Field label="Context window (tokens)" hint={`Leave empty for the catalog default (${context.tokens.toLocaleString()}). An explicit value is treated as operator-verified.`}>
+                                    <TextInput
+                                      mono
+                                      inputMode="numeric"
+                                      value={settings?.contextTokens === undefined ? '' : String(settings.contextTokens)}
+                                      placeholder={context.tokens.toLocaleString()}
+                                      onChange={(event) => {
+                                        const raw = event.target.value.trim().replace(/[\s,_.]/g, '')
+                                        if (raw === '') { clearModelSetting(model, 'contextTokens'); return }
+                                        if (!/^\d+$/.test(raw)) return
+                                        const parsed = Number.parseInt(raw, 10)
+                                        if (Number.isFinite(parsed) && parsed > 0) setModelSetting(model, { contextTokens: parsed })
+                                      }}
+                                    />
+                                  </Field>
+                                  <Field label="Vision" hint="Override only when the catalog value is wrong or unknown for this endpoint.">
+                                    <Select
+                                      label={`Vision capability for ${model}`}
+                                      value={visionValue}
+                                      options={[
+                                        { value: 'auto', label: `Auto (catalog: ${getModelInfo(model)?.vision === true ? 'yes' : getModelInfo(model)?.vision === false ? 'no' : 'unknown'})` },
+                                        { value: 'yes', label: 'Yes — accepts images' },
+                                        { value: 'no', label: 'No — text only' },
+                                      ]}
+                                      onChange={(value) => {
+                                        if (value === 'auto') clearModelSetting(model, 'vision')
+                                        else if (value === 'yes') setModelSetting(model, { vision: true })
+                                        else setModelSetting(model, { vision: false })
+                                      }}
+                                    />
+                                  </Field>
+                                  {capability !== null ? (
+                                    <Field label="Thinking default" hint="Used when the workspace has no live thinking override.">
+                                      <Select
+                                        label={`Default thinking level for ${model}`}
+                                        value={settings?.thinkingLevel ?? ''}
+                                        options={[
+                                          { value: '', label: 'Model default' },
+                                          ...(capability.canDisable ? [{ value: 'off', label: 'Off' }] : []),
+                                          ...capability.levels.map((level) => ({ value: level as string, label: THINKING_LABELS[level] })),
+                                        ]}
+                                        onChange={(value) => {
+                                          if (value === '') clearModelSetting(model, 'thinkingLevel')
+                                          else setModelSetting(model, { thinkingLevel: value })
+                                        }}
+                                      />
+                                    </Field>
+                                  ) : null}
+                                </div>
+                              ) : null}
+                            </li>
+                          )
+                        })}
+                      </ul>
+                    )}
+
+                    <div className="flex gap-2">
+                      <TextInput
+                        mono
+                        className="flex-1"
+                        aria-label="Model IDs to add"
+                        value={modelDraft}
+                        placeholder="gpt-5.6-sol, gpt-5.6-terra"
+                        onChange={(event) => setModelDraft(event.target.value)}
+                        onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addModels() } }}
+                      />
+                      <Button variant="outline" disabled={modelDraft.trim() === ''} onClick={addModels}><Icon name="plus" size={15} />Add</Button>
+                    </div>
+                  </section>
+
+                  {notice !== null ? (
+                    notice.kind === 'bad'
+                      ? <ErrorNotice raw={notice.text} />
+                      : <p className="m-0 flex items-center gap-2 rounded-lg bg-ok-soft px-3 py-2 text-[13px] text-ok" role="status"><Icon name="check" size={15} />{notice.text}</p>
+                  ) : null}
+                </div>
+              </div>
             )}
+          </Tabs.Content>
 
-            <div className="model-add">
-              <TextInput
-                mono
-                value={modelDraft}
-                placeholder="gpt-5.6-sol, gpt-5.6-terra"
-                onChange={(event) => setModelDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key !== 'Enter') return
-                  event.preventDefault()
-                  addModels()
-                }}
-              />
-              <Button variant="outline" size="sm" disabled={modelDraft.trim() === ''} onClick={addModels}>
-                <Icon name="plus" size={12} /> Add
-              </Button>
-            </div>
-          </section>
-
-          {notice !== null ? (
-            <div className={`settings-notice tone-${notice.kind}`} role="status">
-              <Icon name={notice.kind === 'ok' ? 'check' : 'alertTriangle'} size={13} />
-              {notice.kind === 'bad' ? <ErrorNotice raw={notice.text} /> : <span>{notice.text}</span>}
-            </div>
+          {tab === 'providers' ? (
+            <footer className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-line px-5 py-3">
+              <span className="flex flex-wrap items-center gap-2">
+                {isNew ? null : confirmDelete ? (
+                  <>
+                    <span className="text-[13px]">Delete “{selected?.name}”?</span>
+                    <Button variant="outline-danger" size="sm" disabled={busy !== null} onClick={() => void remove()}>{busy === 'delete' ? 'Deleting…' : 'Delete permanently'}</Button>
+                    <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(false)}>Cancel</Button>
+                  </>
+                ) : (
+                  <Button variant="ghost" size="sm" className="text-bad" disabled={busy !== null} onClick={() => setConfirmDelete(true)}><Icon name="trash" size={14} />Delete provider</Button>
+                )}
+              </span>
+              <span className="flex items-center gap-2">
+                <Button variant="outline" size="sm" disabled={isNew || busy !== null} onClick={() => void test()}>{busy === 'test' ? 'Testing…' : 'Test connection'}</Button>
+                <Button variant="primary" size="sm" disabled={busy !== null || !dirty} onClick={() => void save()}>{busy === 'save' ? 'Saving…' : isNew ? 'Add provider' : 'Save changes'}</Button>
+              </span>
+            </footer>
           ) : null}
         </div>
-      </div>
-      )}
-
-        </Tabs.Content>
-      {tab === 'providers' ? (
-      <footer className="settings-foot">
-        <span className="settings-foot-left">
-          {isNew ? null : confirmDelete ? (
-            <>
-              <span className="settings-confirm">Delete “{selected?.name}”?</span>
-              <Button variant="outline-danger" size="sm" disabled={busy !== null} onClick={() => void remove()}>
-                {busy === 'delete' ? 'Deleting…' : 'Delete permanently'}
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(false)}>Cancel</Button>
-            </>
-          ) : (
-            <Button variant="ghost" size="sm" disabled={busy !== null} onClick={() => setConfirmDelete(true)}>
-              <Icon name="trash" size={12} /> Delete provider
-            </Button>
-          )}
-        </span>
-
-        <span className="settings-foot-right">
-          <Button variant="outline" size="sm" disabled={isNew || busy !== null} onClick={() => void test()}>
-            {busy === 'test' ? 'Testing…' : 'Test connection'}
-          </Button>
-          <Button variant="primary" size="sm" disabled={busy !== null || !dirty} onClick={() => void save()}>
-            {busy === 'save' ? 'Saving…' : isNew ? 'Add provider' : 'Save changes'}
-          </Button>
-        </span>
-      </footer>
-      ) : null}
       </Tabs.Root>
     </Modal>
-    <ConfirmDialog open={pendingLeave !== null} title="Discard unsaved provider changes?" confirmLabel="Discard changes"
-      onDismiss={() => setPendingLeave(null)} onConfirm={() => { const action = pendingLeave; setPendingLeave(null); action?.() }} />
+    <ConfirmDialog
+      open={pendingLeave !== null}
+      title="Discard unsaved provider changes?"
+      confirmLabel="Discard changes"
+      onDismiss={() => setPendingLeave(null)}
+      onConfirm={() => { const action = pendingLeave; setPendingLeave(null); discardDraft(); action?.() }}
+    />
     </>
   )
 }

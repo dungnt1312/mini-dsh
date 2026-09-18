@@ -840,3 +840,34 @@ describe('folder picker directory browsing', () => {
     expect(Array.isArray(body.dirs)).toBe(true)
   })
 })
+
+describe('static PWA files', () => {
+  it('serves the manifest, icons, and a revalidating service worker and shell', async () => {
+    const staticDir = await fs.mkdtemp(path.join(tmpdir(), 'mini-dsh-static-'))
+    try {
+      await fs.mkdir(path.join(staticDir, 'icons'))
+      await fs.writeFile(path.join(staticDir, 'index.html'), '<!doctype html>')
+      await fs.writeFile(path.join(staticDir, 'sw.js'), 'self.addEventListener("fetch", () => {})')
+      await fs.writeFile(path.join(staticDir, 'manifest.webmanifest'), '{"name":"mini-dsh"}')
+      await fs.writeFile(path.join(staticDir, 'icons', 'icon-192.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+      await start([], undefined, { staticDir })
+
+      const manifest = await fetch(`${baseUrl}/manifest.webmanifest`)
+      expect(manifest.headers.get('content-type')).toContain('application/manifest+json')
+      expect(await manifest.json()).toEqual({ name: 'mini-dsh' })
+
+      const icon = await fetch(`${baseUrl}/icons/icon-192.png`)
+      expect(icon.headers.get('content-type')).toBe('image/png')
+
+      const worker = await fetch(`${baseUrl}/sw.js`)
+      expect(worker.headers.get('content-type')).toContain('text/javascript')
+      expect(worker.headers.get('cache-control')).toBe('no-cache')
+
+      const shell = await fetch(`${baseUrl}/some/client/route`)
+      expect(shell.headers.get('content-type')).toContain('text/html')
+      expect(shell.headers.get('cache-control')).toBe('no-cache')
+    } finally {
+      await fs.rm(staticDir, { recursive: true, force: true })
+    }
+  })
+})

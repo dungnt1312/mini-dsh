@@ -20,7 +20,7 @@ describe('workbench preferences', () => {
       inspectorTab: 'artifacts',
     }))).toMatchObject({
       leftWidth: 420,
-      rightWidth: 280,
+      rightWidth: 360,
       leftCollapsed: true,
       rightCollapsed: false,
       inspectorTab: 'artifacts',
@@ -39,15 +39,15 @@ describe('workbench preferences', () => {
       rightWidth: 400,
       leftCollapsed: false,
       rightCollapsed: false,
-      inspectorTab: 'context',
+      inspectorTab: 'files',
     })
   })
 
   it('clamps each panel only within its own range', () => {
     expect(clampPanelWidth('left', 231)).toBe(232)
     expect(clampPanelWidth('left', 421)).toBe(420)
-    expect(clampPanelWidth('right', 279)).toBe(280)
-    expect(clampPanelWidth('right', 521)).toBe(520)
-    expect(clampPanelWidth('right', Number.NaN)).toBe(336)
+    expect(clampPanelWidth('right', 359)).toBe(360)
+    expect(clampPanelWidth('right', 1101)).toBe(1100)
+    expect(clampPanelWidth('right', Number.NaN)).toBe(560)
   })
 })

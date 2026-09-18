@@ -1,6 +1,7 @@
-import { createContext, useContext, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import Icon from './Icon.tsx'
 import { ErrorNotice } from './ErrorNotice.tsx'
+import { IconButton } from '../ui/IconButton.tsx'
 
 export type ToastKind = 'ok' | 'bad' | 'info'
 
@@ -19,11 +20,6 @@ const ToastContext = createContext<ToastApi | null>(null)
 
 /** Auto-dismiss per variant: ok 5s, info 5s, error 8s. */
 const TOAST_TTL: Readonly<Record<ToastKind, number>> = { ok: 5_000, info: 5_000, bad: 8_000 }
-
-const TOAST_ICONS: Readonly<Partial<Record<ToastKind, { name: 'check' | 'alertTriangle'; className: string }>>> = {
-  ok: { name: 'check', className: 'toast-icon toast-icon-ok' },
-  bad: { name: 'alertTriangle', className: 'toast-icon toast-icon-bad' },
-}
 
 export function ToastHost({ children }: { readonly children: ReactNode }) {
   const [items, setItems] = useState<readonly ToastItem[]>([])
@@ -48,22 +44,20 @@ export function ToastHost({ children }: { readonly children: ReactNode }) {
     for (const timer of timers.current.values()) window.clearTimeout(timer)
   }, [])
 
+  const api = useMemo(() => ({ notify, dispose }), [notify, dispose])
+
   return (
-    <ToastContext.Provider value={{ notify, dispose }}>
+    <ToastContext.Provider value={api}>
       {children}
-      <div className="toasts" role="status">
-        {items.map((item) => {
-          const icon = TOAST_ICONS[item.kind]
-          return (
-            <div key={item.id} className={`toast toast-${item.kind}`}>
-              <div className="toast-body">
-                {icon !== undefined ? <Icon name={icon.name} size={13} className={icon.className} /> : null}
-                {item.kind === 'bad' ? <ErrorNotice raw={item.text} /> : <p>{item.text}</p>}
-              </div>
-              <button type="button" className="ui-btn ui-btn-ghost" aria-label="Dismiss notification" onClick={() => dispose(item.id)}>Dismiss</button>
-            </div>
-          )
-        })}
+      <div className="pointer-events-none fixed inset-x-0 top-3 z-[60] flex flex-col items-center gap-2 px-4" role="status">
+        {items.map((item) => (
+          <div key={item.id} className="pointer-events-auto flex w-full max-w-md items-start gap-2 rounded-2xl border border-line bg-surface py-2 pl-3.5 pr-1.5 text-sm shadow-pop animate-fade-up">
+            {item.kind === 'ok' ? <Icon name="check" size={16} className="mt-2 text-ok" /> : null}
+            {item.kind === 'bad' ? <Icon name="alertTriangle" size={16} className="mt-2 text-bad" /> : null}
+            <div className="min-w-0 flex-1 py-1.5">{item.kind === 'bad' ? <ErrorNotice raw={item.text} /> : <p className="m-0">{item.text}</p>}</div>
+            <IconButton label="Dismiss notification" onClick={() => dispose(item.id)}><Icon name="close" size={14} /></IconButton>
+          </div>
+        ))}
       </div>
     </ToastContext.Provider>
   )
