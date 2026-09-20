@@ -17,7 +17,7 @@ describe('management scope isolation', () => {
       const response = { ok: true, json: async () => data(scope, url) }
       return scope === 'A' ? new Promise(resolve => pending.push(() => resolve(response))) : Promise.resolve(response)
     }))
-    const panel = (workspaceId: string) => kind === 'agents' ? <AgentsPanel workspaceId={workspaceId} rootSessionId="root" /> : kind === 'mcp' ? <McpPanel workspaceId={workspaceId} /> : kind === 'hooks' ? <HooksPanel workspaceId={workspaceId} /> : <SecretsPanel workspaceId={workspaceId} />
+    const panel = (workspaceId: string) => kind === 'agents' ? <AgentsPanel workspaceId={workspaceId} /> : kind === 'mcp' ? <McpPanel workspaceId={workspaceId} /> : kind === 'hooks' ? <HooksPanel workspaceId={workspaceId} /> : <SecretsPanel workspaceId={workspaceId} />
     try {
       await act(async () => root.render(panel('A')))
       await act(async () => root.render(panel('B')))

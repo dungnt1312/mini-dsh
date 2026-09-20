@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { useScopedState } from '../../hooks/useScopedState.ts'
 import Icon from '../common/Icon.tsx'
 import { Badge } from '../ui/Badge.tsx'
@@ -12,13 +12,14 @@ import { deleteMcpServer, getMcpServer, importMcpServers, listMcpServers, setMcp
 import type { McpServerRow } from '../../lib/types.ts'
 import {
   CodeArea,
+  Disclosure,
   EmptyState,
   InlineConfirm,
-  IsolationNote,
+  IsolationSummary,
   ItemList,
   ItemRow,
-  Notice,
   PanelBody,
+  PanelFooter,
   PanelIntro,
   Section,
   WorkspaceRequired,
@@ -34,6 +35,18 @@ const STATUS_TONE: Readonly<Record<McpServerRow['status'], 'green' | 'amber' | '
   failed: 'amber',
   connecting: 'blue',
   disabled: 'gray',
+}
+
+/**
+ * What a status means for the operator. The server reports state only — the
+ * transport error itself is deliberately never returned — so this says what
+ * to do next rather than claiming a cause.
+ */
+const STATUS_META: Readonly<Record<McpServerRow['status'], string | undefined>> = {
+  ready: undefined,
+  connecting: 'Starting up — tools appear once the handshake completes.',
+  failed: 'The connection failed. Check the command and arguments, then reconnect.',
+  disabled: undefined,
 }
 
 interface ServerForm {
@@ -131,11 +144,15 @@ function McpPanelContent({ workspaceId }: { readonly workspaceId: string | null 
   const [form, setForm] = useScopedState<ServerForm>(BLANK_FORM)
   /** Stored config of the server being edited; null while adding a new one. */
   const [editing, setEditing] = useScopedState<{ readonly name: string; readonly stored: Record<string, unknown> } | null>(null)
+  /** The editor is opened deliberately, so the list is what the tab opens on. */
+  const [editorOpen, setEditorOpen] = useScopedState(false)
   const [confirmDelete, setConfirmDelete] = useScopedState<string | null>(null)
   const [importDialect, setImportDialect] = useScopedState<'claude' | 'codex'>('claude')
   const [importVersion, setImportVersion] = useScopedState('')
   const [importContent, setImportContent] = useScopedState('')
   const { busy, run } = useActionRunner((text) => setNotice({ kind: 'bad', text }))
+  const editorRef = useRef<HTMLElement | null>(null)
+  const nameRef = useRef<HTMLInputElement | null>(null)
 
   const refresh = useCallback(async () => {
     if (workspaceId === null) return
@@ -158,14 +175,36 @@ function McpPanelContent({ workspaceId }: { readonly workspaceId: string | null 
     }
   })
 
+  /**
+   * Bring the editor into view: it sits below the list and may be offscreen,
+   * so editing a server would otherwise look like nothing happened.
+   */
+  const revealEditor = (): void => {
+    window.requestAnimationFrame(() => {
+      const editor = editorRef.current
+      if (typeof editor?.scrollIntoView === 'function') editor.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+      nameRef.current?.focus()
+    })
+  }
+
   const beginEdit = (server: string): Promise<void> => run(`edit:${server}`, async () => {
     const stored = await getMcpServer(workspaceId, server)
     setEditing({ name: server, stored })
     setForm(formOf(server, stored))
+    setEditorOpen(true)
     setNotice(null)
+    revealEditor()
   })
 
-  const resetForm = (): void => { setEditing(null); setForm(BLANK_FORM) }
+  const beginAdd = (): void => {
+    setEditing(null)
+    setForm(BLANK_FORM)
+    setEditorOpen(true)
+    setNotice(null)
+    revealEditor()
+  }
+
+  const resetForm = (): void => { setEditing(null); setForm(BLANK_FORM); setEditorOpen(false) }
 
   const invalid = formError(form)
   const save = (): Promise<void> => run('save', async () => {
@@ -199,20 +238,27 @@ function McpPanelContent({ workspaceId }: { readonly workspaceId: string | null 
 
   const nameTaken = editing === null && rows.some((row) => row.name === form.name.trim())
 
+  /** Set once a limit is stored, so an existing override is never hidden. */
+  const advancedInUse = form.allowedTools.trim() !== '' || form.memoryMb.trim() !== '' || form.cpuPercent.trim() !== '' || form.timeoutMs !== String(DEFAULT_TIMEOUT_MS)
+
   return (
     <PanelBody>
       <div className="flex flex-col gap-2">
-        <IsolationNote />
         <PanelIntro>
           MCP tools default to ask. requiresUserInteraction always requires approval and cannot become allow. allowedTools filters exposure; it does not grant permission.
         </PanelIntro>
+        <IsolationSummary />
       </div>
-      {notice !== null ? <Notice kind={notice.kind} text={notice.text} /> : null}
 
       <Section
         title="Servers"
         count={rows.length}
-        actions={<Button variant="ghost" size="sm" disabled={busy !== null} onClick={() => void refresh()}><Icon name="refresh" size={13} />Refresh</Button>}
+        actions={
+          <>
+            <Button variant="ghost" size="sm" disabled={busy !== null} onClick={() => void refresh()}><Icon name="refresh" size={13} />Refresh</Button>
+            <Button variant="outline" size="sm" disabled={busy !== null} onClick={beginAdd}><Icon name="plus" size={13} />Add server</Button>
+          </>
+        }
       >
         {rows.length === 0 ? <EmptyState>No MCP servers configured in this workspace.</EmptyState> : (
           <ItemList label="MCP servers">
@@ -228,6 +274,7 @@ function McpPanelContent({ workspaceId }: { readonly workspaceId: string | null 
                     {row.breakerOpenUntil !== null ? <Badge tone="amber">breaker open</Badge> : null}
                   </>
                 }
+                meta={STATUS_META[row.status]}
                 actions={
                   <>
                     {row.enabled ? (
@@ -256,104 +303,118 @@ function McpPanelContent({ workspaceId }: { readonly workspaceId: string | null 
         )}
       </Section>
 
-      <Section
-        title={editing !== null ? `Edit ${editing.name}` : 'Add a server'}
-        actions={editing !== null ? <Button variant="ghost" size="sm" disabled={busy !== null} onClick={resetForm}>Cancel editing</Button> : undefined}
-      >
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field
-            label="Server name"
-            tone={nameTaken ? 'bad' : 'default'}
-            hint={editing !== null ? 'The name cannot change; delete and add again to rename.' : nameTaken ? 'A server with this name exists — saving replaces its configuration.' : 'Letters, numbers, underscores, or hyphens.'}
-          >
-            <TextInput mono value={form.name} placeholder="notion" disabled={editing !== null} onChange={(e) => patch({ name: e.target.value })} />
-          </Field>
-          <div className="flex flex-col gap-1.5">
-            <span className="text-[13px] font-medium">Transport</span>
-            <Segmented
-              label="Transport"
-              value={form.transport}
-              options={[{ value: 'stdio', label: 'stdio' }, { value: 'http', label: 'Streamable HTTP' }]}
-              onChange={(transport) => patch({ transport })}
-            />
+      {editorOpen ? (
+        <Section
+          ref={editorRef}
+          title={editing !== null ? `Edit ${editing.name}` : 'Add a server'}
+          actions={<Button variant="ghost" size="sm" disabled={busy !== null} onClick={resetForm}>{editing !== null ? 'Cancel editing' : 'Cancel'}</Button>}
+        >
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field
+              label="Server name"
+              tone={nameTaken ? 'bad' : 'default'}
+              hint={editing !== null ? 'The name cannot change; delete and add again to rename.' : nameTaken ? 'A server with this name exists — saving replaces its configuration.' : 'Letters, numbers, underscores, or hyphens.'}
+            >
+              <TextInput ref={nameRef} mono value={form.name} placeholder="notion" disabled={editing !== null} onChange={(e) => patch({ name: e.target.value })} />
+            </Field>
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[13px] font-medium">Transport</span>
+              <Segmented
+                label="Transport"
+                value={form.transport}
+                options={[{ value: 'stdio', label: 'stdio' }, { value: 'http', label: 'Streamable HTTP' }]}
+                onChange={(transport) => patch({ transport })}
+              />
+            </div>
+            {form.transport === 'stdio' ? (
+              <>
+                <Field label="Command" hint="Runs the executable directly, not through a shell adapter.">
+                  <TextInput mono value={form.command} placeholder="npx" onChange={(e) => patch({ command: e.target.value })} />
+                </Field>
+                <Field label="Args" hint="One argument per line.">
+                  <CodeArea rows={2} value={form.args} onChange={(e) => patch({ args: e.target.value })} />
+                </Field>
+              </>
+            ) : (
+              <>
+                <Field label="URL">
+                  <TextInput mono value={form.url} placeholder="https://mcp.example.com/mcp" onChange={(e) => patch({ url: e.target.value })} />
+                </Field>
+                <Field label="Bearer token reference" hint="Only a ${SECRET_NAME} reference; store the value in the Secrets tab. Leave blank for no bearer token.">
+                  <TextInput mono value={form.tokenRef} placeholder="${MCP_TOKEN}" onChange={(e) => patch({ tokenRef: e.target.value })} />
+                </Field>
+              </>
+            )}
+            <div className="rounded-xl border border-line px-3.5 py-2.5 md:col-span-2">
+              <Switch checked={form.enabled} label="Enabled" hint="A disabled server is saved without starting a subprocess." onChange={(enabled) => patch({ enabled })} />
+            </div>
           </div>
-          {form.transport === 'stdio' ? (
-            <>
-              <Field label="Command" hint="Runs the executable directly, not through a shell adapter.">
-                <TextInput mono value={form.command} placeholder="npx" onChange={(e) => patch({ command: e.target.value })} />
+
+          {/* Exposure and resource caps: rarely changed, so they start folded. */}
+          <Disclosure summary="Advanced · tool exposure and resource limits" defaultOpen={advancedInUse}>
+            <Field label="Allowed tools" hint="One tool per line. Leave blank to expose all server tools.">
+              <CodeArea rows={3} value={form.allowedTools} onChange={(e) => patch({ allowedTools: e.target.value })} />
+            </Field>
+            <div className="grid gap-4 md:grid-cols-3">
+              <Field label="Timeout (ms)" hint={`Defaults to ${DEFAULT_TIMEOUT_MS}.`}>
+                <TextInput mono inputMode="numeric" value={form.timeoutMs} onChange={(e) => patch({ timeoutMs: e.target.value })} />
               </Field>
-              <Field label="Args" hint="One argument per line.">
-                <CodeArea rows={2} value={form.args} onChange={(e) => patch({ args: e.target.value })} />
+              <Field label="Memory limit (MB)" hint="Blank means unlimited. Exceeding the limit terminates the process tree.">
+                <TextInput mono inputMode="numeric" value={form.memoryMb} onChange={(e) => patch({ memoryMb: e.target.value })} />
               </Field>
-            </>
-          ) : (
-            <>
-              <Field label="URL">
-                <TextInput mono value={form.url} placeholder="https://mcp.example.com/mcp" onChange={(e) => patch({ url: e.target.value })} />
+              <Field label="CPU limit (%)" hint="Measured as CPU delta per second divided by core count; not a sandbox.">
+                <TextInput mono inputMode="numeric" value={form.cpuPercent} onChange={(e) => patch({ cpuPercent: e.target.value })} />
               </Field>
-              <Field label="Bearer token reference" hint="Only a ${SECRET_NAME} reference; store the value in the Secrets tab. Leave blank for no bearer token.">
-                <TextInput mono value={form.tokenRef} placeholder="${MCP_TOKEN}" onChange={(e) => patch({ tokenRef: e.target.value })} />
-              </Field>
-            </>
-          )}
-          <Field label="Allowed tools" hint="One tool per line. Leave blank to expose all server tools.">
-            <CodeArea rows={2} value={form.allowedTools} onChange={(e) => patch({ allowedTools: e.target.value })} />
-          </Field>
-          <Field label="Timeout (ms)">
-            <TextInput mono inputMode="numeric" value={form.timeoutMs} onChange={(e) => patch({ timeoutMs: e.target.value })} />
-          </Field>
-          <Field label="Memory limit (MB)" hint="Blank means unlimited. Exceeding the limit terminates the process tree.">
-            <TextInput mono inputMode="numeric" value={form.memoryMb} onChange={(e) => patch({ memoryMb: e.target.value })} />
-          </Field>
-          <Field label="CPU limit (%)" hint="Measured as CPU delta per second divided by core count; not a sandbox.">
-            <TextInput mono inputMode="numeric" value={form.cpuPercent} onChange={(e) => patch({ cpuPercent: e.target.value })} />
-          </Field>
-          <div className="rounded-xl border border-line px-3.5 py-2.5 md:col-span-2">
-            <Switch checked={form.enabled} label="Enabled" hint="A disabled server is saved without starting a subprocess." onChange={(enabled) => patch({ enabled })} />
+            </div>
+          </Disclosure>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="primary" size="sm" disabled={busy !== null || invalid !== null} title={invalid ?? undefined} onClick={() => void save()}>
+              {busy === 'save' ? 'Saving…' : editing !== null ? 'Save changes' : 'Add server'}
+            </Button>
+            {invalid !== null && form.name.trim() !== '' ? <span className="text-xs text-fg-faint">{invalid}</span> : null}
           </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant="primary" size="sm" disabled={busy !== null || invalid !== null} title={invalid ?? undefined} onClick={() => void save()}>
-            {busy === 'save' ? 'Saving…' : editing !== null ? 'Save changes' : 'Add server'}
-          </Button>
-          {invalid !== null && form.name.trim() !== '' ? <span className="text-xs text-fg-faint">{invalid}</span> : null}
-        </div>
-      </Section>
+        </Section>
+      ) : null}
 
       <Section title="Import servers">
-        <PanelIntro>Import a Claude <code>.mcp.json</code> or a Codex configuration with provenance. Imported servers always stay disabled and do not start.</PanelIntro>
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="flex flex-col gap-1.5">
-            <span className="text-[13px] font-medium">Format</span>
-            <Segmented
-              label="Import format"
-              value={importDialect}
-              options={[{ value: 'claude', label: 'Claude .mcp.json' }, { value: 'codex', label: 'Codex (pinned)' }]}
-              onChange={setImportDialect}
-            />
-          </div>
-          {importDialect === 'codex' ? (
-            <Field label="Pinned Codex version" hint="Required. Must match the pinned adapter version.">
-              <TextInput mono value={importVersion} onChange={(e) => setImportVersion(e.target.value)} />
-            </Field>
-          ) : null}
-          <div className="md:col-span-2">
-            <Field label="Content">
-              <CodeArea
-                rows={5}
-                value={importContent}
-                placeholder={importDialect === 'claude' ? '{"mcpServers": {"local-fs": {"command": "npx", "args": ["-y", "@example/fs-mcp"]}}}' : 'Codex MCP configuration'}
-                onChange={(e) => setImportContent(e.target.value)}
+        <Disclosure summary="Import from a Claude .mcp.json or Codex configuration">
+          <PanelIntro>Imports record provenance. Imported servers always stay disabled and do not start.</PanelIntro>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[13px] font-medium">Format</span>
+              <Segmented
+                label="Import format"
+                value={importDialect}
+                options={[{ value: 'claude', label: 'Claude .mcp.json' }, { value: 'codex', label: 'Codex (pinned)' }]}
+                onChange={setImportDialect}
               />
-            </Field>
+            </div>
+            {importDialect === 'codex' ? (
+              <Field label="Pinned Codex version" hint="Required. Must match the pinned adapter version.">
+                <TextInput mono value={importVersion} onChange={(e) => setImportVersion(e.target.value)} />
+              </Field>
+            ) : null}
+            <div className="md:col-span-2">
+              <Field label="Content">
+                <CodeArea
+                  rows={5}
+                  value={importContent}
+                  placeholder={importDialect === 'claude' ? '{"mcpServers": {"local-fs": {"command": "npx", "args": ["-y", "@example/fs-mcp"]}}}' : 'Codex MCP configuration'}
+                  onChange={(e) => setImportContent(e.target.value)}
+                />
+              </Field>
+            </div>
           </div>
-        </div>
-        <div>
-          <Button variant="outline" size="sm" disabled={busy !== null || importContent.trim() === '' || codexNeedsVersion} onClick={() => void importServers()}>
-            {busy === 'import' ? 'Importing…' : 'Import servers'}
-          </Button>
-        </div>
+          <div>
+            <Button variant="outline" size="sm" disabled={busy !== null || importContent.trim() === '' || codexNeedsVersion} onClick={() => void importServers()}>
+              {busy === 'import' ? 'Importing…' : 'Import servers'}
+            </Button>
+          </div>
+        </Disclosure>
       </Section>
+
+      <PanelFooter notice={notice} />
     </PanelBody>
   )
 }

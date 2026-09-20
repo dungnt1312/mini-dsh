@@ -3,6 +3,7 @@ import Icon from '../common/Icon.tsx'
 import { IconButton } from '../ui/IconButton.tsx'
 import { ArtifactsPanel, type OpenPathResolver } from '../artifacts/ArtifactsPanel.tsx'
 import { ContextPanel, type ContextPanelProps } from '../layout/ContextPanel.tsx'
+import { AgentRunsPanel } from './AgentRunsPanel.tsx'
 import { FileBrowser } from './FileBrowser.tsx'
 import { FileViewer } from './FileViewer.tsx'
 import { baseName } from '../../lib/project-paths.ts'
@@ -11,7 +12,7 @@ import { cn } from '../../lib/cn.ts'
 import type { WorkbenchFiles } from '../../hooks/useWorkbenchFiles.ts'
 import type { SseEvent } from '../../lib/types.ts'
 
-export type WorkbenchView = 'files' | 'context' | 'artifacts'
+export type WorkbenchView = 'files' | 'context' | 'artifacts' | 'agents'
 
 export interface WorkbenchProject {
   readonly id: string
@@ -21,7 +22,7 @@ export interface WorkbenchProject {
 
 const tabClass = 'flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-[13px] text-fg-muted transition-colors hover:bg-hover hover:text-fg'
 
-function ViewTab({ active, icon, label, onClick }: { readonly active: boolean; readonly icon: 'folder' | 'info' | 'layers'; readonly label: string; readonly onClick: () => void }) {
+function ViewTab({ active, icon, label, onClick }: { readonly active: boolean; readonly icon: 'folder' | 'info' | 'layers' | 'gitBranch'; readonly label: string; readonly onClick: () => void }) {
   return (
     <button type="button" aria-pressed={active} onClick={onClick} className={cn(tabClass, active && 'bg-muted text-fg')}>
       <Icon name={icon} size={15} />
@@ -35,7 +36,7 @@ function ViewTab({ active, icon, label, onClick }: { readonly active: boolean; r
  * per opened file. Everything here is read-only; file bodies come from the
  * project browsing endpoints and never from tool output.
  */
-export function Workbench({ workspaceId, project, view, onView, files, context, events, expanded, onToggleExpand, onClose, openPath }: {
+export function Workbench({ workspaceId, project, view, onView, files, context, events, expanded, onToggleExpand, onClose, openPath, sessionId = null, onOpenChild, onOpenAgentSettings }: {
   readonly workspaceId: string | null
   /** The project whose files are browsable; null for chat-only conversations. */
   readonly project: WorkbenchProject | null
@@ -48,6 +49,10 @@ export function Workbench({ workspaceId, project, view, onView, files, context, 
   readonly onToggleExpand?: () => void
   readonly onClose: () => void
   readonly openPath?: OpenPathResolver
+  /** Root conversation the Agents view delegates from; null when none is open. */
+  readonly sessionId?: string | null
+  readonly onOpenChild?: (childSessionId: string) => void
+  readonly onOpenAgentSettings?: () => void
 }) {
   const showFile = files.activeFile !== null && project !== null && workspaceId !== null
   const selectView = (next: WorkbenchView): void => {
@@ -70,6 +75,15 @@ export function Workbench({ workspaceId, project, view, onView, files, context, 
         )
   } else if (view === 'context') {
     body = <div className="min-h-0 flex-1 overflow-y-auto p-4"><ContextPanel {...context} /></div>
+  } else if (view === 'agents') {
+    body = (
+      <AgentRunsPanel
+        workspaceId={workspaceId}
+        rootSessionId={sessionId}
+        {...(onOpenChild !== undefined ? { onOpenChild } : {})}
+        {...(onOpenAgentSettings !== undefined ? { onOpenSettings: onOpenAgentSettings } : {})}
+      />
+    )
   } else {
     body = <div className="min-h-0 flex-1 overflow-y-auto p-4"><ArtifactsPanel events={events} {...(openPath !== undefined ? { openPath } : {})} /></div>
   }
@@ -81,6 +95,7 @@ export function Workbench({ workspaceId, project, view, onView, files, context, 
           <ViewTab active={!showFile && view === 'files'} icon="folder" label="Files" onClick={() => selectView('files')} />
           <ViewTab active={!showFile && view === 'context'} icon="info" label="Context" onClick={() => selectView('context')} />
           <ViewTab active={!showFile && view === 'artifacts'} icon="layers" label="Artifacts" onClick={() => selectView('artifacts')} />
+          <ViewTab active={!showFile && view === 'agents'} icon="gitBranch" label="Agents" onClick={() => selectView('agents')} />
           {files.openFiles.length > 0 ? <span className="mx-1 h-5 w-px shrink-0 bg-line" aria-hidden="true" /> : null}
             {files.openFiles.map((path) => {
               const active = files.activeFile === path

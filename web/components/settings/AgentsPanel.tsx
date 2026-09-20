@@ -4,26 +4,23 @@ import Icon from '../common/Icon.tsx'
 import { Badge } from '../ui/Badge.tsx'
 import { Button } from '../ui/Button.tsx'
 import { Field } from '../ui/Field.tsx'
+import { IconButton } from '../ui/IconButton.tsx'
 import { Segmented } from '../ui/Segmented.tsx'
 import { TextInput } from '../ui/TextInput.tsx'
 import {
-  cancelChild,
   deleteAgentDefinition,
   importAgentDefinition,
   listAgentDefinitions,
-  listChildren,
-  spawnChild,
 } from '../../lib/api.ts'
 import { cn } from '../../lib/cn.ts'
-import type { AgentDefinitionRow, ChildRow } from '../../lib/types.ts'
+import type { AgentDefinitionRow } from '../../lib/types.ts'
 import {
   CodeArea,
+  Disclosure,
   EmptyState,
   InlineConfirm,
-  ItemList,
-  ItemRow,
-  Notice,
   PanelBody,
+  PanelFooter,
   PanelIntro,
   Section,
   WorkspaceRequired,
@@ -31,49 +28,53 @@ import {
   type NoticeState,
 } from './settings-kit.tsx'
 
-const CHILD_TONE: Readonly<Record<ChildRow['status'], 'green' | 'blue' | 'amber' | 'gray'>> = {
-  running: 'blue',
-  completed: 'green',
-  failed: 'amber',
-  cancelled: 'gray',
-  interrupted: 'amber',
-}
+const AGENT_NAME = /^[A-Za-z0-9_-]+$/
 
 const IMPORT_PLACEHOLDER = '---\ndescription: "reviews code"\ntools: ["Read", "Grep"]\n---\n\nReview carefully.'
 
 const linesToArray = (raw: string): string[] => raw.split('\n').map((line) => line.trim()).filter((line) => line !== '')
 
-/**
- * Agent roles + bounded one-level delegation. A role restricts the child's
- * tools; it never grants the workspace policy or the mode ceiling anything.
- */
-export function AgentsPanel(props: { readonly workspaceId: string | null; readonly rootSessionId: string | null; readonly onOpenChild?: (childSessionId: string) => void }) {
-  // Scope changes remount before paint: no A data or drafts can be acted on in B.
-  return <AgentsPanelContent key={JSON.stringify([props.workspaceId, props.rootSessionId])} {...props} />
+/** A Claude-dialect definition document built from the create form. */
+function definitionDocument(draft: { readonly name: string; readonly description: string; readonly tools: string; readonly disallowedTools: string; readonly instructions: string }): string {
+  const list = (raw: string): string => JSON.stringify(linesToArray(raw))
+  return [
+    '---',
+    `name: ${JSON.stringify(draft.name.trim())}`,
+    `description: ${JSON.stringify(draft.description.trim())}`,
+    `tools: ${list(draft.tools)}`,
+    `disallowedTools: ${list(draft.disallowedTools)}`,
+    '---',
+    '',
+    draft.instructions.trim(),
+    '',
+  ].join('\n')
 }
 
-function AgentsPanelContent({ workspaceId, rootSessionId, onOpenChild }: { readonly workspaceId: string | null; readonly rootSessionId: string | null; readonly onOpenChild?: (childSessionId: string) => void }) {
+/**
+ * Agent roles: the definitions a conversation can delegate to. Spawning a
+ * child and following its result is runtime work and lives in the workbench
+ * Agents view, where a conversation is actually selected.
+ */
+export function AgentsPanel(props: { readonly workspaceId: string | null }) {
+  // Scope changes remount before paint: no A data or drafts can be acted on in B.
+  return <AgentsPanelContent key={props.workspaceId} {...props} />
+}
+
+function AgentsPanelContent({ workspaceId }: { readonly workspaceId: string | null }) {
   const [definitions, setDefinitions] = useScopedState<readonly AgentDefinitionRow[]>([])
-  const [children, setChildren] = useScopedState<readonly ChildRow[]>([])
   const [selected, setSelected] = useScopedState<string>('explorer')
-  const [objective, setObjective] = useScopedState('')
-  const [constraints, setConstraints] = useScopedState('')
-  const [references, setReferences] = useScopedState('')
-  const [requiredResult, setRequiredResult] = useScopedState('bounded summary with file references')
-  const [grants, setGrants] = useScopedState('')
   const [notice, setNotice] = useScopedState<NoticeState>(null)
   const [confirmDelete, setConfirmDelete] = useScopedState(false)
+  const [createName, setCreateName] = useScopedState('')
+  const [createDescription, setCreateDescription] = useScopedState('')
+  const [createTools, setCreateTools] = useScopedState('')
+  const [createDisallowed, setCreateDisallowed] = useScopedState('')
+  const [createInstructions, setCreateInstructions] = useScopedState('')
   const [importName, setImportName] = useScopedState('')
   const [importContent, setImportContent] = useScopedState('')
   const [importDialect, setImportDialect] = useScopedState<'claude' | 'codex'>('claude')
   const [importVersion, setImportVersion] = useScopedState('')
   const { busy, run } = useActionRunner((text) => setNotice({ kind: 'bad', text }))
-
-  const refreshChildren = useCallback(async () => {
-    if (workspaceId === null || rootSessionId === null) return
-    try { setChildren(await listChildren(workspaceId, rootSessionId)) }
-    catch (cause) { setNotice({ kind: 'bad', text: String(cause) }) }
-  }, [workspaceId, rootSessionId])
 
   const refreshDefinitions = useCallback(async () => {
     if (workspaceId === null) return
@@ -82,38 +83,10 @@ function AgentsPanelContent({ workspaceId, rootSessionId, onOpenChild }: { reado
   }, [workspaceId])
 
   useEffect(() => { void refreshDefinitions() }, [refreshDefinitions])
-  useEffect(() => { void refreshChildren() }, [refreshChildren])
-
-  // Poll only while a child runs; polling stops by itself when none do.
-  useEffect(() => {
-    if (workspaceId === null || rootSessionId === null) return
-    if (!children.some((child) => child.status === 'running')) return
-    const timer = window.setInterval(() => { void refreshChildren() }, 3000)
-    return () => { window.clearInterval(timer) }
-  }, [children, workspaceId, rootSessionId, refreshChildren])
 
   const current = useMemo(() => definitions.find((row) => row.definition.name === selected), [definitions, selected])
 
   if (workspaceId === null) return <WorkspaceRequired />
-
-  const spawn = (): Promise<void> => run('spawn', async () => {
-    if (rootSessionId === null || objective.trim() === '') return
-    const handle = await spawnChild(
-      workspaceId,
-      selected,
-      rootSessionId,
-      {
-        objective: objective.trim(),
-        constraints: linesToArray(constraints),
-        references: linesToArray(references),
-        requiredResult: requiredResult.trim() === '' ? 'bounded summary' : requiredResult.trim(),
-      },
-      linesToArray(grants),
-    )
-    setNotice({ kind: 'ok', text: `Spawned ${handle.definitionName} (${handle.childSessionId.slice(0, 12)}…)` })
-    setObjective('')
-    await refreshChildren()
-  })
 
   const removeDefinition = (name: string): Promise<void> => run('delete', async () => {
     await deleteAgentDefinition(workspaceId, name)
@@ -123,9 +96,31 @@ function AgentsPanelContent({ workspaceId, rootSessionId, onOpenChild }: { reado
     await refreshDefinitions()
   })
 
-  const cancel = (child: ChildRow): Promise<void> => run(`cancel:${child.childSessionId}`, async () => {
-    try { await cancelChild(workspaceId, child.childSessionId) }
-    finally { await refreshChildren() }
+  const createInvalid = !AGENT_NAME.test(createName.trim())
+    ? 'Enter a role name using letters, numbers, underscores, or hyphens.'
+    : createDescription.trim() === ''
+      ? 'Describe what this role is for — the model uses it to pick a role.'
+      : createInstructions.trim() === ''
+        ? 'Add the instructions the child agent receives.'
+        : null
+
+  const createDefinition = (): Promise<void> => run('create', async () => {
+    if (createInvalid !== null) { setNotice({ kind: 'bad', text: createInvalid }); return }
+    const name = createName.trim()
+    // The create form is the supported Claude subset, so it goes through the
+    // same import path — one validation and provenance rule, not two.
+    await importAgentDefinition(workspaceId, name, {
+      content: definitionDocument({ name, description: createDescription, tools: createTools, disallowedTools: createDisallowed, instructions: createInstructions }),
+      dialect: 'claude',
+    })
+    await refreshDefinitions()
+    setSelected(name)
+    setCreateName('')
+    setCreateDescription('')
+    setCreateTools('')
+    setCreateDisallowed('')
+    setCreateInstructions('')
+    setNotice({ kind: 'ok', text: `Created ${name}.` })
   })
 
   const codexNeedsVersion = importDialect === 'codex' && importVersion.trim() === ''
@@ -146,15 +141,12 @@ function AgentsPanelContent({ workspaceId, rootSessionId, onOpenChild }: { reado
     })
   })
 
-  const noConversation = rootSessionId === null
-
   return (
     <PanelBody>
       <PanelIntro>
-        One level of delegation: only the root can spawn children. Up to 3 children run concurrently, with 8 per turn.
-        A role narrows the child's tools; it never grants more than the workspace allows.
+        A role narrows a child agent's tools; it never grants more than the workspace allows. Delegate to a role and
+        follow its result from the Agents view of the workbench, beside the conversation it belongs to.
       </PanelIntro>
-      {notice !== null ? <Notice kind={notice.kind} text={notice.text} /> : null}
 
       <Section title="Roles" count={definitions.length}>
         {definitions.length === 0 ? <EmptyState>No agent definitions in this workspace.</EmptyState> : (
@@ -183,141 +175,113 @@ function AgentsPanelContent({ workspaceId, rootSessionId, onOpenChild }: { reado
             })}
           </div>
         )}
-        {current !== undefined ? (
-          <div className="flex flex-col gap-2 rounded-xl bg-muted px-3.5 py-3 text-[13px]">
-            <p className="m-0 text-fg-muted">
-              <span className="font-medium text-fg">{current.definition.name}</span>
-              {' · '}tools: {current.definition.tools.length > 0 ? current.definition.tools.join(', ') : 'all allowed'}
-              {current.definition.disallowedTools.length > 0 ? <> · always denied: {current.definition.disallowedTools.join(', ')}</> : null}
-            </p>
-            <details>
-              <summary className="cursor-pointer text-xs text-fg-muted">View definition JSON</summary>
-              <pre className="mt-2 max-h-72 overflow-auto rounded-lg bg-surface p-3 font-mono text-xs">{JSON.stringify(current.definition, null, 2)}</pre>
-            </details>
-            {current.source === 'workspace' ? (
-              confirmDelete ? (
-                <InlineConfirm
-                  message="Delete this workspace definition? Existing child results remain."
-                  confirmLabel="Delete definition"
-                  cancelLabel="Cancel deletion"
-                  busy={busy === 'delete'}
-                  onConfirm={() => void removeDefinition(current.definition.name)}
-                  onCancel={() => setConfirmDelete(false)}
-                />
-              ) : (
-                <Button variant="outline-danger" size="sm" className="self-start" disabled={busy !== null} onClick={() => setConfirmDelete(true)}>
-                  <Icon name="trash" size={13} />Delete selected agent
-                </Button>
-              )
+      </Section>
+
+      {current !== undefined ? (
+        <Section
+          title={current.definition.name}
+          actions={current.source === 'workspace' && !confirmDelete
+            ? <IconButton label={`Delete ${current.definition.name}`} disabled={busy !== null} onClick={() => setConfirmDelete(true)}><Icon name="trash" size={14} /></IconButton>
+            : undefined}
+        >
+          <dl className="m-0 grid gap-x-4 gap-y-2 text-[13px] sm:grid-cols-[8rem_minmax(0,1fr)]">
+            <dt className="m-0 text-fg-faint">Tools</dt>
+            <dd className="m-0 min-w-0 break-words">{current.definition.tools.length > 0 ? current.definition.tools.join(', ') : 'All allowed tools'}</dd>
+            {current.definition.disallowedTools.length > 0 ? (
+              <>
+                <dt className="m-0 text-fg-faint">Always denied</dt>
+                <dd className="m-0 min-w-0 break-words">{current.definition.disallowedTools.join(', ')}</dd>
+              </>
             ) : null}
-          </div>
-        ) : null}
-      </Section>
-
-      <Section title={`Spawn ${selected}`}>
-        {noConversation ? <Notice kind="info" text="No conversation selected — open a conversation to spawn child agents from it." /> : null}
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="md:col-span-2">
-            <Field label="Objective" hint="The child receives only this task packet, not the root conversation history.">
-              <TextInput value={objective} placeholder="Investigate why the build is slow" disabled={noConversation} onChange={(e) => setObjective(e.target.value)} />
-            </Field>
-          </div>
-          <Field label="Constraints" hint="One constraint per line.">
-            <CodeArea value={constraints} disabled={noConversation} onChange={(e) => setConstraints(e.target.value)} />
-          </Field>
-          <Field label="References" hint="One reference path or note per line.">
-            <CodeArea value={references} disabled={noConversation} onChange={(e) => setReferences(e.target.value)} />
-          </Field>
-          <Field label="Required result">
-            <TextInput value={requiredResult} disabled={noConversation} onChange={(e) => setRequiredResult(e.target.value)} />
-          </Field>
-          <Field label="Explicit tool grants" hint="One tool per line. Grants only narrow the definition; MCP tools always require an explicit grant.">
-            <CodeArea rows={2} value={grants} disabled={noConversation} onChange={(e) => setGrants(e.target.value)} />
-          </Field>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant="primary" size="sm" disabled={busy !== null || noConversation || objective.trim() === ''} onClick={() => void spawn()}>
-            <Icon name="plus" size={14} />{busy === 'spawn' ? 'Spawning…' : `Spawn ${selected}`}
-          </Button>
-        </div>
-      </Section>
-
-      <Section
-        title="Children"
-        count={children.length}
-        actions={noConversation ? undefined : <Button variant="ghost" size="sm" disabled={busy !== null} onClick={() => void refreshChildren()}><Icon name="refresh" size={13} />Refresh</Button>}
-      >
-        {children.length === 0 ? <EmptyState>No child agents for the current conversation.</EmptyState> : (
-          <ItemList label="Child agents">
-            {children.map((child) => (
-              <ItemRow
-                key={child.childSessionId}
-                title={<><span>{child.definitionName}</span><Badge tone={CHILD_TONE[child.status]}>{child.status}</Badge></>}
-                meta={<code className="font-mono">{child.childSessionId.slice(0, 14)}…</code>}
-                actions={
-                  <>
-                    {onOpenChild !== undefined ? <Button variant="ghost" size="sm" onClick={() => onOpenChild(child.childSessionId)}>Open<Icon name="chevronRight" size={13} /></Button> : null}
-                    {child.status === 'running' ? (
-                      <Button variant="outline-danger" size="sm" disabled={busy !== null} onClick={() => void cancel(child)}>
-                        {busy === `cancel:${child.childSessionId}` ? 'Cancelling…' : 'Cancel'}
-                      </Button>
-                    ) : null}
-                  </>
-                }
-              >
-                {child.error !== undefined ? <p className="m-0 text-[13px] text-bad">{child.error}</p> : null}
-                {child.result !== undefined ? (
-                  <div className="flex flex-col gap-1 text-[13px] text-fg-muted">
-                    <p className="m-0 whitespace-pre-wrap">{child.result.summary}</p>
-                    {child.result.fileReferences.length > 0 ? <p className="m-0 text-xs text-fg-faint">Files: {child.result.fileReferences.join(', ')}</p> : null}
-                  </div>
-                ) : null}
-              </ItemRow>
-            ))}
-          </ItemList>
-        )}
-      </Section>
-
-      <Section title="Import a definition">
-        <PanelIntro>
-          Imports record provenance and never run content automatically. Unsupported security fields (hooks, mcpServers, isolation…)
-          block activation and return an error.
-        </PanelIntro>
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Target name">
-            <TextInput value={importName} placeholder="my-reviewer" onChange={(e) => setImportName(e.target.value)} />
-          </Field>
-          <div className="flex flex-col gap-1.5">
-            <span className="text-[13px] font-medium">Format</span>
-            <Segmented
-              label="Import format"
-              value={importDialect}
-              options={[{ value: 'claude', label: 'Claude' }, { value: 'codex', label: 'Codex (pinned)' }]}
-              onChange={setImportDialect}
+          </dl>
+          <Disclosure summary="Definition JSON">
+            <pre className="m-0 max-h-72 overflow-auto rounded-lg bg-muted p-3 font-mono text-xs">{JSON.stringify(current.definition, null, 2)}</pre>
+          </Disclosure>
+          {confirmDelete ? (
+            <InlineConfirm
+              message="Delete this workspace definition? Existing child results remain."
+              confirmLabel="Delete definition"
+              cancelLabel="Cancel"
+              busy={busy === 'delete'}
+              onConfirm={() => void removeDefinition(current.definition.name)}
+              onCancel={() => setConfirmDelete(false)}
             />
-          </div>
-          {importDialect === 'codex' ? (
-            <Field label="Pinned Codex version" hint="Required. Must match the pinned adapter version." tone={codexNeedsVersion && importContent.trim() !== '' ? 'bad' : 'default'}>
-              <TextInput mono value={importVersion} onChange={(e) => setImportVersion(e.target.value)} />
-            </Field>
           ) : null}
-          <div className="md:col-span-2">
-            <Field label="Definition content">
-              <CodeArea rows={7} value={importContent} placeholder={IMPORT_PLACEHOLDER} onChange={(e) => setImportContent(e.target.value)} />
+        </Section>
+      ) : null}
+
+      <Section title="Add a role">
+        <Disclosure summary="Create a role">
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label="Role name" hint="Letters, numbers, underscores, or hyphens.">
+              <TextInput mono value={createName} placeholder="reviewer" onChange={(e) => setCreateName(e.target.value)} />
             </Field>
+            <Field label="Description" hint="What this role is for.">
+              <TextInput value={createDescription} placeholder="Reviews changes for correctness" onChange={(e) => setCreateDescription(e.target.value)} />
+            </Field>
+            <Field label="Tools" hint="One tool per line. Leave blank to allow every tool the workspace permits.">
+              <CodeArea rows={3} value={createTools} placeholder={'Read\nGrep'} onChange={(e) => setCreateTools(e.target.value)} />
+            </Field>
+            <Field label="Always denied" hint="One tool per line. Denied here even when the workspace allows it.">
+              <CodeArea rows={3} value={createDisallowed} placeholder={'Bash\nWrite'} onChange={(e) => setCreateDisallowed(e.target.value)} />
+            </Field>
+            <div className="md:col-span-2">
+              <Field label="Instructions" hint="The system instructions the child agent receives.">
+                <CodeArea rows={5} value={createInstructions} placeholder="Review carefully and report file references." onChange={(e) => setCreateInstructions(e.target.value)} />
+              </Field>
+            </div>
           </div>
-        </div>
-        <div>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={busy !== null || importName.trim() === '' || importContent.trim() === '' || codexNeedsVersion}
-            onClick={() => void importDefinition()}
-          >
-            {busy === 'import' ? 'Importing…' : 'Import definition'}
-          </Button>
-        </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="primary" size="sm" disabled={busy !== null || createInvalid !== null} title={createInvalid ?? undefined} onClick={() => void createDefinition()}>
+              {busy === 'create' ? 'Creating…' : 'Create role'}
+            </Button>
+            {createInvalid !== null && createName.trim() !== '' ? <span className="text-xs text-fg-faint">{createInvalid}</span> : null}
+          </div>
+        </Disclosure>
+
+        <Disclosure summary="Import a definition">
+          <PanelIntro>
+            Imports record provenance and never run content automatically. Unsupported security fields (hooks, mcpServers, isolation…)
+            block activation and return an error.
+          </PanelIntro>
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label="Target name">
+              <TextInput value={importName} placeholder="my-reviewer" onChange={(e) => setImportName(e.target.value)} />
+            </Field>
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[13px] font-medium">Format</span>
+              <Segmented
+                label="Import format"
+                value={importDialect}
+                options={[{ value: 'claude', label: 'Claude' }, { value: 'codex', label: 'Codex (pinned)' }]}
+                onChange={setImportDialect}
+              />
+            </div>
+            {importDialect === 'codex' ? (
+              <Field label="Pinned Codex version" hint="Required. Must match the pinned adapter version." tone={codexNeedsVersion && importContent.trim() !== '' ? 'bad' : 'default'}>
+                <TextInput mono value={importVersion} onChange={(e) => setImportVersion(e.target.value)} />
+              </Field>
+            ) : null}
+            <div className="md:col-span-2">
+              <Field label="Definition content">
+                <CodeArea rows={7} value={importContent} placeholder={IMPORT_PLACEHOLDER} onChange={(e) => setImportContent(e.target.value)} />
+              </Field>
+            </div>
+          </div>
+          <div>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy !== null || importName.trim() === '' || importContent.trim() === '' || codexNeedsVersion}
+              onClick={() => void importDefinition()}
+            >
+              {busy === 'import' ? 'Importing…' : 'Import definition'}
+            </Button>
+          </div>
+        </Disclosure>
       </Section>
+
+      <PanelFooter notice={notice} />
     </PanelBody>
   )
 }

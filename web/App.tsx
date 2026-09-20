@@ -1144,6 +1144,9 @@ export function App() {
       {...(workbenchDocked ? { onToggleExpand: () => setWorkbenchExpanded((expanded) => !expanded) } : {})}
       onClose={() => onWorkbenchOpenChange(false)}
       openPath={openRecordedPath}
+      sessionId={current}
+      onOpenChild={openSession}
+      onOpenAgentSettings={() => openSettings('agents')}
       context={{ meta, ...(modelDefaults !== null ? { globalDefaults: modelDefaults } : {}), ...(currentSessionModel !== undefined ? { sessionModel: currentSessionModel } : {}), ...(current !== null && currentSessionModelState?.status === 'loading' ? { sessionControlsStatus: 'loading' as const } : {}), ...(current !== null && currentSessionModelState?.status === 'error' ? { sessionControlsStatus: 'unavailable' as const } : {}), stream, sessionId: current, sessionFolder: currentProject?.path ?? null, eventCount: events.length, manifest, workspaceId: activeWs, running, modeLabel: envModeLabel, onCompacted: () => setCompactNonce((nonce) => nonce + 1), onOpenSettingsTab: (tab) => openSettings(tab) }}
     />
   )
@@ -1272,11 +1275,9 @@ export function App() {
         workspaceName={activeWorkspace?.name}
         projects={projects}
         onProjectsChanged={refreshList}
-        onOpenChild={openSession}
         sessionCounts={sessionCounts}
         open={settingsOpen}
         workspaceId={activeWs}
-        rootSessionId={current}
         providers={meta?.providers ?? []}
         activeProvider={modelDefaults?.provider ?? ''}
         activeModel={modelDefaults?.model ?? ''}

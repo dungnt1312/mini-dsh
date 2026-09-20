@@ -1,3 +1,4 @@
+import * as Collapsible from '@radix-ui/react-collapsible'
 import { forwardRef, useRef, type ReactNode, type TextareaHTMLAttributes } from 'react'
 import { useScopedState } from '../../hooks/useScopedState.ts'
 import Icon from '../common/Icon.tsx'
@@ -29,6 +30,8 @@ export function PanelIntro({ children }: { readonly children: ReactNode }) {
   return <p className="m-0 max-w-3xl text-[13px] leading-5 text-fg-muted">{children}</p>
 }
 
+const ISOLATION_TEXT = 'MCP servers, subprocesses, and hooks run with host process privileges. Application controls are not an OS sandbox. Server writes are outside the application writer lease.'
+
 /** Honest isolation statement shown wherever host-privileged execution exists. */
 export function IsolationNote() {
   return (
@@ -42,20 +45,41 @@ export function IsolationNote() {
   )
 }
 
+/**
+ * The isolation warning as one always-visible line, with the full statement
+ * one click away. The headline keeps the load-bearing claim — host privileges,
+ * no OS sandbox — so collapsing detail never hides the risk itself, and unlike
+ * a tooltip it stays readable without a pointer.
+ */
+export function IsolationSummary() {
+  return (
+    <Disclosure
+      summary={
+        <span className="flex items-center gap-1.5 text-warn">
+          <Icon name="alertTriangle" size={13} className="shrink-0" />
+          Runs with host privileges — not an OS sandbox
+        </span>
+      }
+    >
+      <p className="m-0 text-[13px] leading-5 text-fg-muted">{ISOLATION_TEXT}</p>
+    </Disclosure>
+  )
+}
+
 export function WorkspaceRequired() {
   return <Notice kind="info" text="Choose a workspace first." />
 }
 
 /** Titled block of a panel; `manage-section` is a stable hook for browser tests. */
-export function Section({ title, count, actions, children, className }: {
+export const Section = forwardRef<HTMLElement, {
   readonly title: ReactNode
   readonly count?: number
   readonly actions?: ReactNode
   readonly children: ReactNode
   readonly className?: string
-}) {
+}>(function Section({ title, count, actions, children, className }, ref) {
   return (
-    <section className={cn('manage-section flex min-w-0 flex-col gap-3', className)}>
+    <section ref={ref} className={cn('manage-section flex min-w-0 flex-col gap-3', className)}>
       <div className="flex min-h-8 flex-wrap items-center justify-between gap-2">
         <h3 className="m-0 flex min-w-0 items-center gap-2 text-sm font-semibold">
           <span className="truncate">{title}</span>
@@ -66,11 +90,58 @@ export function Section({ title, count, actions, children, className }: {
       {children}
     </section>
   )
+})
+
+/**
+ * Stack of panel sections. Full height so a `PanelFooter` rests on the bottom
+ * edge even when the sections above it do not fill the dialog.
+ */
+export function PanelBody({ children }: { readonly children: ReactNode }) {
+  return <div className="flex min-h-full min-w-0 flex-col gap-7">{children}</div>
 }
 
-/** Stack of panel sections with consistent spacing. */
-export function PanelBody({ children }: { readonly children: ReactNode }) {
-  return <div className="flex min-w-0 flex-col gap-7">{children}</div>
+/**
+ * Result of the last action, pinned to the bottom of the scrolling panel.
+ * A save or delete at the far end of a long tab confirms itself in place
+ * instead of writing to a heading the operator has already scrolled past.
+ */
+export function PanelFooter({ notice, children }: { readonly notice?: NoticeState; readonly children?: ReactNode }) {
+  if (notice === null || notice === undefined) {
+    if (children === undefined) return null
+    return <div className="sticky bottom-0 z-10 -mx-5 mt-auto flex flex-wrap items-center gap-2 border-t border-line bg-surface px-5 py-3">{children}</div>
+  }
+  return (
+    <div className="sticky bottom-0 z-10 -mx-5 mt-auto flex flex-col gap-2 border-t border-line bg-surface px-5 py-3">
+      <Notice kind={notice.kind} text={notice.text} />
+      {children !== undefined ? <div className="flex flex-wrap items-center gap-2">{children}</div> : null}
+    </div>
+  )
+}
+
+/**
+ * Collapsed-by-default block for settings most operators never change.
+ * Keeping them out of the first screen is what makes the common path short,
+ * so `defaultOpen` exists only for a draft that already sets one of them.
+ */
+export function Disclosure({ summary, count, defaultOpen = false, children }: {
+  readonly summary: ReactNode
+  readonly count?: number
+  readonly defaultOpen?: boolean
+  readonly children: ReactNode
+}) {
+  const [open, setOpen] = useScopedState(defaultOpen)
+  return (
+    <Collapsible.Root open={open} onOpenChange={setOpen} className="rounded-xl border border-line">
+      <Collapsible.Trigger className="flex min-h-11 w-full items-center gap-2 rounded-xl px-3.5 py-2.5 text-left text-[13px] font-medium text-fg outline-none transition-colors hover:bg-hover focus-visible:ring-2 focus-visible:ring-link">
+        <Icon name="chevronRight" size={14} className={cn('shrink-0 text-fg-faint transition-transform', open && 'rotate-90')} aria-hidden="true" />
+        <span className="min-w-0 flex-1">{summary}</span>
+        {count !== undefined && count > 0 ? <Badge tone="blue">{count}</Badge> : null}
+      </Collapsible.Trigger>
+      <Collapsible.Content>
+        <div className="flex min-w-0 flex-col gap-4 border-t border-line px-3.5 py-3.5">{children}</div>
+      </Collapsible.Content>
+    </Collapsible.Root>
+  )
 }
 
 export function ItemList({ children, label }: { readonly children: ReactNode; readonly label?: string }) {

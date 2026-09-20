@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { AgentsPanel, HooksPanel, McpPanel, MemoryPanel, SecretsPanel, SkillsPanel, validateHooksConfig } from './ManagementPanels.tsx'
+import { AgentRunsPanel } from '../workbench/AgentRunsPanel.tsx'
 import { SettingsModal } from './SettingsModal.tsx'
 
 const providers = [
@@ -27,28 +28,50 @@ describe('settings management tabs', () => {
 })
 
 describe('agent panel', () => {
-  it('requires a workspace and disables spawn without a root session', () => {
-    const noWorkspace = renderToStaticMarkup(<AgentsPanel workspaceId={null} rootSessionId={null} />)
+  it('requires a workspace and manages roles without any runtime controls', () => {
+    const noWorkspace = renderToStaticMarkup(<AgentsPanel workspaceId={null} />)
     expect(noWorkspace).toContain('Choose a workspace first')
 
-    const html = renderToStaticMarkup(<AgentsPanel workspaceId="ws-1" rootSessionId={null} />)
-    expect(html).toContain('No conversation selected')
-    // The spawn control is present but disabled while no root session exists.
-    expect(html).toContain('disabled')
-    expect(html).toContain('One level of delegation')
+    const html = renderToStaticMarkup(<AgentsPanel workspaceId="ws-1" />)
+    expect(html).toContain('Roles')
+    expect(html).toContain('Create a role')
+    // Spawning belongs to the conversation, not to Settings: the tab points
+    // at the workbench instead of rendering controls nothing can act on.
+    expect(html).toContain('Agents view of the workbench')
+    expect(html).not.toContain('Spawn')
+  })
+})
+
+describe('agent runs panel', () => {
+  it('explains the missing conversation instead of disabling a whole form', () => {
+    expect(renderToStaticMarkup(<AgentRunsPanel workspaceId="ws-1" rootSessionId={null} />)).toContain('No conversation selected')
+    expect(renderToStaticMarkup(<AgentRunsPanel workspaceId={null} rootSessionId={null} />)).toContain('Choose a workspace first')
+  })
+
+  it('offers delegation once a conversation is open', () => {
+    const html = renderToStaticMarkup(<AgentRunsPanel workspaceId="ws-1" rootSessionId="root" />)
+    expect(html).toContain('Delegate a task')
+    expect(html).toContain('Children')
   })
 })
 
 describe('mcp panel', () => {
   it('states isolation honestly and labels exposure vs permission', () => {
     const html = renderToStaticMarkup(<McpPanel workspaceId="ws-1" />)
+    // Collapsed detail must never hide the claim itself: the headline states
+    // the privilege level even before the disclosure is opened.
     expect(html).toContain('not an OS sandbox')
     expect(html).toContain('default to ask')
     expect(html).toContain('requiresUserInteraction always requires approval')
     expect(html).toContain('filters exposure; it does not grant permission')
-    // The stdio branch is the default; the HTTP token-reference hint is
-    // rendered once the operator switches transport.
-    expect(html).toContain('Runs the executable directly, not through a shell adapter')
+  })
+
+  it('opens on the server list, not on an empty form', () => {
+    const html = renderToStaticMarkup(<McpPanel workspaceId="ws-1" />)
+    expect(html).toContain('Servers')
+    expect(html).toContain('Add server')
+    // The nine-field editor is a deliberate action, not the landing state.
+    expect(html).not.toContain('Runs the executable directly, not through a shell adapter')
   })
 
   it('requires a workspace before showing configuration', () => {

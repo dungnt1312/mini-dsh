@@ -2,7 +2,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { deleteMcpServer, getMcpServer, importMcpServers, upsertMcpServer } from '../../lib/api.ts'
+import { deleteMcpServer, getMcpServer, importAgentDefinition, importMcpServers, upsertMcpServer } from '../../lib/api.ts'
 import { McpPanel } from './McpPanel.tsx'
 import { AgentsPanel } from './AgentsPanel.tsx'
 import { SettingsModal } from './SettingsModal.tsx'
@@ -16,6 +16,7 @@ vi.mock('../../lib/api.ts', () => ({
   setMcpServerAction: vi.fn(async () => ({ status: 'ready' })),
   listAgentDefinitions: vi.fn(async () => []),
   listChildren: vi.fn(async () => []),
+  importAgentDefinition: vi.fn(async () => ({ imported: ['reviewer'] })),
 }))
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -52,6 +53,8 @@ function type(element: HTMLInputElement | HTMLTextAreaElement, value: string): v
   element.dispatchEvent(new Event('input', { bubbles: true }))
 }
 const settle = async (): Promise<void> => { await act(async () => { await Promise.resolve() }) }
+/** "Add server" names both the section action and the form submit; the submit is last. */
+const saveButton = (): HTMLButtonElement => buttons().filter((node) => node.textContent === 'Add server').at(-1)!
 
 describe('MCP panel', () => {
   it('edits a server by merging the form into its stored config, keeping env', async () => {
@@ -81,20 +84,45 @@ describe('MCP panel', () => {
   it('switches transport as one choice and refuses invalid numbers', async () => {
     await act(async () => root.render(<McpPanel workspaceId="ws" />))
     await settle()
+    await act(async () => button('Add server').click())
     await act(async () => button('Streamable HTTP').click())
     expect(button('Streamable HTTP').getAttribute('aria-pressed')).toBe('true')
     expect(button('stdio').getAttribute('aria-pressed')).toBe('false')
     expect(input('URL')).toBeTruthy()
     await act(async () => { type(input('Server name'), 'remote'); type(input('URL'), 'https://mcp.example.com/mcp') })
-    expect(button('Add server').disabled).toBe(false)
+    expect(saveButton().disabled).toBe(false)
+    await act(async () => button('Advanced · tool exposure and resource limits').click())
     await act(async () => type(input('Memory limit (MB)'), 'abc'))
-    expect(button('Add server').disabled).toBe(true)
+    expect(saveButton().disabled).toBe(true)
     expect(upsertMcpServer).not.toHaveBeenCalled()
+  })
+
+  it('keeps the list first and only opens the editor on request', async () => {
+    await act(async () => root.render(<McpPanel workspaceId="ws" />))
+    await settle()
+    expect(() => input('Server name')).toThrow()
+    await act(async () => button('Add server').click())
+    expect(input('Server name')).toBeTruthy()
+    // Advanced caps stay folded until asked for, so the common path is short.
+    expect(() => input('CPU limit (%)')).toThrow()
+    await act(async () => button('Advanced · tool exposure and resource limits').click())
+    expect(input('CPU limit (%)')).toBeTruthy()
+  })
+
+  it('reopens advanced limits when the stored server already sets one', async () => {
+    vi.mocked(getMcpServer).mockResolvedValueOnce({
+      name: 'fs', transport: 'stdio', command: 'npx', args: [], enabled: false, timeoutMs: 5000, resourceLimits: { memoryMb: 256 },
+    } as never)
+    await act(async () => root.render(<McpPanel workspaceId="ws" />))
+    await settle()
+    await act(async () => button('Edit fs').click())
+    expect((input('Memory limit (MB)') as HTMLInputElement).value).toBe('256')
   })
 
   it('imports Codex configuration with its pinned version', async () => {
     await act(async () => root.render(<McpPanel workspaceId="ws" />))
     await settle()
+    await act(async () => button('Import from a Claude .mcp.json or Codex configuration').click())
     await act(async () => button('Codex (pinned)').click())
     await act(async () => type(input('Content'), '[mcp_servers.x]'))
     expect(button('Import servers').disabled).toBe(true)
@@ -106,10 +134,31 @@ describe('MCP panel', () => {
 
 describe('agents panel', () => {
   it('shows a real multi-line import placeholder', async () => {
-    await act(async () => root.render(<AgentsPanel workspaceId="ws" rootSessionId={null} />))
+    await act(async () => root.render(<AgentsPanel workspaceId="ws" />))
+    await act(async () => button('Import a definition').click())
     const placeholder = input('Definition content').getAttribute('placeholder') ?? ''
     expect(placeholder).toContain('\n')
     expect(placeholder).not.toContain('\\n')
+  })
+
+  it('creates a role through the same import contract as a pasted definition', async () => {
+    await act(async () => root.render(<AgentsPanel workspaceId="ws" />))
+    await settle()
+    await act(async () => button('Create a role').click())
+    await act(async () => {
+      type(input('Role name'), 'reviewer')
+      type(input('Description'), 'Reviews changes')
+      type(input('Tools'), 'Read\nGrep')
+      type(input('Instructions'), 'Review carefully.')
+    })
+    await act(async () => button('Create role').click())
+    expect(importAgentDefinition).toHaveBeenCalledTimes(1)
+    const [workspace, name, payload] = vi.mocked(importAgentDefinition).mock.calls[0]!
+    expect([workspace, name]).toEqual(['ws', 'reviewer'])
+    expect(payload.dialect).toBe('claude')
+    expect(payload.content).toContain('name: "reviewer"')
+    expect(payload.content).toContain('tools: ["Read","Grep"]')
+    expect(payload.content).toContain('Review carefully.')
   })
 })
 

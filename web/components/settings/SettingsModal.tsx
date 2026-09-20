@@ -38,7 +38,7 @@ const TABS: readonly { readonly id: SettingsTab; readonly label: string; readonl
   { id: 'projects', label: 'Projects', hint: 'Folders conversations in this workspace can work in', icon: 'folder' },
   { id: 'skills', label: 'Skills', hint: 'SKILL.md instruction packages', icon: 'zap' },
   { id: 'memory', label: 'Memory', hint: 'Notes the model recalls in this workspace', icon: 'lightbulb' },
-  { id: 'agents', label: 'Agents', hint: 'Roles and child agents', icon: 'gitBranch' },
+  { id: 'agents', label: 'Agents', hint: 'Roles a conversation can delegate to; spawn them from the workbench', icon: 'gitBranch' },
   { id: 'mcp', label: 'MCP', hint: 'Tool servers over stdio or HTTP', icon: 'terminal' },
   { id: 'hooks', label: 'Hooks', hint: 'Commands that run around tool calls and sessions', icon: 'wrench' },
   { id: 'secrets', label: 'Secrets', hint: 'Encrypted credentials for MCP servers', icon: 'key' },
@@ -117,18 +117,15 @@ export function SettingsModal({
   onRefresh,
   onSelectActive,
   workspaceId,
-  rootSessionId,
-  initialTab = 'providers', workspaceName, projects = [], onProjectsChanged = async () => {}, onOpenChild, sessionCounts = {},
+  initialTab = 'providers', workspaceName, projects = [], onProjectsChanged = async () => {}, sessionCounts = {},
 }: {
   readonly initialTab?: SettingsTab
   readonly workspaceName?: string | undefined
   readonly projects?: readonly ProjectRow[]
   readonly onProjectsChanged?: () => Promise<void>
-  readonly onOpenChild?: (childSessionId: string) => void
   readonly sessionCounts?: Readonly<Record<string, number>>
   readonly open: boolean
   readonly workspaceId: string | null
-  readonly rootSessionId?: string | null
   readonly providers: readonly ProviderSummary[]
   readonly activeProvider: string
   readonly activeModel?: string
@@ -461,7 +458,7 @@ export function SettingsModal({
                 {tab === 'projects' ? <ProjectsPanel workspaceId={workspaceId} projects={projects} onChanged={onProjectsChanged} sessionCounts={sessionCounts} /> : null}
                 {tab === 'skills' ? <SkillsPanel workspaceId={workspaceId} /> : null}
                 {tab === 'memory' ? <MemoryPanel workspaceId={workspaceId} /> : null}
-                {tab === 'agents' ? <AgentsPanel workspaceId={workspaceId} rootSessionId={rootSessionId ?? null} {...(onOpenChild !== undefined ? { onOpenChild } : {})} /> : null}
+                {tab === 'agents' ? <AgentsPanel workspaceId={workspaceId} /> : null}
                 {tab === 'mcp' ? <McpPanel workspaceId={workspaceId} /> : null}
                 {tab === 'hooks' ? <HooksPanel workspaceId={workspaceId} /> : null}
                 {tab === 'secrets' ? <SecretsPanel workspaceId={workspaceId} /> : null}
